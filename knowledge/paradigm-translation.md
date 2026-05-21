@@ -20,16 +20,16 @@ migration, see the migration guide _(planned)_.
 
 ## Identity files
 
-| OpenClaw                | Hermes                                           | Action      | Notes                                                                                                  |
-| ----------------------- | ------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------ |
-| `SOUL.md`               | `~/.hermes/SOUL.md`                              | 🟢 Port     | Same file, same purpose. Just copy. `hermes claw migrate` does this for you.                           |
-| `USER.md`               | `~/.hermes/memories/user.md` (cap: 1375 chars)   | 🟡 Redesign | Trim to fit. The hard cap is the feature — let the curator agent take over after that.                 |
-| `MEMORY.md`             | `~/.hermes/memories/memory.md` (cap: 2200 chars) | 🟡 Redesign | Same as USER. Don't try to preserve everything; let it self-curate.                                    |
-| `IDENTITY.md`           | —                                                | 🔴 Drop     | OpenClaw scaffolding; the persona lives in `SOUL.md` in Hermes.                                        |
-| `BOOT.md`               | —                                                | 🔴 Drop     | Hermes' startup is built into the binary; no markdown startup routine to maintain.                     |
-| `HEARTBEAT.md`          | —                                                | 🔴 Drop     | Replace with Hermes cron entries for periodic checks.                                                  |
-| `TOOLS.md`              | `~/.hermes/config.yaml` + `~/.hermes/.env`       | 🟡 Redesign | Tool inventory was OpenClaw discovery; Hermes uses config + env. Migrate values, drop the file format. |
-| `AGENTS.md` (workspace) | `~/.hermes/workspace/AGENTS.md` (context file)   | 🟢 Port     | Hermes calls them "context files"; `--workspace-target` flag in claw migrate handles this.             |
+| OpenClaw                | Hermes                                           | Action      | Notes                                                                                                                                             |
+| ----------------------- | ------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SOUL.md`               | `~/.hermes/SOUL.md`                              | 🟢 Port     | Same file, same purpose. Just copy. `hermes claw migrate` does this for you.                                                                      |
+| `USER.md`               | `~/.hermes/memories/user.md` (cap: 1375 chars)   | 🟡 Redesign | Trim to fit. The hard cap is the feature — let the curator agent take over after that.                                                            |
+| `MEMORY.md`             | `~/.hermes/memories/memory.md` (cap: 2200 chars) | 🟡 Redesign | Same as USER. Don't try to preserve everything; let it self-curate.                                                                               |
+| `IDENTITY.md`           | —                                                | 🔴 Drop     | OpenClaw scaffolding; the persona lives in `SOUL.md` in Hermes.                                                                                   |
+| `BOOT.md`               | —                                                | 🔴 Drop     | Hermes' startup is built into the binary; no markdown startup routine to maintain.                                                                |
+| `HEARTBEAT.md`          | —                                                | 🔴 Drop     | Replace with Hermes cron entries for periodic checks.                                                                                             |
+| `TOOLS.md`              | `~/.hermes/config.yaml` + `~/.hermes/.env`       | 🟡 Redesign | Tool inventory was OpenClaw discovery; Hermes uses config + env. Migrate values, drop the file format.                                            |
+| `AGENTS.md` (workspace) | `<target>/AGENTS.md` via `--workspace-target`    | 🟢 Port     | Hermes calls them "context files". `hermes claw migrate --workspace-target <dir>` writes `AGENTS.md` into the directory you specify (no default). |
 
 ## Memory
 
@@ -122,10 +122,10 @@ migration, see the migration guide _(planned)_.
 
 ## API keys & secrets
 
-| OpenClaw                        | Hermes                                     | Action      | Notes                                                                                                                               |
-| ------------------------------- | ------------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `~/.openclaw/.env`              | `~/.hermes/.env`                           | 🟢 Port     | Allowlisted keys move automatically via `claw migrate` (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs). Re-add anything else. |
-| Per-instance API key separation | Hermes profiles can use distinct env files | 🟡 Redesign | If you ran one OpenClaw per persona, you'll likely collapse to one Hermes with multiple profiles.                                   |
+| OpenClaw                        | Hermes                                     | Action      | Notes                                                                                                                                                                                                                                                          |
+| ------------------------------- | ------------------------------------------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `~/.openclaw/.env`              | `~/.hermes/.env`                           | 🟢 Port     | Six allowlisted keys move via `claw migrate --migrate-secrets`: `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`. Re-add anything else manually. See `migrator-internals.md`. |
+| Per-instance API key separation | Hermes profiles can use distinct env files | 🟡 Redesign | If you ran one OpenClaw per persona, you'll likely collapse to one Hermes with multiple profiles.                                                                                                                                                              |
 
 ## Per-instance migration checklist
 
