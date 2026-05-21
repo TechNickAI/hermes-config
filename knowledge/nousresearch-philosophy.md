@@ -170,8 +170,8 @@ If you're writing something for this repo and you're not sure if it fits, ask:
    the workflow the agent will figure out by day 14.)
 3. **Am I taking a decision away from the user?** If yes, push back to the user. (Don't
    pick a memory provider for them; give them the comparison and let them choose.)
-4. **Is this artifact going to stay accurate?** If it'll drift fast, prefer a pointer to
-   live docs over a snapshot.
+4. **Will this artifact drift fast?** If yes, prefer a pointer to live docs over a
+   snapshot here.
 
 If you can answer "no" to all four, the artifact probably earns its place.
 
