@@ -1,0 +1,25 @@
+{
+  "printWidth": 88,
+  "tabWidth": 2,
+  "singleQuote": false,
+  "trailingComma": "es5",
+  "arrowParens": "always",
+  "proseWrap": "always",
+  "embeddedLanguageFormatting": "auto",
+  "overrides": [
+    {
+      "files": ["*.md", "*.mdc"],
+      "options": {
+        "parser": "markdown",
+        "tabWidth": 2,
+        "printWidth": 88
+      }
+    },
+    {
+      "files": ["*.yml", "*.yaml"],
+      "options": {
+        "tabWidth": 2
+      }
+    }
+  ]
+}

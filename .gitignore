@@ -1,0 +1,48 @@
+# Backup files
+# Caches
+# Databases
+# Editor files
+# Hermes / OpenClaw local state when running this repo as a workspace
+# Local overrides — never committed
+# Logs
+# Node
+# OS files
+# Python
+# Secrets — never committed
+# Test artifacts
+*.backup
+*.bak
+*.db
+*.db-shm
+*.db-wal
+*.env
+*.key
+*.local
+*.local.md
+*.log
+*.pem
+*.pyc
+*.swo
+*.swp
+*~
+.DS_Store
+.claude/
+.env
+.env.*
+.hermes/
+.idea/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.vscode/
+/test/
+/tmp/
+CLAUDE.local.md
+Thumbs.db
+__pycache__/
+drafts/
+gh-cli-cache/
+hermes-state/
+node-compile-cache/
+node_modules/
+uv.lock
