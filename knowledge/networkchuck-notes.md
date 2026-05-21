@@ -114,12 +114,10 @@ surface that hit OpenClaw.
 
 NetworkChuck's day-30 take after using Hermes for a month:
 
-> "I don't think I've had one issue. Nothing I didn't cause myself. And my wife is
-> having a great time talking to her friend who is helping her with homeschool and diet
-> planning and just managing the house. [Hermes] just doesn't break. The team behind
-> this, they're AI engineers. And I think that's important and their mentality behind
-> this matters. They're not just going to add a bunch of features to make it bloated or
-> to compete with somebody else."
+> "I don't think I've had one issue. Nothing I didn't cause myself. [Hermes] just
+> doesn't break. The team behind this, they're AI engineers. And I think that's
+> important and their mentality behind this matters. They're not just going to add a
+> bunch of features to make it bloated or to compete with somebody else."
 
 The contrast with OpenClaw is implicit: more features ≠ better experience.
 
@@ -224,9 +222,9 @@ A few signals from watching what NetworkChuck found valuable:
    especially) deserve a real, high-quality home in this repo.
 3. **The setup wizard is the first impression.** This repo shouldn't try to replace it —
    defer to `hermes setup` and document what it produces.
-4. **Multi-user / family-friendly is real.** NetworkChuck's wife uses her own agent
-   ("she calls hers honey") for non-technical work. The implication: this repo should be
-   approachable for non-engineers who'll fork/clone it.
+4. **Multi-user / non-engineer-friendly is real.** NetworkChuck mentions a household
+   member who uses their own agent profile for non-technical work. The implication: this
+   repo should be approachable for non-engineers who'll fork/clone it.
 5. **The team's philosophy is contagious.** "Don't add features to compete" — we should
    hold ourselves to the same bar.
 
