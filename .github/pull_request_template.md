@@ -20,4 +20,5 @@
 
 ---
 
-_The `claude-code-review` action will run automatically. Mention `@claude` in a comment to invoke the agent for follow-ups._
+_The `claude-code-review` action will run automatically. Mention `@claude` in a comment
+to invoke the agent for follow-ups._
