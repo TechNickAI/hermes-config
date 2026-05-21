@@ -169,9 +169,9 @@ provider keys (`LMSTUDIO_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`), and one 
 keys named after each custom provider configured in the source (e.g.
 `MY_ROUTER_API_KEY`, `MY_ROUTER_ANTHROPIC_API_KEY`).
 
-The "exactly six" framing in the comment header is only true for the
-`secret-settings` option in isolation. Under `--preset full --migrate-secrets`, expect
-the union of the base 6 plus one key per custom provider.
+The "exactly six" framing in the comment header is only true for the `secret-settings`
+option in isolation. Under `--preset full --migrate-secrets`, expect the union of the
+base 6 plus one key per custom provider.
 
 Even with `--preset full`, secrets are **never** included unless `--migrate-secrets` is
 also passed. From `claw.py` L336-L340:
@@ -191,7 +191,7 @@ the new `custom_providers:` field as a list:
 custom_providers:
   - name: my-router
     base_url: http://127.0.0.1:<port>/v1
-    api_key: ''
+    api_key: ""
     api_mode: chat_completions
 ```
 
@@ -201,8 +201,8 @@ the empty string). A freshly-migrated profile typically also has:
 
 ```yaml
 model:
-  default: <provider-name>/<model-id>   # single slash-string
-providers: {}                            # ← empty, the resolver finds nothing here
+  default: <provider-name>/<model-id> # single slash-string
+providers: {} # ← empty, the resolver finds nothing here
 ```
 
 In a real migration, this caused gateway requests to silently fall through to a
@@ -216,15 +216,15 @@ machine where the same custom provider already works). Specifically:
 
 1. Replace the `model:` block with the working profile's (`default: chat`, plus
    `provider:`, `base_url:`, `api_mode:` siblings).
-2. Replace the empty `providers: {}` with the working profile's full provider dict
-   (each entry needs `name:`, `base_url:`, `key_env:`, `api_mode:`, and a `models:`
-   block listing model IDs).
+2. Replace the empty `providers: {}` with the working profile's full provider dict (each
+   entry needs `name:`, `base_url:`, `key_env:`, `api_mode:`, and a `models:` block
+   listing model IDs).
 3. Drop the unused `custom_providers:` list.
 4. Make sure the env var named by `key_env:` actually exists in `.env` (the
    migrator-written keys may be named differently — alias as needed).
 
-This is worth flagging upstream — the migration writes provider config that doesn't
-work end-to-end on Hermes ≥ v0.14.
+This is worth flagging upstream — the migration writes provider config that doesn't work
+end-to-end on Hermes ≥ v0.14.
 
 ## Cron handling — archive only, no recreation
 

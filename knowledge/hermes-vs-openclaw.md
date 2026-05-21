@@ -131,20 +131,19 @@ Hermes already manages itself.
 
 Running two OpenClaw agents on one machine means two `~/.openclaw-<name>/` home
 directories, two LaunchAgents (`ai.openclaw.<name1>`, `ai.openclaw.<name2>`), two
-gateway ports to keep clear of each other, two backup configurations, etc. Each
-instance is fully separate.
+gateway ports to keep clear of each other, two backup configurations, etc. Each instance
+is fully separate.
 
-Hermes ships this natively as **profiles**. One installation, one binary, multiple
-agent personas under `~/.hermes/profiles/<name>/`. The profile system is propagated
+Hermes ships this natively as **profiles**. One installation, one binary, multiple agent
+personas under `~/.hermes/profiles/<name>/`. The profile system is propagated
 end-to-end:
 
 - `hermes profile create <name>` makes `~/.hermes/profiles/<name>/` with its own
   `config.yaml`, `.env`, `SOUL.md`, `memories/`, `skills/`, `sessions/`, `cron/`.
 - `hermes profile list` shows all profiles and their gateway state.
-- Profile-aware launchd / systemd labels: `~/.hermes/` becomes
-  `ai.hermes.gateway` / `hermes-gateway`; `~/.hermes/profiles/coder/` becomes
-  `ai.hermes.gateway-coder` / `hermes-gateway-coder`. No port collisions, no naming
-  collisions.
+- Profile-aware launchd / systemd labels: `~/.hermes/` becomes `ai.hermes.gateway` /
+  `hermes-gateway`; `~/.hermes/profiles/coder/` becomes `ai.hermes.gateway-coder` /
+  `hermes-gateway-coder`. No port collisions, no naming collisions.
 - `HERMES_HOME=~/.hermes/profiles/<name>` (or `hermes --profile <name>`) routes every
   command — `hermes claw migrate`, `hermes gateway install`, `hermes send`,
   `hermes cron` — at that profile's home.
