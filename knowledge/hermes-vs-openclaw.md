@@ -127,13 +127,45 @@ ships `hermes setup`, `hermes gateway status`, `hermes claw migrate`, `hermes lo
 **Implication for hermes-config**: there is no `hermes-config` skill in this repo.
 Hermes already manages itself.
 
+### Multi-instance on one machine (profiles)
+
+Running two OpenClaw agents on one machine means two `~/.openclaw-<name>/` home
+directories, two LaunchAgents (`ai.openclaw.<name1>`, `ai.openclaw.<name2>`), two
+gateway ports to keep clear of each other, two backup configurations, etc. Each
+instance is fully separate.
+
+Hermes ships this natively as **profiles**. One installation, one binary, multiple
+agent personas under `~/.hermes/profiles/<name>/`. The profile system is propagated
+end-to-end:
+
+- `hermes profile create <name>` makes `~/.hermes/profiles/<name>/` with its own
+  `config.yaml`, `.env`, `SOUL.md`, `memories/`, `skills/`, `sessions/`, `cron/`.
+- `hermes profile list` shows all profiles and their gateway state.
+- Profile-aware launchd / systemd labels: `~/.hermes/` becomes
+  `ai.hermes.gateway` / `hermes-gateway`; `~/.hermes/profiles/coder/` becomes
+  `ai.hermes.gateway-coder` / `hermes-gateway-coder`. No port collisions, no naming
+  collisions.
+- `HERMES_HOME=~/.hermes/profiles/<name>` (or `hermes --profile <name>`) routes every
+  command — `hermes claw migrate`, `hermes gateway install`, `hermes send`,
+  `hermes cron` — at that profile's home.
+- `hermes profile create --clone` (or `--clone-from`) makes a copy of an existing
+  profile for safe experimentation.
+
+This is the cleanest single architectural win when migrating from a multi-instance
+OpenClaw fleet: many of the per-instance overheads (separate plists, separate backup
+schedules, separate update cycles) collapse into one set.
+
+**Implication for hermes-config**: if migrating a multi-instance OpenClaw setup, prefer
+one Hermes installation with multiple profiles over multiple Hermes installations. The
+migration guide should default to that pattern.
+
 ### Fleet management
 
 OpenClaw's per-machine markdown registry + manual SSH-over-Tailscale is a fleet pattern
 hand-rolled for power users. Hermes addresses the same problem differently:
 
-- **Profiles** let one Hermes installation host multiple agent personas (one per
-  intended user or purpose).
+- **Profiles** (see above) collapse "one instance per persona" into "one machine,
+  multiple personas".
 - **Remote terminal backends** (`docker`, `ssh`, `modal`, `daytona`, `vercel`,
   `singularity`) let one agent act on remote machines without needing a Hermes per
   machine.

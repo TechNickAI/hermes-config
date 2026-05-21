@@ -144,7 +144,10 @@ that category dir on first run.
 
 ## Secrets handling
 
-`SUPPORTED_SECRET_TARGETS` is exactly six env vars (`openclaw_to_hermes.py` L36-L43):
+There are two paths through which secrets end up in `~/.hermes/.env`:
+
+**Path 1 — the base allowlist.** `SUPPORTED_SECRET_TARGETS` (`openclaw_to_hermes.py`
+L36-L43) is exactly six env vars:
 
 ```
 TELEGRAM_BOT_TOKEN
@@ -155,8 +158,20 @@ ELEVENLABS_API_KEY
 VOICE_TOOLS_OPENAI_KEY
 ```
 
-Nothing else is ever written to `~/.hermes/.env` as a secret, no matter what the source
-`openclaw.json` contains.
+These are migrated by the `secret-settings` option, sourced from `openclaw.json` and
+`~/.openclaw/agents/main/agent/auth-profiles.json`.
+
+**Path 2 — per-provider keys (the surprise).** The `provider-keys` and `full-providers`
+options _also_ write env vars to `.env` — one per custom provider configured in the
+source `openclaw.json`. Verified against a real migration: in addition to the base 6,
+roughly ten more env vars landed — a mix of always-on (`HERMES_GATEWAY_TOKEN`), public
+provider keys (`LMSTUDIO_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`), and one or two
+keys named after each custom provider configured in the source (e.g.
+`MY_ROUTER_API_KEY`, `MY_ROUTER_ANTHROPIC_API_KEY`).
+
+The "exactly six" framing in the comment header is only true for the
+`secret-settings` option in isolation. Under `--preset full --migrate-secrets`, expect
+the union of the base 6 plus one key per custom provider.
 
 Even with `--preset full`, secrets are **never** included unless `--migrate-secrets` is
 also passed. From `claw.py` L336-L340:
@@ -167,8 +182,49 @@ also passed. From `claw.py` L336-L340:
 > `--include-secrets`) and prevents a `--preset full` invocation from silently importing
 > API keys that the user may not have intended to copy.
 
-The secret-bearing options (`secret-settings`, `provider-keys`) read from
-`openclaw.json` and from `~/.openclaw/agents/main/agent/auth-profiles.json`.
+## Custom providers migrate in a shape Hermes' model resolver doesn't read
+
+This is a gotcha to know about. The `full-providers` option writes custom providers into
+the new `custom_providers:` field as a list:
+
+```yaml
+custom_providers:
+  - name: my-router
+    base_url: http://127.0.0.1:<port>/v1
+    api_key: ''
+    api_mode: chat_completions
+```
+
+But Hermes' model resolver reads from the older `providers:` dict format and uses
+`key_env:` (pointing at an env var) rather than `api_key:` (which the migrator writes as
+the empty string). A freshly-migrated profile typically also has:
+
+```yaml
+model:
+  default: <provider-name>/<model-id>   # single slash-string
+providers: {}                            # ← empty, the resolver finds nothing here
+```
+
+In a real migration, this caused gateway requests to silently fall through to a
+different provider (whichever is listed as fallback) and return HTTP 400 _"… is not a
+valid model ID"_ because the slash-string was sent to a provider that doesn't know that
+ID.
+
+**Workaround until the migrator is fixed:** after migration, mirror the working
+`providers:` dict shape from a known-good profile (e.g. `~/.hermes/config.yaml` on a
+machine where the same custom provider already works). Specifically:
+
+1. Replace the `model:` block with the working profile's (`default: chat`, plus
+   `provider:`, `base_url:`, `api_mode:` siblings).
+2. Replace the empty `providers: {}` with the working profile's full provider dict
+   (each entry needs `name:`, `base_url:`, `key_env:`, `api_mode:`, and a `models:`
+   block listing model IDs).
+3. Drop the unused `custom_providers:` list.
+4. Make sure the env var named by `key_env:` actually exists in `.env` (the
+   migrator-written keys may be named differently — alias as needed).
+
+This is worth flagging upstream — the migration writes provider config that doesn't
+work end-to-end on Hermes ≥ v0.14.
 
 ## Cron handling — archive only, no recreation
 
