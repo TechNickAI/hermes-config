@@ -1,10 +1,11 @@
 # Telegram bot migration & "eyes" reaction in Hermes
 
-Research notes for the OpenClaw → Hermes migration. Two questions answered, both
-grounded in the Hermes source tree (`~/.hermes/hermes-agent/`).
+Research notes for the OpenClaw → Hermes migration, grounded in the Hermes source tree
+(`~/.hermes/hermes-agent/`) and verified end-to-end against a real bot handoff during a
+recent migration.
 
-> **Status:** Research only. No code or config changed. **Public-repo note:** This file
-> lives in a public repo. Personas, instance nicknames, ports, and any path under
+> **Status:** Research + empirical verification. **Public-repo note:** This file lives
+> in a public repo. Personas, instance nicknames, ports, and any path under
 > `/Users/<anyone>/...` have been generalized to `~/.hermes/...`. Keep it that way when
 > editing.
 
@@ -15,8 +16,16 @@ grounded in the Hermes source tree (`~/.hermes/hermes-agent/`).
 1. **Reuse the same Telegram bot token.** Hermes is built for this exact handoff — it
    always calls `deleteWebhook` on connect, retries 409 Conflicts up to 3× with 10 s
    delays, and emits a fatal-error string that namechecks OpenClaw. Rotate only in the
-   narrow cases listed in the decision framework below.
-2. **The 👀 reaction is already a first-class Hermes feature.** Enable with one env var
+   narrow cases listed in the decision framework below. **Verified:** a real OpenClaw →
+   Hermes handoff with the same token completed without webhook conflicts when the
+   sequence was bootout OpenClaw → install Hermes → start Hermes.
+2. **`hermes claw migrate` moves the token but NOT the allowlist.** The
+   `TELEGRAM_BOT_TOKEN` lands in `.env` automatically (it's in the base secret
+   allowlist), but the `channels.telegram.allowFrom` / `groupAllowFrom` arrays from
+   `openclaw.json` are skipped — the migrator logs "No Hermes-compatible messaging
+   settings found." Port them by hand into `TELEGRAM_ALLOWED_USERS` and
+   `TELEGRAM_ALLOWED_GROUPS` env vars. See "Porting the allowlist" below.
+3. **The 👀 reaction is already a first-class Hermes feature.** Enable with one env var
    (`TELEGRAM_REACTIONS=true`) or one config key (`telegram: { reactions: true }`). No
    plugin needed. Hermes goes one beyond OpenClaw: it swaps 👀 → 👍 / 👎 on completion,
    and explicitly clears the 👀 if the user runs `/stop`.
@@ -161,6 +170,104 @@ the **only** way to run both at once.
   based on multiple references in the codebase (e.g. `hermes_cli/claw.py` has
   `_cmd_migrate` that handles `~/.openclaw/`, `~/.clawdbot/`, `~/.moltbot/` source
   directories).
+
+---
+
+# Question 1b — What `hermes claw migrate` moves (and what it doesn't)
+
+This was the most surprising empirical finding from a real migration: the migrator moves
+the token cleanly, but stops short of the allowlist. Plan accordingly.
+
+| Piece                                                | Migrated? | Where it lands                                                |
+| ---------------------------------------------------- | --------- | ------------------------------------------------------------- |
+| `TELEGRAM_BOT_TOKEN`                                 | ✅ Yes    | `~/.hermes/.env` via the base secret allowlist                |
+| User allowlist (`channels.telegram.allowFrom`)       | ❌ No     | Migrator logs "No Hermes-compatible messaging settings found" |
+| Group allowlist (`channels.telegram.groupAllowFrom`) | ❌ No     | Same — skipped                                                |
+| Per-channel notification routing                     | ❌ No     | Gateway handles routing natively after token + allowlist set  |
+| Bot username / chat history                          | n/a       | Lives on Telegram's servers — unchanged by the migration      |
+
+The token is in `SUPPORTED_SECRET_TARGETS` (see
+[migrator-internals.md](migrator-internals.md) for the six-item base list), so a run
+with `--migrate-secrets` picks it up automatically. The allowlist sits inside the
+`channels.telegram` block of `openclaw.json`, and the migrator's `messaging-settings`
+option does not currently translate that block on the version verified during the
+migration. The other channels (`discord-settings`, `slack-settings`,
+`whatsapp-settings`, `signal-settings`) each have a dedicated migrator option and do
+move their allowlists; Telegram's allowlist needs the manual port below.
+
+## Porting the allowlist
+
+The Hermes gateway reads two env vars for Telegram authorization:
+
+```
+TELEGRAM_ALLOWED_USERS=<comma-separated numeric user IDs>
+TELEGRAM_ALLOWED_GROUPS=<comma-separated numeric group IDs>
+```
+
+These go in `~/.hermes/.env` for a root install or `~/.hermes/profiles/<name>/.env` for
+a profile install. Two format rules trip people up:
+
+- **Numeric IDs only.** OpenClaw's `allowFrom` quietly tolerated `@username` entries;
+  Telegram's bot-side auth path **requires numeric IDs**. Any `@username` entry silently
+  fails to authorize that user. Resolve `@username` entries to numeric IDs before
+  porting (have the user send any message to the bot and read the ID off the incoming
+  update, or use the `@userinfobot` pattern). `hermes doctor --fix` can also resolve
+  these in bulk when a valid bot token is present in the profile.
+- **Group IDs are negative.** Telegram represents group / supergroup chat IDs as
+  negative integers (often with a `-100` prefix for supergroups). Keep the leading minus
+  sign in `TELEGRAM_ALLOWED_GROUPS` — it's part of the ID, not a syntax artifact.
+
+## Profile-aware delivery — no port collisions across profiles
+
+Hermes' profile system propagates end-to-end, including the gateway. The launchd label
+is derived from `HERMES_HOME`:
+
+| `HERMES_HOME`                | launchd label              |
+| ---------------------------- | -------------------------- |
+| `~/.hermes/`                 | `ai.hermes.gateway`        |
+| `~/.hermes/profiles/<name>/` | `ai.hermes.gateway-<name>` |
+
+Because Telegram uses **long polling rather than a bound webhook port**, multiple
+profile gateways on the same machine do not collide on ports — each opens its own
+outbound HTTPS connection to Telegram and consumes updates for whichever token sits in
+its own `.env`. Run as many profile gateways as you have distinct bot tokens. (One token
+across multiple profiles still hits the one-consumer rule from Q1 and produces 409s —
+don't do that.)
+
+Routing a CLI command at a specific profile:
+
+```
+HERMES_HOME=~/.hermes/profiles/<name> hermes <subcommand>
+```
+
+or equivalently `hermes --profile <name> <subcommand>`. Both forms work for
+`hermes send`, `hermes gateway`, `hermes claw migrate`, and `hermes cron`.
+
+## Verification — the canonical smoke test
+
+After a handoff, two quick checks confirm the token + allowlist are right:
+
+1. **Watch the gateway log on startup.** The canonical "you're good" line is:
+
+   ```
+   [Telegram] Connected to Telegram (polling mode)
+   ```
+
+   If you don't see it within a few seconds of starting the gateway, the token is
+   missing, malformed, or in use by another process (check for HTTP 409 — see Q1).
+
+2. **Send a real message.**
+
+   ```
+   HERMES_HOME=<profile-home> hermes send -t telegram:<chat-id> "<smoke test>"
+   ```
+
+   A successful return (`sent`) plus the message arriving in the target chat means the
+   token loaded, the gateway has a live long-polling connection, and outbound delivery
+   works. For full coverage, also reply to the bot from the target chat to confirm the
+   allowlist permits inbound — `hermes send` is sender-side only, so a missing
+   `TELEGRAM_ALLOWED_USERS` entry will silently drop replies even though the outbound
+   smoke test passes.
 
 ---
 
@@ -316,6 +423,40 @@ platform.
   wait ~60 s, start Hermes. The adapter will clear any stale webhook and ride out the
   brief 409 window automatically. Rotate only if you need parallel A/B, want a fresh bot
   identity, or suspect token compromise.
+- **Allowlist:** Port `allowFrom` / `groupAllowFrom` by hand from `openclaw.json` into
+  `TELEGRAM_ALLOWED_USERS` and `TELEGRAM_ALLOWED_GROUPS` env vars. Numeric IDs only;
+  group IDs keep the leading minus sign. The migrator does not do this for you.
 - **Eyes reaction:** Set `TELEGRAM_REACTIONS=true` (or `telegram: { reactions: true }`
   in `config.yaml`). Hermes already does 👀 on receipt, 👍 / 👎 on completion, and
   clears on `/stop`. No plugin needed.
+
+---
+
+# Open questions
+
+- **`messaging-settings` Telegram coverage.** The migrator imports allowlists for
+  Discord, Slack, WhatsApp, and Signal, but skipped Telegram during the verified
+  migration. Worth confirming whether this is a version-specific gap (in which case the
+  manual-port step becomes obsolete on newer Hermes) or a permanent design choice.
+- **Reaction permissions on business bots.** The `read_business_messages` privilege
+  interacts with the bot type set in `@BotFather`. The exact matrix of "which reaction
+  events fire under which privilege" was not exhaustively tested — for group /
+  supergroup reaction visibility, promote the bot to admin with the minimum rights
+  needed and verify per-group.
+- **Reaction → skill loop.** Hermes routes reaction events to the agent, but the
+  convention for "what should the agent do with a 👍 vs a 🤔" is a per-instance design
+  decision — there is no built-in opinion. A future `reactions-as-feedback` skill in
+  this repo could codify a default pattern.
+
+---
+
+# Related reading
+
+- [hermes-vs-openclaw.md](hermes-vs-openclaw.md) — why per-channel skills collapse into
+  the gateway in the first place.
+- [paradigm-translation.md](paradigm-translation.md) — the Channels / Gateway row that
+  points here, and the per-instance migration checklist that names the Telegram strategy
+  decision explicitly.
+- [migrator-internals.md](migrator-internals.md) — what `hermes claw migrate` moves
+  under the hood, including the six-item base secret allowlist that `TELEGRAM_BOT_TOKEN`
+  rides on.
