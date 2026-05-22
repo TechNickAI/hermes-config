@@ -135,7 +135,8 @@ When converting an OpenClaw instance to Hermes, walk this list (top to bottom):
    when it ships.)
 2. **Dry-run migration** — `hermes claw migrate --dry-run`. Read every line of the
    output.
-3. **Choose Telegram strategy** — same bot or new bot? (See `telegram-and-reactions.md`.)
+3. **Choose Telegram strategy** — same bot or new bot? (See
+   `telegram-and-reactions.md`.)
 4. **Run migration** — `hermes claw migrate` (or `--preset user-data` to skip secrets).
 5. **Trim** — delete imported OpenClaw skills you don't need (they live in
    `~/.hermes/skills/openclaw-imports/`).

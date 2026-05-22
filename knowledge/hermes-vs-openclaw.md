@@ -65,8 +65,7 @@ Hermes does it _during_ the session, which is why OpenClaw "feels clunky on day 
 Hermes does not.
 
 **Implication for hermes-config**: drop the memory tier templates. Document the provider
-setup in [memory-deep-dive.md](memory-deep-dive.md) and ship a sample
-SOUL.md, period.
+setup in [memory-deep-dive.md](memory-deep-dive.md) and ship a sample SOUL.md, period.
 
 ### Skill system
 
@@ -260,8 +259,7 @@ If we are doing this right, `hermes-config` will be a tenth the size of
 
 - [paradigm-translation.md](paradigm-translation.md) — the concrete per-concept map
 - [hermes-architecture.md](hermes-architecture.md) — how Hermes actually works
-- [memory-deep-dive.md](memory-deep-dive.md) — the curator, hard limits,
-  providers
+- [memory-deep-dive.md](memory-deep-dive.md) — the curator, hard limits, providers
 - [skill-system-deep-dive.md](skill-system-deep-dive.md) _(in flight)_ — the
   self-improvement loop
 - [nousresearch-philosophy.md](nousresearch-philosophy.md) _(in flight)_ — "get out of
