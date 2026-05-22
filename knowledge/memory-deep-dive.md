@@ -20,7 +20,7 @@ files; the session DB is on whether you want it or not.
 
 | Layer             | Where                                                        | Shape                                     | Always on?                            | Who writes it                          |
 | ----------------- | ------------------------------------------------------------ | ----------------------------------------- | ------------------------------------- | -------------------------------------- |
-| Core              | `~/.hermes/memories/memory.md`, `~/.hermes/memories/user.md` | Markdown, hard-capped (2200 / 1375 chars) | Yes                                   | The Curator agent (with file locks)    |
+| Core              | `~/.hermes/memories/MEMORY.md`, `~/.hermes/memories/USER.md` | Markdown, hard-capped (2200 / 1375 chars) | Yes                                   | The Curator agent (with file locks)    |
 | Session DB        | `~/.hermes/state.db`                                         | SQLite + FTS5 over every session          | Yes                                   | The agent loop, automatically          |
 | External provider | API or self-hosted peer service                              | Vendor-specific (graph, vector, etc.)     | No (opt-in via `hermes memory setup`) | The provider plugin, in the background |
 
@@ -36,7 +36,7 @@ external recall layer on top.
 
 ## The hard cap is the feature
 
-`memory.md` is hard-capped at **2200 characters**. `user.md` is hard-capped at **1375
+`MEMORY.md` is hard-capped at **2200 characters**. `USER.md` is hard-capped at **1375
 characters**. The Curator does not get a warning; the cap is enforced as a budget.
 
 This is not a limitation people work around. It is the whole reason the system stays
@@ -51,7 +51,7 @@ external provider for the long tail, not to widen the budget.
 
 ## The Curator
 
-A background Curator agent fact-checks and prunes `memory.md` and `user.md` roughly
+A background Curator agent fact-checks and prunes `MEMORY.md` and `USER.md` roughly
 **every 10 turns** (see [hermes-vs-openclaw.md](hermes-vs-openclaw.md)). It runs
 _during_ the session, not just at compact or session end, which is why Hermes does not
 develop the day-30 bloat OpenClaw was prone to.
@@ -61,7 +61,7 @@ Mechanically, the Curator writes through a file lock — `~/.hermes/memories/` c
 Curator and any other process that might touch them (manual edits, migration tools,
 provider plugins reading the current state). This is worth knowing for two reasons:
 
-- If you edit `memory.md` by hand while a session is running, the Curator may overwrite
+- If you edit `MEMORY.md` by hand while a session is running, the Curator may overwrite
   you. Stop the agent first.
 - If a lock file is left behind after a crash, deleting the stale `.lock` is safe.
 
@@ -129,8 +129,8 @@ Verify with `hermes memory status`:
 $ hermes memory status
 
 Built-in memory:
-  memory.md       enabled  (1834 / 2200 chars)
-  user.md         enabled  ( 942 / 1375 chars)
+  MEMORY.md       enabled  (1834 / 2200 chars)
+  USER.md         enabled  ( 942 / 1375 chars)
 
 Active provider: honcho
 
@@ -184,7 +184,7 @@ Three commands cover the lifecycle:
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `hermes memory setup` | Interactive wizard. Re-running it switches providers — pick a different one and the wizard rewrites `provider:` and `.env`. |
 | `hermes memory off`   | Sets `memory.provider: null`. Core files stay active; the external provider is disconnected. Safe and reversible.           |
-| `hermes memory reset` | **Erases** `memory.md` and `user.md`. Destructive — there is no undo unless you have a backup.                              |
+| `hermes memory reset` | **Erases** `MEMORY.md` and `USER.md`. Destructive — there is no undo unless you have a backup.                              |
 
 `hermes memory reset` is the one to be careful with. It does not touch the external
 provider's data (that lives on the provider side); it wipes the core files. Use it when
@@ -205,16 +205,16 @@ catches up over the next handful of turns.
 
 After `hermes memory setup` succeeds, this is the file inventory you should expect:
 
-| Path                                   | Purpose                                                |
-| -------------------------------------- | ------------------------------------------------------ |
-| `~/.hermes/config.yaml`                | `memory:` block updated with `provider:` key           |
-| `~/.hermes/.env`                       | `<PROVIDER>_API_KEY=...` added                         |
-| `~/.hermes/memories/memory.md`         | Core memory (always present, Curator-managed)          |
-| `~/.hermes/memories/user.md`           | User profile (always present, Curator-managed)         |
-| `~/.hermes/memories/MEMORY.md.lock`    | Curator lock file (transient, safe to delete if stale) |
-| `~/.hermes/memories/USER.md.lock`      | Curator lock file (transient, safe to delete if stale) |
-| `~/.hermes/state.db`                   | Session DB (sessions + FTS5 index)                     |
-| `~/.hermes/plugins/memory/<provider>/` | The plugin itself (already shipped in-tree)            |
+| Path                                                | Purpose                                                |
+| --------------------------------------------------- | ------------------------------------------------------ |
+| `~/.hermes/config.yaml`                             | `memory:` block updated with `provider:` key           |
+| `~/.hermes/.env`                                    | `<PROVIDER>_API_KEY=...` added                         |
+| `~/.hermes/memories/MEMORY.md`                      | Core memory (always present, Curator-managed)          |
+| `~/.hermes/memories/USER.md`                        | User profile (always present, Curator-managed)         |
+| `~/.hermes/memories/MEMORY.md.lock`                 | Curator lock file (transient, safe to delete if stale) |
+| `~/.hermes/memories/USER.md.lock`                   | Curator lock file (transient, safe to delete if stale) |
+| `~/.hermes/state.db`                                | Session DB (sessions + FTS5 index)                     |
+| `~/.hermes/hermes-agent/plugins/memory/<provider>/` | The plugin itself (already shipped in-tree)            |
 
 Nothing else needs to be created by hand. The provider's own state (graph nodes,
 vectors, summaries) lives either in the managed service or in your self-hosted
