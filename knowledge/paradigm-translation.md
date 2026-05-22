@@ -82,7 +82,7 @@ migration, see the migration guide _(planned)_.
 | ----------------------- | ------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------ |
 | WhatsApp channel skill  | `hermes gateway` (WhatsApp built-in)        | 🔴 Drop     | Native.                                                                                          |
 | iMessage channel        | `hermes gateway` (no native iMessage today) | 🟡 Redesign | If you need iMessage, you'll need a plugin or to keep an OpenClaw bridge running. Open question. |
-| Telegram channel        | `hermes gateway` (Telegram built-in)        | 🔴 Drop     | Native. See `telegram-and-reactions.md` _(in flight)_ for token-handoff guidance.                |
+| Telegram channel        | `hermes gateway` (Telegram built-in)        | 🔴 Drop     | Native. See `telegram-and-reactions.md` for token-handoff guidance.                              |
 | Slack channel           | `hermes gateway` (Slack built-in)           | 🔴 Drop     | Native.                                                                                          |
 | Telegram client tooling | `hermes gateway` + bot API                  | 🔴 Drop     | Mostly redundant.                                                                                |
 
@@ -135,13 +135,12 @@ When converting an OpenClaw instance to Hermes, walk this list (top to bottom):
    when it ships.)
 2. **Dry-run migration** — `hermes claw migrate --dry-run`. Read every line of the
    output.
-3. **Choose Telegram strategy** — same bot or new bot? (See `telegram-and-reactions.md`
-   _(in flight)_.)
+3. **Choose Telegram strategy** — same bot or new bot? (See `telegram-and-reactions.md`.)
 4. **Run migration** — `hermes claw migrate` (or `--preset user-data` to skip secrets).
 5. **Trim** — delete imported OpenClaw skills you don't need (they live in
    `~/.hermes/skills/openclaw-imports/`).
 6. **Configure Hermes additions**:
-   - Memory provider (see `memory-deep-dive.md` _(in flight)_)
+   - Memory provider (see `memory-deep-dive.md`)
    - Gateway (`hermes gateway setup`)
    - Cron jobs (port the OpenClaw crontab entries to Hermes format — `claw migrate`
      archives them as JSON for reference)

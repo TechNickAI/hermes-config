@@ -10,7 +10,7 @@ This is the structural complement to [hermes-vs-openclaw.md](hermes-vs-openclaw.
 (philosophy) and [paradigm-translation.md](paradigm-translation.md) (per-concept map).
 For the deep dives on specific subsystems, see
 [memory-deep-dive.md](memory-deep-dive.md) and
-[skill-system-deep-dive.md](skill-system-deep-dive.md) _(both in flight)_.
+[skill-system-deep-dive.md](skill-system-deep-dive.md) _(in flight)_.
 
 ## The agent loop at the center
 
@@ -99,8 +99,7 @@ Three layers, none of which you maintain by hand:
 3. **Memory provider plugin** (optional) — Honcho / mem0 / supermemory run as peer
    services that build a richer model of the user and surface facts on demand.
 
-See [memory-deep-dive.md](memory-deep-dive.md) _(in flight)_ for the detailed
-walk-through.
+See [memory-deep-dive.md](memory-deep-dive.md) for the detailed walk-through.
 
 ## Skills (procedural memory, not scripts)
 
