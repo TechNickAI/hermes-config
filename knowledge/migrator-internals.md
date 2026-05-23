@@ -184,8 +184,12 @@ also passed. From `claw.py` L336-L340:
 
 ## Custom providers migrate in a shape Hermes' model resolver doesn't read
 
-This is a gotcha to know about. The `full-providers` option writes custom providers into
-the new `custom_providers:` field as a list:
+This is a **design bug**, not just a gotcha. The `full-providers` option transforms
+OpenClaw's provider config into a shape Hermes doesn't read — it should be
+_reimplementing_ the config (same provider, same env var, same model identifier), not
+picking a different field name and emitting a stub.
+
+The migrator writes custom providers into the new `custom_providers:` field as a list:
 
 ```yaml
 custom_providers:
@@ -208,7 +212,19 @@ providers: {} # ← empty, the resolver finds nothing here
 In a real migration, this caused gateway requests to silently fall through to a
 different provider (whichever is listed as fallback) and return HTTP 400 _"… is not a
 valid model ID"_ because the slash-string was sent to a provider that doesn't know that
-ID.
+ID. The runtime also logs
+`resolve_provider_client: named custom provider '<name>' has no resolvable api_key`
+every minute until the user manually rewrites the config.
+
+**What the migrator should do instead:** reimplement the model config verbatim. Whatever
+provider/model identifier and key reference (`key_env:`) the OpenClaw config had, the
+Hermes config should reference the same provider with the same alias and the same
+env-var name. The migrator shouldn't be:
+
+- picking a different field name (`custom_providers:` vs `providers:`)
+- emitting `api_key: ""` instead of preserving `key_env: <ENV_VAR_NAME>`
+- inventing new env-var names that don't match what the provider blocks reference
+- transforming the `model:` shape at all
 
 **Workaround until the migrator is fixed:** after migration, mirror the working
 `providers:` dict shape from a known-good profile (e.g. `~/.hermes/config.yaml` on a
@@ -223,8 +239,8 @@ machine where the same custom provider already works). Specifically:
 4. Make sure the env var named by `key_env:` actually exists in `.env` (the
    migrator-written keys may be named differently — alias as needed).
 
-This is worth flagging upstream — the migration writes provider config that doesn't work
-end-to-end on Hermes ≥ v0.14.
+This is the single largest source of post-migration breakage on fleet hosts that use a
+custom router. Field-tested fix lives in `docs/migration-guide.md` Phase 4d.
 
 ## Cron handling — archive only, no recreation
 
@@ -418,3 +434,68 @@ custom pieces on top.
 - The `tts-assets` source path was not explicitly enumerated beyond "compatible
   workspace audio files" in the metadata description; the precise filename rules live in
   the corresponding migrate method which was not read in full.
+
+## Known bugs (confirmed in the wild)
+
+These have been hit during real migrations. Full patches and reproductions live in
+[`docs/migration-guide.md`](../docs/migration-guide.md). Listed here for code-level
+context.
+
+### 1. `archive_path` same-file crash for out-of-tree sources
+
+In `openclaw_to_hermes.py::archive_path` (around L2090), the destination is built as:
+
+```python
+destination = self.archive_dir / relative_label(source, self.source_root) if self.archive_dir else None
+```
+
+When `source` is **outside** `self.source_root` (e.g. user has a custom workspace at
+`~/openclaw/workspace/` while OpenClaw's home is `~/.openclaw/`), `relative_label`
+returns an absolute path string. Python's `Path / abs_path` collapses to `abs_path` —
+destination == source — and `shutil.copy2(source, destination)` raises `SameFileError`,
+killing the migration mid-flight.
+
+**Trigger:** any custom `workspace.path` setting that points outside `~/.openclaw/`.
+
+**Workaround:** patch the function locally to (a) fall back to `source.name` when the
+relative_label is absolute, and (b) early-return when
+`source.resolve() == destination.resolve()`. Full patch in the migration guide.
+
+**Affected steps:** `archive_docs()` runs early in the migration, so the crash usually
+manifests as a partial write — some items already migrated, others not. A retry with
+`--overwrite` after applying the patch finishes the job cleanly.
+
+### 2. Model default carries routing prefix that OpenRouter rejects (subset of design bug)
+
+This is a specific symptom of the broader design bug above: the migrator _transforms_
+the model identifier instead of _reimplementing_ it verbatim.
+
+The migrator copies the OpenClaw model identifier into `model.default` but pairs it with
+a `base_url:` that the OpenClaw config never had. For an OpenClaw config using
+`openrouter/anthropic/claude-sonnet-4.6`, the result is:
+
+```yaml
+model:
+  default: openrouter/anthropic/claude-sonnet-4.6
+  base_url: https://openrouter.ai/api/v1
+```
+
+But when `base_url` already targets OpenRouter, the `openrouter/` prefix is
+**double-namespacing** — OpenRouter's API returns `400 ... is not a valid model ID`. The
+first cron tick (or agent invocation) fails loudly.
+
+**Trigger:** any OpenClaw model setting that uses `<router>/<provider>/<model>` when the
+corresponding Hermes provider's `base_url` is the underlying provider's endpoint (not
+the router).
+
+**Workaround:** post-migration, run `hermes config set model.default <provider>/<model>`
+to strip the routing prefix — or, better, manually rewrite the `model:` block to match
+the working fleet shape (see migration guide Phase 4d).
+
+**Root fix (design):** the migrator should not be choosing a `base_url:`, normalizing
+prefixes, or otherwise transforming the model identifier. It should reimplement the
+exact provider routing the OpenClaw config used. Whatever string was in
+`agents.defaults.model.primary` on the OpenClaw side, that's what the resolved Hermes
+provider should be configured to accept. The current "strip the conflict" logic is
+itself the bug — there should be no conflict to detect, because no transform should
+happen.
