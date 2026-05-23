@@ -1,6 +1,8 @@
 ---
 name: cron-healthcheck
-description: Detect broken Hermes cron jobs and escalate to a remediation sub-agent. Triage cheap, fix expensive.
+description:
+  Detect broken Hermes cron jobs and escalate to a remediation sub-agent. Triage cheap,
+  fix expensive.
 version: 0.1.0
 license: MIT
 metadata:
@@ -42,11 +44,12 @@ Every cycle is the same three-step loop:
    - Anything broken → spawn a remediation sub-agent (see below)
 
 The triage layer does **not** diagnose, **not** remediate, **not** post status updates.
+
 ## Detection
 
-In a cron-run session, the `cronjob` toolset is **not** auto-loaded (cron jobs run
-with a restricted toolset to keep the runtime cheap). Try the tool first; fall back
-to reading `~/.hermes/cron/jobs.json` directly if it's unavailable:
+In a cron-run session, the `cronjob` toolset is **not** auto-loaded (cron jobs run with
+a restricted toolset to keep the runtime cheap). Try the tool first; fall back to
+reading `~/.hermes/cron/jobs.json` directly if it's unavailable:
 
 ```python
 try:
@@ -63,8 +66,8 @@ broken = [j for j in jobs
 ```
 
 If `consecutive_errors` is missing entirely (newer Hermes versions track failure runs
-differently), inspect each job's recent runs under `~/.hermes/cron/output/<job_id>/`
-and count how many of the last 3 are FAILED.
+differently), inspect each job's recent runs under `~/.hermes/cron/output/<job_id>/` and
+count how many of the last 3 are FAILED.
 
 If `broken` is empty, return exactly:
 
@@ -146,23 +149,22 @@ hermes cron add \
 ```
 
 Hourly at `:05` — offset from `:00` so it doesn't collide with jobs that fire on the
-hour. Use the cheapest model that can reliably follow the detection logic
-(Gemini Flash, Haiku, etc.); the expensive model only runs when something is actually
-broken.
+hour. Use the cheapest model that can reliably follow the detection logic (Gemini Flash,
+Haiku, etc.); the expensive model only runs when something is actually broken.
 
 ## Budget
 
-| Path                  | Turns       | Model       |
-| --------------------- | ----------- | ----------- |
-| Healthy (heartbeat)   | 2-3         | cheap       |
-| Broken → spawn        | 3-5         | cheap       |
-| Sub-agent remediation | 10-20 / job | expensive   |
+| Path                  | Turns       | Model     |
+| --------------------- | ----------- | --------- |
+| Healthy (heartbeat)   | 2-3         | cheap     |
+| Broken → spawn        | 3-5         | cheap     |
+| Sub-agent remediation | 10-20 / job | expensive |
 
 ## Pitfalls
 
 - **Naming `consecutive_errors`** — field name varies between Hermes versions; check
-  with `cronjob(action="list")` first. Fall back to inspecting recent run records if
-  the field is absent.
+  with `cronjob(action="list")` first. Fall back to inspecting recent run records if the
+  field is absent.
 - **HEARTBEAT_OK suppression** — Hermes' gateway treats short single-line responses as
   no-ops only when delivery is configured `local`. Make sure the cron job is created
   with `deliver="local"` (or omit deliver entirely so it doesn't broadcast).
@@ -173,6 +175,6 @@ broken.
 
 This was an OpenClaw `workflows/cron-healthcheck/AGENT.md` recipe ported to a Hermes
 skill. The original folder-based workflow pattern (one directory per workflow with
-sibling state files) doesn't map cleanly to Hermes — skills are the right home for
-agent procedures, cron jobs are the right home for scheduling, and `~/.hermes/cron/`
-is the right home for run state.
+sibling state files) doesn't map cleanly to Hermes — skills are the right home for agent
+procedures, cron jobs are the right home for scheduling, and `~/.hermes/cron/` is the
+right home for run state.

@@ -186,8 +186,8 @@ also passed. From `claw.py` L336-L340:
 
 This is a **design bug**, not just a gotcha. The `full-providers` option transforms
 OpenClaw's provider config into a shape Hermes doesn't read — it should be
-*reimplementing* the config (same provider, same env var, same model identifier),
-not picking a different field name and emitting a stub.
+_reimplementing_ the config (same provider, same env var, same model identifier), not
+picking a different field name and emitting a stub.
 
 The migrator writes custom providers into the new `custom_providers:` field as a list:
 
@@ -216,10 +216,10 @@ ID. The runtime also logs
 `resolve_provider_client: named custom provider '<name>' has no resolvable api_key`
 every minute until the user manually rewrites the config.
 
-**What the migrator should do instead:** reimplement the model config verbatim.
-Whatever provider/model identifier and key reference (`key_env:`) the OpenClaw config
-had, the Hermes config should reference the same provider with the same alias and
-the same env-var name. The migrator shouldn't be:
+**What the migrator should do instead:** reimplement the model config verbatim. Whatever
+provider/model identifier and key reference (`key_env:`) the OpenClaw config had, the
+Hermes config should reference the same provider with the same alias and the same
+env-var name. The migrator shouldn't be:
 
 - picking a different field name (`custom_providers:` vs `providers:`)
 - emitting `api_key: ""` instead of preserving `key_env: <ENV_VAR_NAME>`
@@ -239,8 +239,8 @@ machine where the same custom provider already works). Specifically:
 4. Make sure the env var named by `key_env:` actually exists in `.env` (the
    migrator-written keys may be named differently — alias as needed).
 
-This is the single largest source of post-migration breakage on fleet hosts that use
-a custom router. Field-tested fix lives in `docs/migration-guide.md` Phase 4d.
+This is the single largest source of post-migration breakage on fleet hosts that use a
+custom router. Field-tested fix lives in `docs/migration-guide.md` Phase 4d.
 
 ## Cron handling — archive only, no recreation
 
@@ -458,8 +458,8 @@ killing the migration mid-flight.
 **Trigger:** any custom `workspace.path` setting that points outside `~/.openclaw/`.
 
 **Workaround:** patch the function locally to (a) fall back to `source.name` when the
-relative_label is absolute, and (b) early-return when `source.resolve() ==
-destination.resolve()`. Full patch in the migration guide.
+relative_label is absolute, and (b) early-return when
+`source.resolve() == destination.resolve()`. Full patch in the migration guide.
 
 **Affected steps:** `archive_docs()` runs early in the migration, so the crash usually
 manifests as a partial write — some items already migrated, others not. A retry with
@@ -467,11 +467,11 @@ manifests as a partial write — some items already migrated, others not. A retr
 
 ### 2. Model default carries routing prefix that OpenRouter rejects (subset of design bug)
 
-This is a specific symptom of the broader design bug above: the migrator *transforms*
-the model identifier instead of *reimplementing* it verbatim.
+This is a specific symptom of the broader design bug above: the migrator _transforms_
+the model identifier instead of _reimplementing_ it verbatim.
 
-The migrator copies the OpenClaw model identifier into `model.default` but pairs it
-with a `base_url:` that the OpenClaw config never had. For an OpenClaw config using
+The migrator copies the OpenClaw model identifier into `model.default` but pairs it with
+a `base_url:` that the OpenClaw config never had. For an OpenClaw config using
 `openrouter/anthropic/claude-sonnet-4.6`, the result is:
 
 ```yaml
@@ -481,18 +481,16 @@ model:
 ```
 
 But when `base_url` already targets OpenRouter, the `openrouter/` prefix is
-**double-namespacing** — OpenRouter's API returns
-`400 ... is not a valid model ID`. The first cron tick (or agent invocation) fails
-loudly.
+**double-namespacing** — OpenRouter's API returns `400 ... is not a valid model ID`. The
+first cron tick (or agent invocation) fails loudly.
 
-**Trigger:** any OpenClaw model setting that uses `<router>/<provider>/<model>`
-when the corresponding Hermes provider's `base_url` is the underlying provider's
-endpoint (not the router).
+**Trigger:** any OpenClaw model setting that uses `<router>/<provider>/<model>` when the
+corresponding Hermes provider's `base_url` is the underlying provider's endpoint (not
+the router).
 
-**Workaround:** post-migration, run
-`hermes config set model.default <provider>/<model>` to strip the routing prefix
-— or, better, manually rewrite the `model:` block to match the working fleet shape
-(see migration guide Phase 4d).
+**Workaround:** post-migration, run `hermes config set model.default <provider>/<model>`
+to strip the routing prefix — or, better, manually rewrite the `model:` block to match
+the working fleet shape (see migration guide Phase 4d).
 
 **Root fix (design):** the migrator should not be choosing a `base_url:`, normalizing
 prefixes, or otherwise transforming the model identifier. It should reimplement the
