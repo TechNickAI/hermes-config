@@ -1,9 +1,13 @@
 # OpenClaw → Hermes Migration — A Real-World Runbook
 
-This is the actual sequence used to migrate **Hex** (a Linode Ubuntu utility instance,
-~/.openclaw → Hermes) from OpenClaw to Hermes, including the bugs encountered and
+This is the actual sequence used to migrate a Linode Ubuntu utility instance
+(`~/.openclaw/` → Hermes) from OpenClaw to Hermes, including the bugs encountered and
 how to work around them. Companion to [`knowledge/migrator-internals.md`](../knowledge/migrator-internals.md),
 which documents the migrator code itself.
+
+Verified end-to-end on a real fleet host (initial migration) and re-audited a day later
+(full phase-by-phase check, OpenClaw decommissioned, model config aligned to fleet
+standard).
 
 ## TL;DR — the happy path
 
@@ -11,24 +15,28 @@ which documents the migrator code itself.
 # 1. Install Hermes
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
-# 2. Dry-run first, always
+# 2. Check for updates IMMEDIATELY after install (the installer can be 50+ commits stale)
+hermes --version
+hermes update     # if "Update available: N commits behind"
+
+# 3. Dry-run first, always
 hermes claw migrate --preset full --overwrite --migrate-secrets --dry-run
 
-# 3. Stop OpenClaw before live migration (avoids Telegram bot-token races)
+# 4. Stop OpenClaw before live migration (avoids Telegram bot-token races)
 systemctl --user stop openclaw-gateway && systemctl --user disable openclaw-gateway
 
-# 4. Live migration
+# 5. Live migration (if it crashes with SameFileError, just re-run — see bug #1)
 hermes claw migrate --preset full --overwrite --migrate-secrets --yes
 
-# 5. Fix the migrator's model-default bug (see "Known migrator bugs" below)
-hermes config set model.default anthropic/claude-sonnet-4.6   # strip openrouter/ prefix
+# 6. Fix the migrator's model-config emission (see bug #2 — required for any custom router)
+$EDITOR ~/.hermes/config.yaml   # see "Phase 4 — fixing the model block" below
 
-# 6. Install + start Hermes gateway
+# 7. Install + start Hermes gateway
 hermes gateway install   # answer y to start + y to enable on boot
 
-# 7. Verify
+# 8. Verify
 hermes config check
-hermes cron status
+hermes cron list
 hermes cron run <job_id>   # force-tick a cron and inspect output
 ```
 
@@ -37,27 +45,41 @@ If you have custom OpenClaw workflows or cron jobs, those need manual porting �
 
 ## Phase 0 — Pre-flight snapshots
 
-Before touching anything, pull these to local disk for forensic reference:
+Before touching anything, pull these to local disk for forensic reference. The
+migrator's `archive_dir` only archives files under `~/.openclaw/` — anything under a
+custom workspace path (e.g. `~/openclaw/workspace/`) is NOT backed up automatically.
+
+### 0a. Find the real workspace path
+
+OpenClaw lets you point `workspace` at any directory. Check first so you snapshot the
+right one:
+
+```bash
+ssh host 'grep -E "\"workspace\"" ~/.openclaw/openclaw.json | head -3'
+# Output is the absolute path — use it below as $WORKSPACE.
+```
+
+If it's `~/openclaw/workspace/` (non-default), you have BOTH `~/openclaw/workspace/`
+(real) and `~/.openclaw/workspace/` (stub, possibly empty). Snapshot the real one.
+
+### 0b. Snapshot
 
 ```bash
 mkdir -p ~/migration-artifacts/openclaw-host && cd ~/migration-artifacts/openclaw-host
 
 # Identity / persona / memory files (custom workspace)
-scp host:~/openclaw/workspace/{SOUL,MEMORY,USER}.md ./
-scp -r host:~/openclaw/workspace/workflows ./
+scp host:$WORKSPACE/{SOUL,MEMORY,USER,IDENTITY,BOOT,AGENTS,TOOLS,HEARTBEAT}.md ./ 2>/dev/null
+scp -r host:$WORKSPACE/workflows ./
 
-# OpenClaw config + sensitive metadata (DO NOT commit)
+# OpenClaw config + sensitive metadata (DO NOT commit these to a public repo)
 scp host:~/.openclaw/openclaw.json ./openclaw.json.snapshot
 ssh host 'openclaw cron list --json' > cron-jobs-raw.json
+scp host:~/.openclaw/cron/jobs.json ./cron-jobs-internal.json 2>/dev/null
 
 # Systemd unit + currently-set env
 scp host:~/.config/systemd/user/openclaw-gateway.service ./
+ssh host 'systemctl --user list-units --all "openclaw-*"' > openclaw-systemd-state.txt
 ```
-
-Why: the migrator's `archive_dir` only archives files under `~/.openclaw/` — anything
-under a custom workspace path like `~/openclaw/workspace/` won't be backed up
-automatically. You want a known-good copy on a separate machine before you change
-state.
 
 ## Phase 1 — Install Hermes
 
@@ -68,6 +90,17 @@ ssh host 'export PATH=$HOME/.local/bin:$PATH && hermes --version'
 
 The installer creates a stock `~/.hermes/` with a default `SOUL.md`, `MEMORY.md`, etc.
 The migration will overwrite (or merge with) these in Phase 3.
+
+**Right after install, check freshness:**
+
+```bash
+hermes --version    # look for "Update available: N commits behind"
+hermes update       # if N > 0
+```
+
+The installer image is rebuilt occasionally; in the field we've routinely seen 50–80
+commits of drift within hours of release. Skipping this step bakes a stale Hermes
+into the migrated host.
 
 ## Phase 2 — Dry-run
 
@@ -103,23 +136,131 @@ Two things you should verify in the output:
 1. **`✓ Migration complete!`** at the end (no traceback)
 2. Conflict and skip counts roughly match the dry-run
 
-If it crashes mid-flight (see "Known migrator bugs"), the partial state may already be
-on disk. Check the report directory: `~/.hermes/migration/openclaw/<timestamp>/`.
+### If it crashes with SameFileError (bug #1)
 
-## Phase 4 — Allowlist & cleanup
+This was the actual field experience: first run crashed mid-flight on
+`SameFileError` because the OpenClaw workspace was under `~/openclaw/workspace/`
+(custom path, not the default `~/.openclaw/workspace/`).
 
-The migrator handles most env vars, but verify a few things by hand:
+**Simplest workaround: just re-run.** The partial state from the first run is left on
+disk; a second `--overwrite` pass completes the migration. Most items will show as
+"conflict" (already written by the partial first run) rather than "migrated" — that's
+expected. Trust the on-disk state, not the count.
 
 ```bash
-# Telegram allowlist
-grep TELEGRAM_ALLOWED_USERS ~/.hermes/.env
-
-# Custom providers (e.g. 9router)
-grep -A3 "custom_providers:" ~/.hermes/config.yaml
-
-# Drop any deprecated env vars (e.g. MESSAGING_CWD → terminal.cwd in config.yaml)
-sed -i '/^MESSAGING_CWD=/d' ~/.hermes/.env
+hermes claw migrate --preset full --overwrite --migrate-secrets --yes
+# Look for "Migration complete!" at the bottom.
 ```
+
+If you'd rather patch the bug locally to avoid the crash entirely, see "Known
+migrator bugs" → bug #1 for the diff.
+
+## Phase 4 — Cleanup & fix model config
+
+The migrator handles env vars and most config, but four things need verification or
+manual cleanup. **Do not skip step 4d** — without it the gateway will warn about
+unresolved API keys every minute and may fall back to placeholder auth.
+
+### 4a. Telegram / Slack allowlists
+
+```bash
+grep -E "TELEGRAM_ALLOWED_USERS|SLACK_ALLOWED_USERS" ~/.hermes/.env
+```
+
+If you used multi-platform messaging on OpenClaw, both should be populated. If one
+is missing, copy the value from your Phase 0 snapshot of `openclaw.json`.
+
+### 4b. Drop deprecated env vars
+
+```bash
+sed -i '/^MESSAGING_CWD=/d' ~/.hermes/.env   # superseded by terminal.cwd in config.yaml
+```
+
+### 4c. Verify HERMES_GATEWAY_TOKEN
+
+```bash
+grep HERMES_GATEWAY_TOKEN ~/.hermes/.env
+```
+
+The migrator auto-generates one if missing, but verify it's set before installing
+the gateway.
+
+### 4d. Fix the model block (bug #2)
+
+**The migrator currently rewrites OpenClaw's model identifier into the wrong shape
+for Hermes.** The intended behavior is to reimplement the model config verbatim
+(same provider, same alias, same routing); the current behavior strips/adds prefixes
+and emits a list-form `custom_providers:` that Hermes runtime then warns about.
+
+Compare what the migrator wrote against your Phase 0 snapshot's
+`agents.defaults.model` and fix it by hand. The two common cases:
+
+**Case A — staying on direct OpenRouter:** strip any double `openrouter/` prefix.
+
+```yaml
+model:
+  default: anthropic/claude-sonnet-4.6     # NOT openrouter/anthropic/...
+  provider: auto
+  base_url: https://openrouter.ai/api/v1
+```
+
+**Case B — routing through a custom router (e.g. 9router on the fleet's Mac Studio):**
+replace the entire `model:` block AND the `custom_providers:` list with the mapped
+`providers:` dict form. This is the shape the rest of the fleet runs:
+
+```yaml
+model:
+  default: chat
+  provider: custom:9router-anthropic
+  base_url: http://<router-host>:<port>
+  api_mode: anthropic_messages
+  context_length: 200000
+
+providers:
+  9router:
+    name: 9Router OpenAI Compat
+    base_url: http://<router-host>:<port>/v1
+    key_env: NINEROUTER_KEY
+    api_mode: chat_completions
+    models:
+      cx/gpt-5.5:
+        context_length: 1000000
+  9router-anthropic:
+    name: 9Router Anthropic
+    base_url: http://<router-host>:<port>
+    key_env: NINEROUTER_KEY
+    api_mode: anthropic_messages
+    models:
+      cc/claude-opus-4-7: { context_length: 200000 }
+      cc/claude-sonnet-4-6: { context_length: 200000 }
+      cc/claude-haiku-4-5-20251001: { context_length: 200000 }
+      chat: { context_length: 200000 }
+      think: { context_length: 200000 }
+      work: { context_length: 200000 }
+      simple: { context_length: 200000 }
+      cheap: { context_length: 128000 }
+```
+
+Then add the env var Hermes is actually looking for (`key_env: NINEROUTER_KEY`):
+
+```bash
+grep -q "^NINEROUTER_KEY=" ~/.hermes/.env || \
+  echo "NINEROUTER_KEY=$(grep ^9ROUTER_ANTHROPIC_API_KEY= ~/.hermes/.env | cut -d= -f2-)" \
+    >> ~/.hermes/.env
+```
+
+(The migrator copies OpenClaw's key into `9ROUTER_ANTHROPIC_API_KEY` / `9ROUTER_API_KEY`
+but the provider blocks reference `NINEROUTER_KEY`. Either rename the env var or
+update the `key_env:` to match. We rename above to match the rest of the fleet's
+working config.)
+
+### 4e. Confirm
+
+```bash
+hermes config show | grep -A1 "^◆ Model"
+```
+
+You should see your intended model block reflected, not a list-style placeholder.
 
 ## Phase 5 — Workflows → Skills
 
@@ -134,6 +275,28 @@ You have to do this by hand. The Hermes-native mapping:
 | Workflow `delivery: none`     | `hermes cron create ... --deliver local`  |
 | Per-workflow state files      | `~/.hermes/cron/output/<job_id>/` or skill-managed |
 
+### 5a. Audit unported workflows
+
+```bash
+# Remote: list OpenClaw workflows on the source host
+ssh host 'ls $WORKSPACE/workflows/'
+
+# Local: which already exist as Hermes skills?
+ssh host 'for w in $WORKSPACE/workflows/*/; do
+  name=$(basename $w)
+  if [ -f ~/.hermes/skills/$name/SKILL.md ]; then
+    echo "✓ $name"
+  else
+    echo "✗ $name — not ported"
+  fi
+done'
+```
+
+Any `✗` lines are the workflows you still need to convert (or consciously skip — see
+5c below).
+
+### 5b. Port a workflow
+
 This repo carries two reference conversions you can copy as templates:
 
 - [`skills/cron-healthcheck/SKILL.md`](../skills/cron-healthcheck/SKILL.md)
@@ -145,6 +308,18 @@ After installing the skill under `~/.hermes/skills/<name>/SKILL.md`, create the 
 hermes cron create "5 * * * *" "Run the <name> skill. <task-specific instructions>" \
   --name <name> --skill <name> --deliver local
 ```
+
+### 5c. Workflows that may not apply to this host
+
+Don't blindly port workflows that depend on host-specific tooling. Common examples:
+
+- **bridge-health, contact-steward** — depend on macOS bridges (`wacli`, `tgcli`,
+  `imsg`, `quo`). Skip on Linux hosts.
+- **gateway-restart** — depends on platform-specific service manager. Re-author per
+  target.
+- **sentry-monitor** — generic, applies anywhere with `~/.sentryclirc`. Port directly.
+
+Note in your migration log which workflows were intentionally skipped and why.
 
 ## Phase 6 — Gateway cutover
 
@@ -163,6 +338,17 @@ journalctl --user -u hermes-gateway --since "1 minute ago" | grep -iE "error|tel
 
 Hermes only logs failures for Telegram; silence = connected.
 
+### Expected post-startup warnings (not actual errors)
+
+These appear on every gateway restart and are harmless until you decide to address
+them. Don't panic when you see them in the first log scrape:
+
+- `Discord: No bot token configured` — only relevant if you actually use Discord.
+- `Slack: missing_scope, needed groups:read` — appears every 5 minutes if your Slack
+  app's OAuth scopes don't include `groups:read`. To fix, add the scope in the Slack
+  app config and reinstall the app. Functional impact: private-channel directory
+  listing is degraded; DMs and public channels work fine.
+
 ## Phase 7 — Verification
 
 End-to-end smoke test:
@@ -170,39 +356,106 @@ End-to-end smoke test:
 ```bash
 # 1. Config sanity
 hermes config check                 # all required envs set
-hermes config show | grep -A2 model # model resolves cleanly
+hermes config show | grep -A2 "^◆ Model"  # model resolves cleanly (no list-style warning)
 
 # 2. Force a cron tick
-hermes cron run <healthcheck_job_id>
-sleep 60  # wait for scheduler tick + agent run
-ls -lt ~/.hermes/cron/output/<healthcheck_job_id>/ | head -3
-cat ~/.hermes/cron/output/<healthcheck_job_id>/<latest>.md | tail -10
+hermes cron list                    # find the job_id of a healthcheck or low-cost job
+hermes cron run <job_id>
+sleep 60                            # wait for scheduler tick + agent run
+ls -lt ~/.hermes/cron/output/<job_id>/ | head -3
+cat ~/.hermes/cron/output/<job_id>/<latest>.md | tail -10
 
-# Look for "HEARTBEAT_OK" or successful completion (NOT "FAILED")
+# Look for "HEARTBEAT_OK" / "[SILENT]" / successful completion (NOT "FAILED")
+
+# 3. Check for stray warnings in the gateway log
+journalctl --user -u hermes-gateway --since "5 minutes ago" --no-pager | \
+  grep -iE "error|warn|api_key|9router|placeholder|invalid|401|400" | \
+  grep -viE "missing_scope|Discord.*No bot token"
+# Empty output = healthy. Any "no resolvable api_key" line = Phase 4d was incomplete.
 ```
 
-If a cron run shows `FAILED` with a model error, see "Known migrator bugs" below.
+If a cron run shows `FAILED` with a model error, you missed Phase 4d — re-check the
+`model:` block and provider env vars.
 
 ## Phase 8 — Documentation
 
 Update your fleet registry / inventory to reflect the new runtime
 (`OpenClaw v…` → `Hermes v…`), and commit your migration artifacts to a private
-repo if you keep one.
+repo if you keep one. Specifically:
+
+- Note the migration date and source/target versions.
+- Record any `key_env:` renames or env-var changes (downstream automation often hard-codes them).
+- Record which workflows were ported, deferred, or intentionally skipped.
 
 ## Phase 9 — Decommission OpenClaw
 
 Once Hermes has run cleanly for at least one full cron cycle:
 
+### 9a. Tarball the old install
+
 ```bash
-# Tarball the old install for safekeeping
-tar czf ~/openclaw-pre-hermes-$(date +%Y%m%d).tgz ~/.openclaw
+TS=$(date +%Y%m%d-%H%M%S)
+tar czf ~/openclaw-pre-hermes-${TS}.tgz -C "$HOME" .openclaw openclaw 2>/dev/null
+ls -lh ~/openclaw-pre-hermes-${TS}.tgz
+```
 
-# Remove the systemd unit (already stopped + disabled in Phase 6)
-rm ~/.config/systemd/user/openclaw-gateway.service
+Include both `~/.openclaw/` (config + state) AND the workspace tree (`~/openclaw/`
+if you used a custom path).
+
+### 9b. Stop and disable ALL OpenClaw systemd units
+
+OpenClaw installs more than just the gateway. Audit and remove every unit:
+
+```bash
+systemctl --user list-units --all "openclaw-*"
+# Common units to expect:
+#   openclaw-gateway.service
+#   openclaw-backup-s3.{service,timer}
+#   openclaw-backup-verify.{service,timer}
+#   openclaw-health-check.{service,timer}
+#   openclaw-workspace-backup.{service,timer}
+
+# Stop + disable each
+for u in $(systemctl --user list-units --all "openclaw-*" --no-legend | awk '{print $1}'); do
+  systemctl --user stop "$u"
+  systemctl --user disable "$u"
+done
+
+# Remove the unit files (catch any .bak left behind too)
+rm -fv ~/.config/systemd/user/openclaw-*.service \
+       ~/.config/systemd/user/openclaw-*.service.bak \
+       ~/.config/systemd/user/openclaw-*.timer
 systemctl --user daemon-reload
+```
 
-# (Optional) remove openclaw binaries
-pip3 uninstall openclaw    # or wherever it was installed from
+### 9c. Uninstall the openclaw binary
+
+OpenClaw can be installed via pip OR npm-global depending on host history. Check both:
+
+```bash
+which openclaw                # absolute path tells you which install method
+
+# If under /usr/local/lib/node_modules or ~/.npm-global:
+npm uninstall -g openclaw
+
+# If a pip install:
+pip3 uninstall openclaw
+
+which openclaw                # should now print nothing
+```
+
+### 9d. Remove source trees (after tarball above is verified)
+
+```bash
+rm -rf ~/.openclaw ~/openclaw  # adjust if your workspace was elsewhere
+```
+
+### 9e. Final verify
+
+```bash
+ls ~/.config/systemd/user/openclaw* 2>&1  # should say "no matches"
+systemctl --user is-active hermes-gateway  # active
+systemctl --user is-enabled hermes-gateway # enabled
 ```
 
 Keep the tarball around until you're confident the migration is durable — at minimum
@@ -219,13 +472,13 @@ matching footnote in `knowledge/migrator-internals.md`.
 your `workspace` directory is a custom path like `~/openclaw/workspace/` rather than
 the default `~/.openclaw/workspace/`.
 
-**Root cause:** In `openclaw_to_hermes.py` `archive_path()`, the call
-`self.archive_dir / relative_label(source, self.source_root)` produces an
-**absolute** path on the right side when source lives outside source_root. Python's
-`Path / abs_path` collapses to `abs_path` — so destination == source and
-`shutil.copy2` errors out.
+**Workaround A (simpler, what the field run used):** just re-run
+`hermes claw migrate --preset full --overwrite --migrate-secrets --yes`. The partial
+state from the first run is left on disk; the second pass completes successfully
+(most items report as "conflict" rather than "migrated" — that's expected and
+correct).
 
-**Patch** (apply locally to the installed migrator until upstream fixes it):
+**Workaround B (avoids the crash):** patch the installed migrator locally.
 
 ```python
 def archive_path(self, source: Path, reason: str) -> None:
@@ -248,29 +501,51 @@ def archive_path(self, source: Path, reason: str) -> None:
         self.record("archive", source, destination, "archived", reason)
 ```
 
-File:
-`~/.hermes/hermes-agent/optional-skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py`
+File: `~/.hermes/hermes-agent/optional-skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py`
 
-### 2. Model default prefix mismatch
+**Root cause:** In `archive_path()`, the call
+`self.archive_dir / relative_label(source, self.source_root)` produces an
+**absolute** path on the right side when source lives outside source_root. Python's
+`Path / abs_path` collapses to `abs_path` — so destination == source and
+`shutil.copy2` errors out.
 
-**Symptom:** First cron run (or first agent invocation) fails with
-`openrouter/anthropic/claude-sonnet-4.6 is not a valid model ID` from OpenRouter.
+### 2. Model config is transformed, not reimplemented (design bug)
 
-**Root cause:** The migrator copies the OpenClaw model identifier verbatim
-(`openrouter/anthropic/claude-sonnet-4.6`) but the resulting config also sets
-`base_url: https://openrouter.ai/api/v1`. When the base_url already points at
-OpenRouter, the model ID must NOT carry the `openrouter/` prefix — OpenRouter expects
-just `anthropic/claude-sonnet-4.6`.
+**Symptom (a):** First cron run fails with `openrouter/anthropic/claude-sonnet-4.6
+is not a valid model ID` from OpenRouter, because the migrator copies the OpenClaw
+model identifier verbatim (`openrouter/anthropic/claude-sonnet-4.6`) while also
+setting `base_url: https://openrouter.ai/api/v1` — and OpenRouter expects the ID
+without the `openrouter/` prefix when the base_url already targets OpenRouter.
 
-**Fix:** After migration, run:
+**Symptom (b):** Gateway log shows
+`WARNING agent.auxiliary_client: resolve_provider_client: named custom provider
+'9router-anthropic' has no resolvable api_key — request will be sent with placeholder`
+every minute. Caused by the migrator emitting the list-form `custom_providers:`
+shape with a literal empty `api_key: ''` instead of the mapped `providers:` dict
+with `key_env: <ENV_VAR_NAME>`.
 
-```bash
-hermes config set model.default anthropic/claude-sonnet-4.6
-systemctl --user restart hermes-gateway
-```
+**Symptom (c):** Even when the API key IS in `.env`, the env-var name the migrator
+emits (`9ROUTER_API_KEY`) doesn't match what the provider block references
+(`NINEROUTER_KEY`).
 
-Same applies to any other provider where the OpenClaw model ID was namespaced with
-the routing layer's prefix.
+**Root cause (design):** The migrator currently *transforms* model config (strips
+prefixes, rewrites provider shape, picks an env-var name). It should *reimplement*
+it: whatever provider/model identifier and key reference were configured in
+OpenClaw, the Hermes config should reference the same provider with the same alias
+and the same env-var name — leaving any router-specific routing to the user's
+existing infrastructure.
+
+**Workaround (field-tested):** see Phase 4d above for the manual fix. Reset the
+`model:` and `providers:` blocks by hand using your Phase 0 snapshot as the
+authoritative source.
+
+**Upstream fix sketch (what should happen):**
+- `model.default`: copy verbatim from OpenClaw's `agents.defaults.model.primary`.
+- `model.provider`: copy verbatim from OpenClaw's resolved provider name.
+- `providers:`: copy each provider block as the mapped dict form, preserving the
+  exact `key_env:` value used in OpenClaw.
+- Do NOT strip/add `openrouter/` or any other namespace prefix.
+- Do NOT rename env vars in `.env`.
 
 ## Pitfalls
 
@@ -289,3 +564,15 @@ the routing layer's prefix.
   items as "conflict" rather than "migrated" — but they ARE actually correct (the
   first run wrote them, the second checked and found them already present). Trust
   the on-disk state, not the count.
+- **Slack `missing_scope: groups:read` warning is benign-but-noisy** — the gateway
+  logs it every 5 minutes for the lifetime of the process. Either grant the scope
+  in the Slack app config (preferred) or filter the warning when grep'ing the log.
+- **Discord adapter logs `No bot token configured`** even if you don't use Discord
+  — silence by removing the Discord adapter from `enabled_platforms` or by setting
+  a placeholder `DISCORD_BOT_TOKEN`.
+- **Update right after install.** The installer can be 50+ commits behind the
+  release branch. Run `hermes update` before the migrate step, or you'll bake a
+  stale Hermes into the host.
+- **OpenClaw installs more than the gateway unit.** Phase 9 must enumerate all
+  `openclaw-*` units (backup-s3, backup-verify, health-check, workspace-backup) and
+  the gateway's `.bak` files, not just the gateway service.
