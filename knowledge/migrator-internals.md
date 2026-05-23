@@ -418,3 +418,60 @@ custom pieces on top.
 - The `tts-assets` source path was not explicitly enumerated beyond "compatible
   workspace audio files" in the metadata description; the precise filename rules live in
   the corresponding migrate method which was not read in full.
+
+## Known bugs (confirmed in the wild)
+
+These have been hit during real migrations. Full patches and reproductions live in
+[`docs/migration-guide.md`](../docs/migration-guide.md). Listed here for code-level
+context.
+
+### 1. `archive_path` same-file crash for out-of-tree sources
+
+In `openclaw_to_hermes.py::archive_path` (around L2090), the destination is built as:
+
+```python
+destination = self.archive_dir / relative_label(source, self.source_root) if self.archive_dir else None
+```
+
+When `source` is **outside** `self.source_root` (e.g. user has a custom workspace at
+`~/openclaw/workspace/` while OpenClaw's home is `~/.openclaw/`), `relative_label`
+returns an absolute path string. Python's `Path / abs_path` collapses to `abs_path` —
+destination == source — and `shutil.copy2(source, destination)` raises `SameFileError`,
+killing the migration mid-flight.
+
+**Trigger:** any custom `workspace.path` setting that points outside `~/.openclaw/`.
+
+**Workaround:** patch the function locally to (a) fall back to `source.name` when the
+relative_label is absolute, and (b) early-return when `source.resolve() ==
+destination.resolve()`. Full patch in the migration guide.
+
+**Affected steps:** `archive_docs()` runs early in the migration, so the crash usually
+manifests as a partial write — some items already migrated, others not. A retry with
+`--overwrite` after applying the patch finishes the job cleanly.
+
+### 2. Model default carries routing prefix that OpenRouter rejects
+
+The migrator copies the OpenClaw model identifier verbatim into
+`model.default`. For an OpenClaw config using
+`openrouter/anthropic/claude-sonnet-4.6`, the result is:
+
+```yaml
+model:
+  default: openrouter/anthropic/claude-sonnet-4.6
+  base_url: https://openrouter.ai/api/v1
+```
+
+But when `base_url` already targets OpenRouter, the `openrouter/` prefix is
+**double-namespacing** — OpenRouter's API returns
+`400 ... is not a valid model ID`. The first cron tick (or agent invocation) fails
+loudly.
+
+**Trigger:** any OpenClaw model setting that uses `<router>/<provider>/<model>`
+when the corresponding Hermes provider's `base_url` is the underlying provider's
+endpoint (not the router).
+
+**Workaround:** post-migration, run
+`hermes config set model.default <provider>/<model>` to strip the routing prefix.
+
+**Root fix:** the migrator should detect prefix collisions between the model ID and
+the resolved base_url's host and strip the conflict.
