@@ -144,16 +144,13 @@ mid-flow.
 
 ## Installing the gateway command
 
-The `/recall` command requires `hermes-agent` from the `feature/recall-command` branch
-(see Prerequisites above) — it is not yet in a tagged release. Once you have the right
-build, verify it's available:
+The `/recall` command ships with `hermes-agent`. To verify it's available:
 
 ```
 /help
 ```
 
-Look for `recall` in the Session section. If it's missing, update Hermes to the correct
-branch build:
+Look for `recall` in the Session section. If it's missing, update Hermes:
 
 ```bash
 hermes update
