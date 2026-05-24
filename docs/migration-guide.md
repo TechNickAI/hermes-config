@@ -36,7 +36,7 @@ $EDITOR ~/.hermes/config.yaml   # see "Phase 4 — fixing the model block" below
 CORTEX_STORE=$(grep CORTEX_STORE_PATH ~/.config/cortex/config | cut -d= -f2-)
 rsync -av --exclude="cortex.db" --exclude="cortex.db-*" --exclude=".log" \
   "${CORTEX_STORE}/" ~/.hermes/cortex/
-sed -i '' "s|CORTEX_STORE_PATH=.*|CORTEX_STORE_PATH=$HOME/.hermes/cortex|" \
+sed -i "s|CORTEX_STORE_PATH=.*|CORTEX_STORE_PATH=$HOME/.hermes/cortex|" \
   ~/.config/cortex/config
 cortex setup && cortex status   # rebuild SQLite index, confirm page counts
 
@@ -359,11 +359,11 @@ Hermes now — before the gateway cutover, while OpenClaw is still offline.
 
 ### What Cortex is
 
-Cortex is a personal knowledge compiler: raw sources (notes, transcripts, documents)
-are ingested into a structured, interlinked markdown knowledge base. The store lives
-under a single root directory, organized by category. The `cortex` CLI script handles
-mechanical operations (scanning, hashing, triage, index rebuilding); the LLM handles
-the actual knowledge compilation guided by `schema.md`.
+Cortex is a personal knowledge compiler: raw sources (notes, transcripts, documents) are
+ingested into a structured, interlinked markdown knowledge base. The store lives under a
+single root directory, organized by category. The `cortex` CLI script handles mechanical
+operations (scanning, hashing, triage, index rebuilding); the LLM handles the actual
+knowledge compilation guided by `schema.md`.
 
 ### Where it moves
 
@@ -390,8 +390,8 @@ structure:
 ```
 
 The SQLite database (`cortex.db`) is not migrated — it's mechanical state that gets
-rebuilt from the knowledge pages themselves via `cortex setup`. Only the markdown
-files move.
+rebuilt from the knowledge pages themselves via `cortex setup`. Only the markdown files
+move.
 
 ### 5b-1. Find your Cortex store path
 
@@ -425,11 +425,11 @@ ls ~/.hermes/cortex/
 
 ### 5b-3. Update the cortex config
 
-The `cortex` CLI reads `~/.config/cortex/config` for `CORTEX_STORE_PATH`. Update it
-to point at the new location:
+The `cortex` CLI reads `~/.config/cortex/config` for `CORTEX_STORE_PATH`. Update it to
+point at the new location:
 
 ```bash
-sed -i '' "s|CORTEX_STORE_PATH=.*|CORTEX_STORE_PATH=$HOME/.hermes/cortex|" \
+sed -i "s|CORTEX_STORE_PATH=.*|CORTEX_STORE_PATH=$HOME/.hermes/cortex|" \
   ~/.config/cortex/config
 
 cat ~/.config/cortex/config   # confirm the new path
@@ -437,8 +437,8 @@ cat ~/.config/cortex/config   # confirm the new path
 
 ### 5b-4. Copy (or symlink) the cortex CLI
 
-The `cortex` script is a standalone Python script that runs via `uv`. If you kept it
-in your OpenClaw skills directory, install it somewhere on `$PATH` now:
+The `cortex` script is a standalone Python script that runs via `uv`. If you kept it in
+your OpenClaw skills directory, install it somewhere on `$PATH` now:
 
 ```bash
 # Option A — copy to local bin (survives OpenClaw removal)
@@ -469,15 +469,15 @@ If `cortex status` page counts match what you saw in the old store, you're good.
 
 OpenClaw's `MEMORY.md` served two distinct roles that Hermes separates:
 
-| OpenClaw `MEMORY.md`                         | Hermes equivalent                             |
-| -------------------------------------------- | --------------------------------------------- |
-| Short routing table (~30 lines of pointers)  | `~/.hermes/cortex/index.md` (already migrated) |
-| Distilled long-term facts about the agent    | `~/.hermes/memories/memory.md` (native Hermes memory) |
-| Curated user profile loaded into every turn  | `~/.hermes/memories/user.md` (native Hermes memory)   |
+| OpenClaw `MEMORY.md`                        | Hermes equivalent                                     |
+| ------------------------------------------- | ----------------------------------------------------- |
+| Short routing table (~30 lines of pointers) | `~/.hermes/cortex/index.md` (already migrated)        |
+| Distilled long-term facts about the agent   | `~/.hermes/memories/memory.md` (native Hermes memory) |
+| Curated user profile loaded into every turn | `~/.hermes/memories/user.md` (native Hermes memory)   |
 
-The `MEMORY.md` inside `~/.hermes/cortex/` (if any) is a cortex navigation file —
-leave it there. The separate `~/.hermes/memories/memory.md` and `user.md` are what
-Hermes injects into every session; those were handled by the migrator (Phase 3).
+The `MEMORY.md` inside `~/.hermes/cortex/` (if any) is a cortex navigation file — leave
+it there. The separate `~/.hermes/memories/memory.md` and `user.md` are what Hermes
+injects into every session; those were handled by the migrator (Phase 3).
 
 If your MEMORY.md had a mix of routing pointers and distilled facts, split them
 manually: pointers go into `~/.hermes/cortex/index.md`, long-term facts go into
@@ -504,11 +504,11 @@ Then open `~/.hermes/skills/cortex/SKILL.md` and update the store path reference
 - **The `daily/` directory is the journal.** `YYYY-MM-DD.md` files are raw conversation
   logs — they all migrate as-is. Never delete them.
 - **Custom `CORTEX_STORE_PATH`.** If your store was somewhere other than
-  `~/.openclaw/workspace/memory/` (e.g. a Dropbox path), verify the `rsync` source
-  path from the config file rather than guessing.
-- **Schema.md is the LLM instruction set.** If you customized `schema.md` for your
-  own categories, those customizations migrate automatically with the rsync — no extra
-  step needed.
+  `~/.openclaw/workspace/memory/` (e.g. a Dropbox path), verify the `rsync` source path
+  from the config file rather than guessing.
+- **Schema.md is the LLM instruction set.** If you customized `schema.md` for your own
+  categories, those customizations migrate automatically with the rsync — no extra step
+  needed.
 
 ## Phase 6 — Gateway cutover
 
