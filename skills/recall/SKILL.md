@@ -18,9 +18,9 @@ Restores context from a prior Hermes session into the current one. Useful any ti
 hit `/new` (intentionally or because a context overrun forced it) and want the agent to
 know what was being worked on.
 
-**This skill documents the `/recall` slash command**, which ships with `hermes-agent`
-but is not yet in a tagged release — see Prerequisites. The command is available on any
-platform where the gateway runs (Telegram, Discord, Slack, etc.).
+**This skill documents the `/recall` slash command**, which is built into the Hermes
+gateway. The command is available on any platform where the gateway runs (Telegram,
+Discord, Slack, etc.).
 
 ## When to use
 
@@ -32,9 +32,8 @@ platform where the gateway runs (Telegram, Discord, Slack, etc.).
 ## Prerequisites
 
 - Hermes gateway running with a messaging platform connected (Telegram, Discord, etc.)
-- `hermes-agent` from the `feature/recall-command` branch
-  ([TechNickAI/hermes-agent](https://github.com/TechNickAI/hermes-agent/tree/feature/recall-command))
-  — or the upstream PR once merged into `NousResearch/hermes-agent`
+- `hermes-agent` ≥ the commit that introduced `/recall`
+  ([NousResearch/hermes-agent#XXXX](https://github.com/NousResearch/hermes-agent))
 - A prior session in the same thread (for thread mode) or any prior session (for topic
   mode)
 
@@ -47,8 +46,8 @@ platform where the gateway runs (Telegram, Discord, Slack, etc.).
 ```
 
 Finds the most recent session in the current thread/topic, summarises it via a
-sub-agent, and injects the summary as context. The agent now knows what was being worked
-on. You can keep going immediately.
+sub-agent, and injects the summary as context. The agent now knows what was being
+worked on. You can keep going immediately.
 
 ### Restore last N sessions
 
@@ -115,14 +114,14 @@ mid-flow.
 
 ## Modes reference
 
-| Syntax                | Mode           | What it finds                    |
-| --------------------- | -------------- | -------------------------------- |
-| `/recall`             | thread         | Last session in this thread      |
-| `/recall 3`           | thread         | Last 3 sessions in this thread   |
-| `/recall 24h`         | window         | All sessions active in last 24 h |
-| `/recall 7d`          | window         | All sessions active in last 7 d  |
-| `/recall <phrase>`    | topic          | FTS search across all sessions   |
-| `/recall <phrase> 7d` | topic + window | FTS search scoped to last 7 d    |
+| Syntax | Mode | What it finds |
+|--------|------|---------------|
+| `/recall` | thread | Last session in this thread |
+| `/recall 3` | thread | Last 3 sessions in this thread |
+| `/recall 24h` | window | All sessions active in last 24 h |
+| `/recall 7d` | window | All sessions active in last 7 d |
+| `/recall <phrase>` | topic | FTS search across all sessions |
+| `/recall <phrase> 7d` | topic + window | FTS search scoped to last 7 d |
 
 ## Pitfalls
 
@@ -130,11 +129,11 @@ mid-flow.
   will say "No prior sessions found." That's correct; there's nothing to pull in yet.
 - **Very long sessions** — transcripts over ~40 K tokens are chunked before
   summarisation; the summary will reflect the whole transcript but may miss fine detail
-  from the middle. There is no workaround within `/recall` for this — if deep precision
-  matters, use a model with a larger context window (`/model`) before running `/recall`.
-- **Topic search misses** — FTS5 searches exact substrings by default. If
-  `/recall database migration` returns nothing, try `/recall migration` (shorter phrase,
-  more matches).
+  from the middle. Run `/recall 2` to split across two session boundaries if precision
+  matters.
+- **Topic search misses** — FTS5 searches exact substrings by default. If `/recall
+  database migration` returns nothing, try `/recall migration` (shorter phrase, more
+  matches).
 - **Wrong thread** — `/recall` (default) scopes to the current Telegram topic / Discord
   thread. If you moved to a new topic, the prior session is in a different `session_key`
   and won't appear. Use `/recall <phrase>` (topic mode) to search across threads.
@@ -144,16 +143,13 @@ mid-flow.
 
 ## Installing the gateway command
 
-The `/recall` command requires `hermes-agent` from the `feature/recall-command` branch
-(see Prerequisites above) — it is not yet in a tagged release. Once you have the right
-build, verify it's available:
+The `/recall` command ships with `hermes-agent`. To verify it's available:
 
 ```
 /help
 ```
 
-Look for `recall` in the Session section. If it's missing, update Hermes to the correct
-branch build:
+Look for `recall` in the Session section. If it's missing, update Hermes:
 
 ```bash
 hermes update
