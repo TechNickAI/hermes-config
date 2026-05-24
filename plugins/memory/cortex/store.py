@@ -226,7 +226,10 @@ class CortexStore:
     # -- Page CRUD ---------------------------------------------------------
 
     def get_page(self, rel_path: str) -> Optional[dict]:
-        p = self.store_path / rel_path
+        p = (self.store_path / rel_path).resolve()
+        if not str(p).startswith(str(self.store_path.resolve()) + "/"):
+            logger.warning("CortexStore: rel_path escapes store root, rejecting: %s", rel_path)
+            return None
         if not p.is_file():
             return None
         text = p.read_text(encoding="utf-8")

@@ -88,6 +88,14 @@ CORTEX_TOOL_SCHEMA = {
 # Config helpers
 # ---------------------------------------------------------------------------
 
+def _config_bool(config: dict, key: str, default: bool = False) -> bool:
+    """Return bool from config, handling string 'true'/'false' from setup prompts."""
+    v = config.get(key, default)
+    if isinstance(v, bool):
+        return v
+    return str(v).lower() in ("true", "yes", "1")
+
+
 def _load_plugin_config() -> dict:
     """Load plugin config from $HERMES_HOME/config.yaml under plugins.cortex."""
     try:
@@ -234,7 +242,7 @@ class CortexMemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         if not self._store:
             return
-        if not self._config.get("auto_journal", False):
+        if not _config_bool(self._config, "auto_journal"):
             return
         # Heuristic: skip trivial turns
         if len(user_content) < 40 and len(assistant_content) < 80:
@@ -250,7 +258,7 @@ class CortexMemoryProvider(MemoryProvider):
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         if not self._store:
             return
-        if not self._config.get("auto_synthesize", False):
+        if not _config_bool(self._config, "auto_synthesize"):
             return
         if not messages or len(messages) < 4:
             return
