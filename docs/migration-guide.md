@@ -379,6 +379,7 @@ structure:
   daily/                ← conversation journals (YYYY-MM-DD.md)
   people/               ← person entities
   ventures/             ← projects, companies, tools
+  projects/             ← active projects (cross-cutting, multi-session work)
   topics/               ← ideas, patterns, principles, domains
   synthesis/            ← cross-cutting analysis + source digests
   decisions/            ← choices with reasoning
@@ -388,6 +389,16 @@ structure:
   audit/                ← operational audit files
   ...                   ← any other categories from your store
 ```
+
+The category list above is a **seed**, not a whitelist. The Cortex store imposes no
+category restrictions: the indexer walks every `*.md` file under the root and treats the
+top-level directory as the category, auto-creating new ones on first write. Make up
+whatever subdirs make sense (`engineering/`, `finance/`, `bosun-inbox/`, etc.). Hidden
+dirs (`.git/`, `node_modules/`, `__pycache__/`) are skipped.
+
+**Pitfall:** the daily directory is `daily/`, not `dailys/`. Don't rename it during
+migration — Cortex's `append_daily` writes to the singular form and tools that look for
+today's journal will miss it otherwise.
 
 The SQLite database (`cortex.db`) is not migrated — it's mechanical state that gets
 rebuilt from the knowledge pages themselves via `cortex setup`. Only the markdown files
