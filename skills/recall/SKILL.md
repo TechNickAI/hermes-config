@@ -175,8 +175,8 @@ genuinely **never saw** the messages you want to restore:
 
 For those cases, point the agent at the raw Telegram history via
 [`tgcli`](https://github.com/kaosb/tgcli) — an MTProto user-account CLI that mirrors
-your real Telegram message store into a local SQLite database. This is read-as-you,
-not as a bot, so it sees everything you can see in the Telegram client.
+your real Telegram message store into a local SQLite database. This is read-as-you, not
+as a bot, so it sees everything you can see in the Telegram client.
 
 ### Install + auth
 
@@ -190,8 +190,8 @@ tgcli login
 ### Sync the chat(s) you want recallable
 
 ```bash
-# Sync a single chat by username, phone, or numeric ID
-tgcli sync --chat <chat_id_or_username> --msgs-per-chat 200
+# Sync a single chat by username, phone, or numeric ID (full history)
+tgcli sync --chat <chat_id_or_username>
 
 # Or sync the recent N messages across all chats (default 100 per chat)
 tgcli sync --msgs-per-chat 100
@@ -206,9 +206,9 @@ When `/recall` returns "no prior sessions found" but you know there's context in
 Telegram thread, fall back to a sub-agent prompt of the form:
 
 > Pull the last 50 messages from chat `<chat_id>` out of `~/.tgcli/tgcli.db`. Summarise
-> what was being discussed, key decisions, open threads, and what I most likely meant
-> by my last message. Inject the summary back as context so the agent knows where I
-> left off.
+> what was being discussed, key decisions, open threads, and what I most likely meant by
+> my last message. Inject the summary back as context so the agent knows where I left
+> off.
 
 The query the sub-agent should run:
 
@@ -236,33 +236,32 @@ LIMIT 50;
 
 Telegram has two flavours of "topic":
 
-1. **DM lanes (incl. Hermes-faked DM topics)** — the chat is a 1:1 DM
-   (positive chat_id). Telegram has no server-side topic for DMs; the whole chat is one
-   flat stream. tgcli pulls every message into one timeline indexed by `chat_id` — no
-   topic filtering needed.
-2. **Forum-supergroup topics** — supergroups with the Topics feature enabled
-   (negative `-100…` chat_ids). Each message has a `message_thread_id` that scopes it
-   to a topic lane.
+1. **DM lanes (incl. Hermes-faked DM topics)** — the chat is a 1:1 DM (positive
+   chat_id). Telegram has no server-side topic for DMs; the whole chat is one flat
+   stream. tgcli pulls every message into one timeline indexed by `chat_id` — no topic
+   filtering needed.
+2. **Forum-supergroup topics** — supergroups with the Topics feature enabled (negative
+   `-100…` chat_ids). Each message has a `message_thread_id` that scopes it to a topic
+   lane.
 
 For flavour 1 (the common `/new` recovery case), tgcli works as-is.
 
 For flavour 2, **upstream tgcli does NOT expose `message_thread_id`** — neither as a
-column in the local DB nor as a `--topic` flag on `msg ls` / `export`. The underlying
-Go library (`gotd/td`) supports forum topics fully, so this is a fixable upstream gap
+column in the local DB nor as a `--topic` flag on `msg ls` / `export`. The underlying Go
+library (`gotd/td`) supports forum topics fully, so this is a fixable upstream gap
 rather than a fundamental limit. Until that patch lands, raw-history recall in a forum
 supergroup will return the whole chat, not just the topic lane you were in. Filter
-manually in the sub-agent's prompt ("only consider messages whose text references X")
-or fall back to `/recall <phrase>` (Hermes-side FTS search) for topic-scoped recovery.
+manually in the sub-agent's prompt ("only consider messages whose text references X") or
+fall back to `/recall <phrase>` (Hermes-side FTS search) for topic-scoped recovery.
 
-See also the diagnostic recipe in any agent-side skill that documents the three
-flavours of Telegram "topic" (forum-supergroup, native DM topic, gateway-faked DM
-lane) — knowing which flavour you're looking at decides whether the topic dimension
-is even meaningful.
+See also the diagnostic recipe in any agent-side skill that documents the three flavours
+of Telegram "topic" (forum-supergroup, native DM topic, gateway-faked DM lane) — knowing
+which flavour you're looking at decides whether the topic dimension is even meaningful.
 
 ### Pitfalls
 
-- **Bot-token chats are blind to tgcli.** tgcli authenticates as your user account,
-  so it sees the chats your user is in. A bot-only channel where the user isn't a
+- **Bot-token chats are blind to tgcli.** tgcli authenticates as your user account, so
+  it sees the chats your user is in. A bot-only channel where the user isn't a
   participant won't appear.
 - **Sync is on-demand.** tgcli doesn't tail live. Run `tgcli sync --chat <id>` (or a
   whole-fleet sync) right before `/recall` if you want the freshest messages.
