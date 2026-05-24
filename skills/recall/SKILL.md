@@ -46,8 +46,8 @@ Discord, Slack, etc.).
 ```
 
 Finds the most recent session in the current thread/topic, summarises it via a
-sub-agent, and injects the summary as context. The agent now knows what was being
-worked on. You can keep going immediately.
+sub-agent, and injects the summary as context. The agent now knows what was being worked
+on. You can keep going immediately.
 
 ### Restore last N sessions
 
@@ -114,14 +114,14 @@ mid-flow.
 
 ## Modes reference
 
-| Syntax | Mode | What it finds |
-|--------|------|---------------|
-| `/recall` | thread | Last session in this thread |
-| `/recall 3` | thread | Last 3 sessions in this thread |
-| `/recall 24h` | window | All sessions active in last 24 h |
-| `/recall 7d` | window | All sessions active in last 7 d |
-| `/recall <phrase>` | topic | FTS search across all sessions |
-| `/recall <phrase> 7d` | topic + window | FTS search scoped to last 7 d |
+| Syntax                | Mode           | What it finds                    |
+| --------------------- | -------------- | -------------------------------- |
+| `/recall`             | thread         | Last session in this thread      |
+| `/recall 3`           | thread         | Last 3 sessions in this thread   |
+| `/recall 24h`         | window         | All sessions active in last 24 h |
+| `/recall 7d`          | window         | All sessions active in last 7 d  |
+| `/recall <phrase>`    | topic          | FTS search across all sessions   |
+| `/recall <phrase> 7d` | topic + window | FTS search scoped to last 7 d    |
 
 ## Pitfalls
 
@@ -131,9 +131,9 @@ mid-flow.
   summarisation; the summary will reflect the whole transcript but may miss fine detail
   from the middle. Run `/recall 2` to split across two session boundaries if precision
   matters.
-- **Topic search misses** — FTS5 searches exact substrings by default. If `/recall
-  database migration` returns nothing, try `/recall migration` (shorter phrase, more
-  matches).
+- **Topic search misses** — FTS5 searches exact substrings by default. If
+  `/recall database migration` returns nothing, try `/recall migration` (shorter phrase,
+  more matches).
 - **Wrong thread** — `/recall` (default) scopes to the current Telegram topic / Discord
   thread. If you moved to a new topic, the prior session is in a different `session_key`
   and won't appear. Use `/recall <phrase>` (topic mode) to search across threads.
