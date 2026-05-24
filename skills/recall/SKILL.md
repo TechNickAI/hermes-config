@@ -18,9 +18,9 @@ Restores context from a prior Hermes session into the current one. Useful any ti
 hit `/new` (intentionally or because a context overrun forced it) and want the agent to
 know what was being worked on.
 
-**This skill documents the `/recall` slash command**, which is built into the Hermes
-gateway. The command is available on any platform where the gateway runs (Telegram,
-Discord, Slack, etc.).
+**This skill documents the `/recall` slash command**, which ships with `hermes-agent`
+but is not yet in a tagged release — see Prerequisites. The command is available on any
+platform where the gateway runs (Telegram, Discord, Slack, etc.).
 
 ## When to use
 
@@ -32,8 +32,9 @@ Discord, Slack, etc.).
 ## Prerequisites
 
 - Hermes gateway running with a messaging platform connected (Telegram, Discord, etc.)
-- `hermes-agent` ≥ the commit that introduced `/recall`
-  ([NousResearch/hermes-agent#XXXX](https://github.com/NousResearch/hermes-agent))
+- `hermes-agent` from the `feature/recall-command` branch
+  ([TechNickAI/hermes-agent](https://github.com/TechNickAI/hermes-agent/tree/feature/recall-command))
+  — or the upstream PR once merged into `NousResearch/hermes-agent`
 - A prior session in the same thread (for thread mode) or any prior session (for topic
   mode)
 
@@ -129,8 +130,8 @@ mid-flow.
   will say "No prior sessions found." That's correct; there's nothing to pull in yet.
 - **Very long sessions** — transcripts over ~40 K tokens are chunked before
   summarisation; the summary will reflect the whole transcript but may miss fine detail
-  from the middle. Run `/recall 2` to split across two session boundaries if precision
-  matters.
+  from the middle. There is no workaround within `/recall` for this — if deep precision
+  matters, use a model with a larger context window (`/model`) before running `/recall`.
 - **Topic search misses** — FTS5 searches exact substrings by default. If
   `/recall database migration` returns nothing, try `/recall migration` (shorter phrase,
   more matches).
