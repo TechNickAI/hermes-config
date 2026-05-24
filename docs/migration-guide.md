@@ -32,6 +32,14 @@ hermes claw migrate --preset full --overwrite --migrate-secrets --yes
 # 6. Fix the migrator's model-config emission (see bug #2 — required for any custom router)
 $EDITOR ~/.hermes/config.yaml   # see "Phase 4 — fixing the model block" below
 
+# 6b. (If you used Cortex) Migrate knowledge base
+CORTEX_STORE=$(grep CORTEX_STORE_PATH ~/.config/cortex/config | cut -d= -f2-)
+rsync -av --exclude="cortex.db" --exclude="cortex.db-*" --exclude=".log" \
+  "${CORTEX_STORE}/" ~/.hermes/cortex/
+sed -i '' "s|CORTEX_STORE_PATH=.*|CORTEX_STORE_PATH=$HOME/.hermes/cortex|" \
+  ~/.config/cortex/config
+cortex setup && cortex status   # rebuild SQLite index, confirm page counts
+
 # 7. Install + start Hermes gateway
 hermes gateway install   # answer y to start + y to enable on boot
 
@@ -81,6 +89,27 @@ scp host:~/.openclaw/cron/jobs.json ./cron-jobs-internal.json 2>/dev/null
 scp host:~/.config/systemd/user/openclaw-gateway.service ./
 ssh host 'systemctl --user list-units --all "openclaw-*"' > openclaw-systemd-state.txt
 ```
+
+### 0c. Snapshot the Cortex knowledge base (if applicable)
+
+If you used Cortex, find its store path before anything else:
+
+```bash
+ssh host 'cat ~/.config/cortex/config'
+# Note CORTEX_STORE_PATH — use it as $CORTEX_STORE below
+```
+
+Pull a local copy for forensic reference (separate from what the migration writes to
+`~/.hermes/cortex/` — this is just a safety snapshot):
+
+```bash
+CORTEX_STORE=$(ssh host 'grep CORTEX_STORE_PATH ~/.config/cortex/config | cut -d= -f2-')
+ssh host "cortex status" > cortex-status-pre-migration.txt   # page counts before
+rsync -av --exclude="cortex.db" --exclude="cortex.db-*" --exclude=".log" \
+  host:${CORTEX_STORE}/ ~/migration-artifacts/openclaw-host/cortex-snapshot/
+```
+
+This gives you a clean rollback point if the migration corrupts anything.
 
 ## Phase 1 — Install Hermes
 
@@ -322,6 +351,165 @@ Don't blindly port workflows that depend on host-specific tooling. Common exampl
 
 Note in your migration log which workflows were intentionally skipped and why.
 
+## Phase 5b — Cortex knowledge base
+
+If you used the Cortex knowledge system in OpenClaw (structured markdown knowledge base
+under `~/.openclaw/workspace/memory/` or a custom `CORTEX_STORE_PATH`), migrate it to
+Hermes now — before the gateway cutover, while OpenClaw is still offline.
+
+### What Cortex is
+
+Cortex is a personal knowledge compiler: raw sources (notes, transcripts, documents)
+are ingested into a structured, interlinked markdown knowledge base. The store lives
+under a single root directory, organized by category. The `cortex` CLI script handles
+mechanical operations (scanning, hashing, triage, index rebuilding); the LLM handles
+the actual knowledge compilation guided by `schema.md`.
+
+### Where it moves
+
+In Hermes, the Cortex store lives at `~/.hermes/cortex/`, preserving the full category
+structure:
+
+```
+~/.hermes/cortex/
+  schema.md             ← operating rules (LLM instruction set)
+  index.md              ← root navigation hub
+  review-queue.md       ← items needing human review
+  cortex.db             ← SQLite state (not migrated — rebuilt by cortex setup)
+  daily/                ← conversation journals (YYYY-MM-DD.md)
+  people/               ← person entities
+  ventures/             ← projects, companies, tools
+  topics/               ← ideas, patterns, principles, domains
+  synthesis/            ← cross-cutting analysis + source digests
+  decisions/            ← choices with reasoning
+  learning/             ← procedures, self-improvement loop
+  research/             ← research notes and benchmarks
+  imports/              ← source material imports
+  audit/                ← operational audit files
+  ...                   ← any other categories from your store
+```
+
+The SQLite database (`cortex.db`) is not migrated — it's mechanical state that gets
+rebuilt from the knowledge pages themselves via `cortex setup`. Only the markdown
+files move.
+
+### 5b-1. Find your Cortex store path
+
+```bash
+# Check the config file
+cat ~/.config/cortex/config
+
+# Or grep OpenClaw's env for CORTEX_STORE_PATH
+grep CORTEX_STORE_PATH ~/.openclaw/.env ~/.openclaw/workspace/.env 2>/dev/null
+
+# Fallback: check the openclaw.json workspace path (store is usually memory/ inside it)
+grep -E '"workspace"' ~/.openclaw/openclaw.json | head -1
+```
+
+Note the path — call it `$CORTEX_STORE` below.
+
+### 5b-2. Rsync the markdown files
+
+```bash
+CORTEX_STORE=$(grep CORTEX_STORE_PATH ~/.config/cortex/config | cut -d= -f2-)
+mkdir -p ~/.hermes/cortex
+
+# Move markdown + supporting files; exclude SQLite state and temp files
+rsync -av --exclude="cortex.db" --exclude="cortex.db-*" \
+  --exclude=".log" --exclude="*.tmp" \
+  "${CORTEX_STORE}/" ~/.hermes/cortex/
+
+# Verify
+ls ~/.hermes/cortex/
+```
+
+### 5b-3. Update the cortex config
+
+The `cortex` CLI reads `~/.config/cortex/config` for `CORTEX_STORE_PATH`. Update it
+to point at the new location:
+
+```bash
+sed -i '' "s|CORTEX_STORE_PATH=.*|CORTEX_STORE_PATH=$HOME/.hermes/cortex|" \
+  ~/.config/cortex/config
+
+cat ~/.config/cortex/config   # confirm the new path
+```
+
+### 5b-4. Copy (or symlink) the cortex CLI
+
+The `cortex` script is a standalone Python script that runs via `uv`. If you kept it
+in your OpenClaw skills directory, install it somewhere on `$PATH` now:
+
+```bash
+# Option A — copy to local bin (survives OpenClaw removal)
+cp "$(find ~/.openclaw -name cortex -type f | head -1)" ~/.local/bin/cortex
+chmod +x ~/.local/bin/cortex
+
+# Option B — symlink if you'll keep openclaw-config around for reference
+ln -sf "$(find ~/.openclaw -name cortex -type f | head -1)" ~/.local/bin/cortex
+
+# Verify uv is available (cortex requires it)
+which uv || curl -LsSf https://astral.sh/uv/install.sh | sh
+cortex status
+```
+
+### 5b-5. Rebuild the SQLite index
+
+The cortex DB is mechanical state derived from the knowledge pages — rebuild it from
+scratch rather than migrating the old file:
+
+```bash
+cortex setup    # detects store path from config, initializes DB schema
+cortex status   # shows page counts by category — confirm numbers look right
+```
+
+If `cortex status` page counts match what you saw in the old store, you're good.
+
+### 5b-6. What about `MEMORY.md`?
+
+OpenClaw's `MEMORY.md` served two distinct roles that Hermes separates:
+
+| OpenClaw `MEMORY.md`                         | Hermes equivalent                             |
+| -------------------------------------------- | --------------------------------------------- |
+| Short routing table (~30 lines of pointers)  | `~/.hermes/cortex/index.md` (already migrated) |
+| Distilled long-term facts about the agent    | `~/.hermes/memories/memory.md` (native Hermes memory) |
+| Curated user profile loaded into every turn  | `~/.hermes/memories/user.md` (native Hermes memory)   |
+
+The `MEMORY.md` inside `~/.hermes/cortex/` (if any) is a cortex navigation file —
+leave it there. The separate `~/.hermes/memories/memory.md` and `user.md` are what
+Hermes injects into every session; those were handled by the migrator (Phase 3).
+
+If your MEMORY.md had a mix of routing pointers and distilled facts, split them
+manually: pointers go into `~/.hermes/cortex/index.md`, long-term facts go into
+`~/.hermes/memories/memory.md`.
+
+### 5b-7. Install the Cortex skill in Hermes
+
+The `cortex` SKILL.md teaches the agent how to use the CLI and maintain the knowledge
+base. Copy it from your OpenClaw skills into Hermes:
+
+```bash
+mkdir -p ~/.hermes/skills/cortex
+cp "$(find ~/.openclaw -path '*/skills/cortex/SKILL.md' | head -1)" \
+  ~/.hermes/skills/cortex/SKILL.md
+```
+
+Then open `~/.hermes/skills/cortex/SKILL.md` and update the store path references from
+`~/.openclaw/memory/` to `~/.hermes/cortex/`.
+
+### Pitfalls
+
+- **Don't migrate `cortex.db`.** It contains absolute paths from the old install and
+  will confuse index lookups. Let `cortex setup` rebuild it.
+- **The `daily/` directory is the journal.** `YYYY-MM-DD.md` files are raw conversation
+  logs — they all migrate as-is. Never delete them.
+- **Custom `CORTEX_STORE_PATH`.** If your store was somewhere other than
+  `~/.openclaw/workspace/memory/` (e.g. a Dropbox path), verify the `rsync` source
+  path from the config file rather than guessing.
+- **Schema.md is the LLM instruction set.** If you customized `schema.md` for your
+  own categories, those customizations migrate automatically with the rsync — no extra
+  step needed.
+
 ## Phase 6 — Gateway cutover
 
 ```bash
@@ -475,6 +663,18 @@ which openclaw                # should now print nothing
 rm -rf ~/.openclaw ~/openclaw  # adjust if your workspace was elsewhere
 ```
 
+If you migrated a Cortex store, verify it landed in Hermes before removing the source:
+
+```bash
+# Confirm the new store is populated and healthy
+cortex status
+ls ~/.hermes/cortex/ | head
+
+# Only then remove the old location (if it was separate from ~/.openclaw)
+# If CORTEX_STORE_PATH was inside ~/.openclaw, it's already covered by the rm above.
+# If it was elsewhere (e.g. a Dropbox path), leave it — it's a backup, not clutter.
+```
+
 ### 9e. Final verify
 
 ```bash
@@ -599,3 +799,8 @@ and `providers:` blocks by hand using your Phase 0 snapshot as the authoritative
 - **OpenClaw installs more than the gateway unit.** Phase 9 must enumerate all
   `openclaw-*` units (backup-s3, backup-verify, health-check, workspace-backup) and the
   gateway's `.bak` files, not just the gateway service.
+- **Cortex `cortex.db` must not be migrated.** The SQLite file contains absolute paths
+  baked to the old install. Always run `cortex setup` on the new Hermes path to rebuild
+  it clean.
+- **Cortex `daily/` journals are raw logs, not compiled knowledge.** They migrate as-is
+  and should never be deleted — they're the source material for future compilation runs.
