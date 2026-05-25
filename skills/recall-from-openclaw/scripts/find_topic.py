@@ -28,7 +28,15 @@ from pathlib import Path
 from typing import Iterable
 
 TAIL_MAX_CHARS = 50_000  # cap synthesized tail so context stays manageable
-TOPIC_FILENAME_RE = re.compile(r"^(?P<uuid>[0-9a-f-]{36})-topic-(?P<thread>\d+)\.jsonl$")
+# Match live topic transcripts AND archived reset transcripts. OpenClaw's reset flow
+# renames the prior session to ``<base>.jsonl.reset.<iso-timestamp>`` where the
+# timestamp can contain digits, ``-``, ``T``, ``:``, ``.``, and ``Z`` (e.g.
+# ``2026-05-19T20-50-48.890Z``). We deliberately match neither ``.trajectory.jsonl``
+# (different format — agent traces, not human dialog) nor ``.jsonl.bak-*`` (stale
+# within-session backups).
+TOPIC_FILENAME_RE = re.compile(
+    r"^(?P<uuid>[0-9a-f-]{36})-topic-(?P<thread>\d+)\.jsonl(?:\.reset\.[\dT:\-.Z]+)?$"
+)
 
 
 @dataclass
@@ -66,14 +74,14 @@ def _expand_sessions_dirs(base: Path) -> list[Path]:
 def candidate_session_dirs(explicit_root: str | None) -> list[Path]:
     if explicit_root:
         p = Path(explicit_root).expanduser()
+        # Reject non-directories up front so downstream globbing can't raise NotADirectoryError
+        if not p.is_dir():
+            return []
         # Accept either a direct sessions/ dir or an openclaw home dir
-        if p.name == "sessions" and p.is_dir():
+        if p.name == "sessions":
             return [p]
-        if p.is_dir():
-            expanded = _expand_sessions_dirs(p)
-            if expanded:
-                return expanded
-        return [p]
+        expanded = _expand_sessions_dirs(p)
+        return expanded if expanded else [p]
 
     out: list[Path] = []
     env = os.environ.get("OPENCLAW_HOME")
@@ -113,7 +121,13 @@ def candidate_session_dirs(explicit_root: str | None) -> list[Path]:
 def find_topic_sessions(dirs: Iterable[Path], thread_id: str) -> list[Hit]:
     hits: list[Hit] = []
     for d in dirs:
-        for f in d.glob(f"*-topic-{thread_id}.jsonl"):
+        # Belt-and-suspenders: skip anything that isn't a real directory so we never
+        # raise NotADirectoryError mid-search.
+        if not d.is_dir():
+            continue
+        # ``*-topic-<thread>.jsonl*`` covers both live ``.jsonl`` and archived
+        # ``.jsonl.reset.<ts>`` transcripts. Final filter is the regex below.
+        for f in d.glob(f"*-topic-{thread_id}.jsonl*"):
             m = TOPIC_FILENAME_RE.match(f.name)
             if not m:
                 continue
@@ -175,7 +189,6 @@ def tail_transcript(path: Path, max_chars: int) -> dict:
                 text = extract_human_text(msg.get("content"))
                 if not text.strip():
                     continue
-                counts[role] = counts.get(role, 0) + 1
                 # Strip OpenClaw's auto-injected metadata blocks ("Sender (untrusted metadata)",
                 # "Conversation info (untrusted metadata)", "Conversation context (untrusted metadata)")
                 # so the synthesized briefing sees actual conversation content, not envelope noise.
@@ -197,18 +210,34 @@ def tail_transcript(path: Path, max_chars: int) -> dict:
                         text = (text[:label_start] + text[fence_close + 3:]).lstrip()
                     else:
                         text = (text[:md_idx] + text[fence_close + 3:]).lstrip()
+                # Re-check after stripping — a message composed entirely of metadata
+                # leaves an empty string here and shouldn't count toward msg totals
+                # or land as a blank first_user/tail entry.
+                if not text.strip():
+                    continue
+                counts[role] = counts.get(role, 0) + 1
                 if first_user is None and role == "user":
                     first_user = text[:500]
                 user_msgs.append((role, text))
     except OSError as exc:
         return {"error": f"read error: {exc}"}
 
-    # Take tail under cap, prefer recent messages
+    # Take tail under cap, prefer recent messages. Hard cap so a single huge message
+    # can't blow past max_chars and flood the agent's context — truncate if needed.
     tail: list[tuple[str, str]] = []
     running = 0
     for role, text in reversed(user_msgs):
         snippet = f"[{role}]\n{text}\n\n"
-        if running + len(snippet) > max_chars and tail:
+        if running + len(snippet) > max_chars:
+            if tail:
+                break
+            # First (most-recent) message alone exceeds the cap — truncate to fit
+            # rather than emit zero tail messages.
+            overhead = len(f"[{role}]\n\n\n") + len(" …[truncated]")
+            budget = max(0, max_chars - overhead)
+            truncated = text[:budget] + " …[truncated]" if budget > 0 else " …[truncated]"
+            tail.append((role, truncated))
+            running += len(f"[{role}]\n{truncated}\n\n")
             break
         tail.append((role, text))
         running += len(snippet)
@@ -281,7 +310,17 @@ def main() -> int:
     }
 
     if not args.list_only:
-        result["transcript"] = tail_transcript(primary.path, args.max_chars)
+        transcript = tail_transcript(primary.path, args.max_chars)
+        result["transcript"] = transcript
+        # If reading the primary transcript failed, flip the overall result to
+        # not-ok so downstream consumers don't synthesize briefings from missing
+        # data. Candidates list still gives the agent something to act on
+        # (e.g. retry with --root, or try another candidate).
+        if isinstance(transcript, dict) and transcript.get("error"):
+            result["ok"] = False
+            result["error"] = f"Read failed for primary transcript: {transcript['error']}"
+            print(json.dumps(result, indent=2))
+            return 1
 
     print(json.dumps(result, indent=2))
     return 0
