@@ -45,7 +45,10 @@ class CortexRetriever:
 
     def __init__(self, store):
         self.store = store
-        self._conn = store._conn
+        # NB: do NOT cache `store._conn` here. SQLite connections are
+        # thread-affine, and CortexStore now hands out per-thread connections
+        # via a property. Resolve fresh on every call so search() works from
+        # whatever thread the agent's tool worker dispatches us on.
 
     def search(self, query: str, *, limit: int = 5, category: str | None = None, snippet_chars: int = 240) -> list[dict]:
         if not query:
@@ -72,7 +75,7 @@ class CortexRetriever:
         sql += " ORDER BY score LIMIT ?"
         params.append(limit)
         try:
-            cur = self._conn.execute(sql, params)
+            cur = self.store._conn.execute(sql, params)
         except Exception as e:
             logger.debug("CortexRetriever: FTS search failed (%s) for query=%r", e, fts_q)
             return []

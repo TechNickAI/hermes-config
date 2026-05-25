@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -108,15 +109,49 @@ class CortexStore:
             (self.store_path / cat).mkdir(parents=True, exist_ok=True)
 
         self.db_path = Path(db_path).expanduser() if db_path else (self.store_path / DEFAULT_DB_FILENAME)
-        self._conn = sqlite3.connect(str(self.db_path))
-        self._conn.row_factory = sqlite3.Row
-        self._init_schema()
-        self._reindex_changed()
+        # SQLite connections are thread-affine: a connection created on thread A
+        # raises ProgrammingError when used from thread B. The Hermes gateway
+        # pre-warms the store on its main thread but tool calls dispatch from a
+        # worker thread, so we keep one connection per thread in TLS. Writes are
+        # additionally serialised with a process-wide lock so the FTS5 reindex
+        # path (DELETE + INSERT OR REPLACE) stays consistent across threads.
+        self._tls = threading.local()
+        self._write_lock = threading.Lock()
+        # Open on the constructing thread so _init_schema / _reindex_changed
+        # below run against a real connection.
+        conn = self._get_conn()
+        self._init_schema(conn)
+        self._reindex_changed(conn)
+
+    # -- Connection management --------------------------------------------
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Return a sqlite3 connection bound to the calling thread.
+
+        Connections are cached in ``threading.local`` so each thread reuses its
+        own handle for the life of the store. ``check_same_thread=True`` (the
+        default) is fine because we never share a connection across threads.
+        """
+        conn = getattr(self._tls, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.db_path))
+            conn.row_factory = sqlite3.Row
+            self._tls.conn = conn
+        return conn
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """Back-compat shim — older callers (e.g. CortexRetriever) read
+        ``store._conn`` directly. Route them through the per-thread getter so
+        they pick up a connection bound to the current thread instead of the
+        one the store was constructed on."""
+        return self._get_conn()
 
     # -- Schema ------------------------------------------------------------
 
-    def _init_schema(self) -> None:
-        self._conn.executescript("""
+    def _init_schema(self, conn: sqlite3.Connection | None = None) -> None:
+        conn = conn or self._get_conn()
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS pages (
                 rel_path TEXT PRIMARY KEY,
                 category TEXT NOT NULL,
@@ -150,78 +185,84 @@ class CortexStore:
                 VALUES (new.rowid, new.rel_path, new.title, new.tags, new.body);
             END;
         """)
-        self._conn.commit()
+        conn.commit()
 
     # -- Indexing ----------------------------------------------------------
 
-    def _reindex_changed(self) -> int:
+    def _reindex_changed(self, conn: sqlite3.Connection | None = None) -> int:
         """Walk the store, re-index files whose mtime changed. Returns count reindexed.
 
         Recursively scans every `*.md` file under the store root. Directory names in
         SKIP_DIRS (`.git/`, `node_modules/`, etc.) and files matching
         `_should_skip_file` are excluded. No category whitelist — any subdirectory
         becomes a category automatically.
+
+        All write paths (INSERT OR REPLACE / DELETE / COMMIT) are wrapped in the
+        store-wide write lock so concurrent threads can't interleave updates to
+        the FTS5 index.
         """
-        # Snapshot indexed mtimes
-        cur = self._conn.execute("SELECT rel_path, mtime FROM pages")
-        indexed = {row["rel_path"]: row["mtime"] for row in cur.fetchall()}
+        conn = conn or self._get_conn()
+        with self._write_lock:
+            # Snapshot indexed mtimes
+            cur = conn.execute("SELECT rel_path, mtime FROM pages")
+            indexed = {row["rel_path"]: row["mtime"] for row in cur.fetchall()}
 
-        seen: set[str] = set()
-        changed = 0
-        for dirpath, dirnames, filenames in os.walk(self.store_path):
-            # Prune skip dirs in-place so we don't descend into them
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
-            for fname in filenames:
-                if not fname.endswith(".md") or _should_skip_file(fname):
-                    continue
-                p = Path(dirpath) / fname
-                try:
-                    rel = str(p.relative_to(self.store_path))
-                except ValueError:
-                    continue
-                seen.add(rel)
-                try:
-                    mtime = p.stat().st_mtime
-                except OSError:
-                    continue
-                if rel in indexed and abs(indexed[rel] - mtime) < 1e-6:
-                    continue
-                # (Re)index this page
-                try:
-                    text = p.read_text(encoding="utf-8")
-                except Exception as e:
-                    logger.debug("CortexStore: failed to read %s: %s", rel, e)
-                    continue
-                fm, body = _parse_frontmatter(text)
-                title = str(fm.get("title", "")) or p.stem.replace("-", " ").title()
-                tags = fm.get("tags", []) or []
-                if isinstance(tags, str):
-                    tags_str = tags
-                else:
-                    tags_str = ", ".join(str(t) for t in tags)
-                # Category = top-level dir; top-level loose files get category "_root"
-                parts = rel.split("/", 1)
-                category = parts[0] if len(parts) > 1 else "_root"
-                try:
-                    self._conn.execute(
-                        "INSERT OR REPLACE INTO pages (rel_path, category, title, tags, body, mtime, size) VALUES (?,?,?,?,?,?,?)",
-                        (rel, category, title, tags_str, body, mtime, p.stat().st_size),
-                    )
+            seen: set[str] = set()
+            changed = 0
+            for dirpath, dirnames, filenames in os.walk(self.store_path):
+                # Prune skip dirs in-place so we don't descend into them
+                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+                for fname in filenames:
+                    if not fname.endswith(".md") or _should_skip_file(fname):
+                        continue
+                    p = Path(dirpath) / fname
+                    try:
+                        rel = str(p.relative_to(self.store_path))
+                    except ValueError:
+                        continue
+                    seen.add(rel)
+                    try:
+                        mtime = p.stat().st_mtime
+                    except OSError:
+                        continue
+                    if rel in indexed and abs(indexed[rel] - mtime) < 1e-6:
+                        continue
+                    # (Re)index this page
+                    try:
+                        text = p.read_text(encoding="utf-8")
+                    except Exception as e:
+                        logger.debug("CortexStore: failed to read %s: %s", rel, e)
+                        continue
+                    fm, body = _parse_frontmatter(text)
+                    title = str(fm.get("title", "")) or p.stem.replace("-", " ").title()
+                    tags = fm.get("tags", []) or []
+                    if isinstance(tags, str):
+                        tags_str = tags
+                    else:
+                        tags_str = ", ".join(str(t) for t in tags)
+                    # Category = top-level dir; top-level loose files get category "_root"
+                    parts = rel.split("/", 1)
+                    category = parts[0] if len(parts) > 1 else "_root"
+                    try:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO pages (rel_path, category, title, tags, body, mtime, size) VALUES (?,?,?,?,?,?,?)",
+                            (rel, category, title, tags_str, body, mtime, p.stat().st_size),
+                        )
+                        changed += 1
+                    except sqlite3.Error as e:
+                        logger.debug("CortexStore: failed to index %s: %s", rel, e)
+                        continue
+
+            # Remove pages that no longer exist on disk
+            for rel in list(indexed):
+                if rel not in seen:
+                    conn.execute("DELETE FROM pages WHERE rel_path = ?", (rel,))
                     changed += 1
-                except sqlite3.Error as e:
-                    logger.debug("CortexStore: failed to index %s: %s", rel, e)
-                    continue
 
-        # Remove pages that no longer exist on disk
-        for rel in list(indexed):
-            if rel not in seen:
-                self._conn.execute("DELETE FROM pages WHERE rel_path = ?", (rel,))
-                changed += 1
-
-        if changed:
-            self._conn.commit()
-            logger.info("CortexStore: reindexed %d pages", changed)
-        return changed
+            if changed:
+                conn.commit()
+                logger.info("CortexStore: reindexed %d pages", changed)
+            return changed
 
     # -- Page CRUD ---------------------------------------------------------
 
@@ -304,7 +345,18 @@ class CortexStore:
         return {row["category"]: row["n"] for row in cur.fetchall()}
 
     def close(self) -> None:
-        try:
-            self._conn.close()
-        except Exception:
-            pass
+        """Close the calling thread's connection (if any).
+
+        Per-thread connections opened from other threads are released when
+        those threads terminate; SQLite cleans up the underlying handle on
+        Python finaliser. This matches the typical shutdown sequence where
+        the gateway tears the store down from the same thread it constructed
+        it on.
+        """
+        conn = getattr(self._tls, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._tls.conn = None
