@@ -30,8 +30,10 @@ The user ran `/recall-from-openclaw` inside a Telegram topic (forum supergroup t
 a DM topic that maps to a `message_thread_id`). Their previous bot was OpenClaw; their
 current bot is Hermes; this topic has prior history that needs to come across.
 
-If they pass an argument (`/recall-from-openclaw <hint>`), treat it as a search phrase
-to disambiguate when multiple transcripts match.
+If they pass an argument (`/recall-from-openclaw <hint>`), treat it first as a possible
+explicit OpenClaw thread ID (digits only, e.g. `/recall-from-openclaw 88962`) — if so,
+override `$HERMES_SESSION_THREAD_ID` with that value and run the finder against it.
+Otherwise treat it as a search phrase to disambiguate when multiple transcripts match.
 
 ## What to do
 
@@ -43,6 +45,15 @@ environment and probes the standard OpenClaw session locations:
 ```bash
 python3 "${HERMES_SKILL_DIR}/scripts/find_topic.py"
 ```
+
+If the user passed a digits-only argument (an explicit old thread ID), override:
+
+```bash
+python3 "${HERMES_SKILL_DIR}/scripts/find_topic.py" --thread-id <USER_ARG> --skip-heartbeats
+```
+
+Always pass `--skip-heartbeats` so cron/heartbeat sessions don't shadow real
+conversations.
 
 The output is JSON. The shape you care about:
 
