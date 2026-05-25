@@ -14,16 +14,16 @@ metadata:
 
 # Recall
 
-**Mission:** Restore as much relevant context as possible. Never return empty-handed.
-If one source has nothing, try the next. Synthesize what you find into a clear briefing
-so the conversation can continue naturally.
+**Mission:** Restore as much relevant context as possible. Never return empty-handed. If
+one source has nothing, try the next. Synthesize what you find into a clear briefing so
+the conversation can continue naturally.
 
 ## When invoked
 
-The user ran `/recall` (possibly with a topic hint like `/recall project X status`
-or `/recall alice relationship analysis`) after a `/new` reset or context overrun.
-They want to pick up where they left off. Your job is to find that thread and hand
-it back to them.
+The user ran `/recall` (possibly with a topic hint like `/recall project X status` or
+`/recall alice relationship analysis`) after a `/new` reset or context overrun. They
+want to pick up where they left off. Your job is to find that thread and hand it back to
+them.
 
 ## What to do
 
@@ -35,14 +35,16 @@ until you have enough to give a useful briefing, or until all sources are exhaus
 Use `session_search` to find prior sessions matching the topic or recent activity:
 
 - If the user gave a topic hint, search for it: `session_search(query="<topic hint>")`
-- Also search for related terms if the first query is thin — break the phrase apart, try synonyms
-- Try a broad recency search with no query to see what was recently worked on: `session_search()` (no args = recent sessions)
+- Also search for related terms if the first query is thin — break the phrase apart, try
+  synonyms
+- Try a broad recency search with no query to see what was recently worked on:
+  `session_search()` (no args = recent sessions)
 - Look at multiple results, not just the top one
 
 ### 2. Hermes session DB (if session_search has matches)
 
-If `session_search` returns matching sessions, load the transcript for the most
-relevant one(s). Read through it and extract:
+If `session_search` returns matching sessions, load the transcript for the most relevant
+one(s). Read through it and extract:
 
 - What was being worked on
 - Key decisions or conclusions reached
@@ -63,7 +65,11 @@ If sessions and memory come up empty but the user clearly remembers a conversati
 happening, it may predate Hermes or have been with a different bot. Use tgcli:
 
 ```bash
+# Quick scan (recent 200 msgs) — fast, good for recent-ish context
 tgcli sync --chat <chat_id> --msgs-per-chat 200
+
+# Deep recovery (full history) — use when context predates Hermes or may be months old
+tgcli sync --chat <chat_id>
 ```
 
 Then query `~/.tgcli/tgcli.db`:
@@ -85,10 +91,8 @@ Once you have gathered what's available, produce a **context briefing**:
 
 > **Recalled context — [topic]**
 >
-> **What was being worked on:** ...
-> **Key decisions / conclusions:** ...
-> **Open threads:** ...
-> **What to do next:** ...
+> **What was being worked on:** ... **Key decisions / conclusions:** ... **Open
+> threads:** ... **What to do next:** ...
 
 Inject this briefing into the session so it's visible. Then ask if the user wants to
 pick up from there or if they need anything clarified.
@@ -101,13 +105,13 @@ When was it roughly? That's still more useful than a dead end.
 
 `/recall` is a gateway slash command. Common invocations:
 
-| Syntax | What it does |
-| --- | --- |
-| `/recall` | Find the most recent prior session in this thread |
-| `/recall 3` | Summarise the last 3 sessions in this thread |
-| `/recall 7d` | All sessions active in the last 7 days |
-| `/recall <phrase>` | Search all sessions for the phrase, then fall through to memory/tgcli if thin |
-| `/recall <phrase> 7d` | Same, scoped to last 7 days |
+| Syntax                | What it does                                                                  |
+| --------------------- | ----------------------------------------------------------------------------- |
+| `/recall`             | Find the most recent prior session in this thread                             |
+| `/recall 3`           | Summarise the last 3 sessions in this thread                                  |
+| `/recall 7d`          | All sessions active in the last 7 days                                        |
+| `/recall <phrase>`    | Search all sessions for the phrase, then fall through to memory/tgcli if thin |
+| `/recall <phrase> 7d` | Same, scoped to last 7 days                                                   |
 
 **After `/new`**, if a prior session exists in the same thread, the agent automatically
 appends:
@@ -119,7 +123,8 @@ appends:
 Use when sessions are gone, predate Hermes, or were with a different bot.
 
 `tgcli` is an MTProto user-account CLI that mirrors your Telegram history into local
-SQLite. It reads as you — not as a bot — so it sees everything your Telegram client sees.
+SQLite. It reads as you — not as a bot — so it sees everything your Telegram client
+sees.
 
 ### Install + auth
 
@@ -131,11 +136,15 @@ tgcli login
 ### Sync
 
 ```bash
+# Recent window (fast)
 tgcli sync --chat <chat_id_or_username> --msgs-per-chat 200
+
+# Full history — omit the flag when recovering older/pre-Hermes conversations
+tgcli sync --chat <chat_id_or_username>
 ```
 
-Messages land in `~/.tgcli/tgcli.db` (table: `messages`, columns: `chat_id,
-chat_name, msg_id, sender_id, sender_name, ts, from_me, text`).
+Messages land in `~/.tgcli/tgcli.db` (table: `messages`, columns:
+`chat_id, chat_name, msg_id, sender_id, sender_name, ts, from_me, text`).
 
 ### DMs vs forum supergroups
 
@@ -158,7 +167,7 @@ chat_name, msg_id, sender_id, sender_name, ts, from_me, text`).
 - **Topic search misses on exact phrase** — if `/recall database migration` finds
   nothing, try shorter terms (`/recall migration`), then try `session_search` with
   individual keywords, then check memory.
-- **Wrong thread scope** — `/recall` (default) scopes to the current thread. Use a
-  topic phrase to search across threads.
+- **Wrong thread scope** — `/recall` (default) scopes to the current thread. Use a topic
+  phrase to search across threads.
 - **Very long transcripts** — chunk before summarising if needed; the summary can still
   cover the whole transcript.
