@@ -125,6 +125,12 @@ If the finder script returns no hits, **don't stop there**. Fall through:
   can re-read more of the file with a wider `--max-chars`.
 - **Stop spamming the briefing.** Run this **once** per topic. After the briefing is
   injected, Hermes' own session memory takes over. Don't re-recall on every turn.
+- **Heartbeat/cron sessions float to the top.** OpenClaw ran scheduled heartbeat polls
+  in every topic. If `primary_is_heartbeat: true` is in the script output (or if
+  `first_user_message` is `[OpenClaw heartbeat poll]`), the newest session is a cron
+  artifact, not a real conversation. Re-run with `--skip-heartbeats` to automatically
+  walk past cron sessions to the next substantive candidate. You can also run
+  `--list-only` and pick the largest candidate manually.
 - **Don't act on stale state.** The transcript ended at some point in the past. If it
   mentions "I'll restart Drishti in 5 minutes," that already happened (or didn't) —
   treat the prior intent as historical, not as a live to-do, until the user confirms.

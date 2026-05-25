@@ -259,6 +259,8 @@ def main() -> int:
                     help="Explicit absolute path to an OpenClaw sessions/ dir (skips auto-discovery)")
     ap.add_argument("--list-only", action="store_true",
                     help="List candidate hits but don't read transcripts")
+    ap.add_argument("--skip-heartbeats", action="store_true",
+                    help="Skip candidates whose first user message is a heartbeat/cron poll")
     ap.add_argument("--max-chars", type=int, default=TAIL_MAX_CHARS,
                     help=f"Cap synthesized tail size in characters (default: {TAIL_MAX_CHARS})")
     args = ap.parse_args()
@@ -293,6 +295,15 @@ def main() -> int:
         return 1
 
     primary = hits[0]
+    # When --skip-heartbeats is set, walk candidates until we find one that isn't
+    # a pure heartbeat/cron session (or exhaust the list).
+    if args.skip_heartbeats and not args.list_only:
+        for candidate in hits:
+            sniff = tail_transcript(candidate.path, min(args.max_chars, 2000))
+            first = (sniff.get("first_user_message") or "").strip().lower()
+            if not (first.startswith("[openclaw heartbeat") or first.startswith("heartbeat")):
+                primary = candidate
+                break
     result = {
         "ok": True,
         "thread_id": thread_id,
@@ -321,6 +332,11 @@ def main() -> int:
             result["error"] = f"Read failed for primary transcript: {transcript['error']}"
             print(json.dumps(result, indent=2))
             return 1
+        # Flag cron/heartbeat primaries so the agent can fall through to the next
+        # substantive candidate rather than synthesising a briefing from poll noise.
+        first = (transcript.get("first_user_message") or "").strip()
+        if first.lower().startswith("[openclaw heartbeat") or first.lower().startswith("heartbeat"):
+            result["primary_is_heartbeat"] = True
 
     print(json.dumps(result, indent=2))
     return 0
