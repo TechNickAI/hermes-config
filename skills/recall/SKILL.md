@@ -79,6 +79,15 @@ LIMIT 50;
 
 See the [tgcli section](#raw-telegram-history-fallback-tgcli) below for setup details.
 
+### 4b. OpenClaw transcript (migration bridge — one-time)
+
+If the user recently migrated from OpenClaw to Hermes and is in a Telegram topic that
+predates the cutover, the prior history lives in OpenClaw's local jsonl files, not
+in Hermes' session DB. Check whether the `recall-from-openclaw` skill is available; if
+so, suggest `/recall-from-openclaw` and let that skill do the discovery + briefing.
+This is a **one-time-per-topic** bridge — once the user has run it, future recalls in
+that topic come back here.
+
 ### 5. Synthesize and brief
 
 Once you have gathered what's available, produce a **context briefing**:
