@@ -51,6 +51,52 @@ one(s). Read through it and extract:
 - Open questions or blockers left unresolved
 - What the user's last message / intent was
 
+### 2b. Raw session jsonl (when summaries are too lossy)
+
+`session_search` returns **summaries**, not transcripts. When the previous session ended
+mid-task and you need exact state — the actual file paths touched, the last todo state,
+the precise question the assistant was waiting on, the diff that was proposed but not
+yet applied — the summary will be too coarse. Go to the raw jsonl.
+
+Sessions live at:
+
+```
+~/.hermes/profiles/<profile>/sessions/<session_id>.jsonl
+```
+
+Each line is one JSON object (`session_meta`, `user`, `assistant`, `tool`). `content` is
+either a string or a list of `{type, text}` chunks. Read the last N messages to recover
+exact state:
+
+```python
+import json, os
+path = os.path.expanduser("~/.hermes/profiles/<profile>/sessions/<session_id>.jsonl")
+msgs = [json.loads(l) for l in open(path) if l.strip()]
+for i, m in enumerate(msgs[-6:], start=len(msgs)-6):
+    role = m.get('role', '?')
+    content = m.get('content', '')
+    if isinstance(content, list):
+        text = ' '.join(c.get('text', '') if isinstance(c, dict) else str(c) for c in content)
+    else:
+        text = str(content)
+    print(f"=== [{i}] {role} ({len(text)}ch) ===")
+    print(text[:3500])
+```
+
+**When this beats session_search:**
+
+- Compaction failed mid-session and the summary is a stub
+- A fleet rollout / multi-step task paused mid-sequence; you need the exact "where"
+- The last assistant message was a pause-for-approval; you need the proposed diff
+  verbatim
+- Tool outputs (which summaries drop) hold the recon data you'd otherwise re-run
+
+**Finding the file:** `session_search` returns `session_id`. Construct the path with the
+active profile, or `find $HOME/.hermes -name "<session_id>*.jsonl"` if unsure which
+profile. The shell sandbox sometimes resolves `~` to a fake home — when in doubt, expand
+`$HOME` explicitly (`os.path.expanduser` in Python) so reads always hit the real home
+directory.
+
 ### 3. Memory and cortex
 
 Check what the agent already knows that's relevant:
@@ -65,11 +111,7 @@ If sessions and memory come up empty but the user clearly remembers a conversati
 happening, it may predate Hermes or have been with a different bot. Use tgcli:
 
 ```bash
-# Quick scan (recent 200 msgs) — fast, good for recent-ish context
 tgcli sync --chat <chat_id> --msgs-per-chat 200
-
-# Deep recovery (full history) — use when context predates Hermes or may be months old
-tgcli sync --chat <chat_id>
 ```
 
 Then query `~/.tgcli/tgcli.db`:
@@ -103,15 +145,27 @@ When was it roughly? That's still more useful than a dead end.
 
 ## The /recall command
 
-`/recall` is a gateway slash command. Common invocations:
+`/recall` is a gateway slash command. As of the 2026-05-25 rewrite, args are
+**free-form** — no rigid mode parsing. Python gathers a candidate pool (parent-chain
+sessions, FTS hits if the args contain letters, recent same-platform sessions for
+backfill), then one LLM call interprets the args and writes the briefing. See
+`gateway/recall.py` for the implementation.
 
-| Syntax                | What it does                                                                  |
-| --------------------- | ----------------------------------------------------------------------------- |
-| `/recall`             | Find the most recent prior session in this thread                             |
-| `/recall 3`           | Summarise the last 3 sessions in this thread                                  |
-| `/recall 7d`          | All sessions active in the last 7 days                                        |
-| `/recall <phrase>`    | Search all sessions for the phrase, then fall through to memory/tgcli if thin |
-| `/recall <phrase> 7d` | Same, scoped to last 7 days                                                   |
+Common invocations (the agent decides what they mean):
+
+| Syntax                | What the agent does                             |
+| --------------------- | ----------------------------------------------- |
+| `/recall`             | Recent in-thread sessions (parent chain)        |
+| `/recall 3`           | Last few in-thread sessions                     |
+| `/recall 7d`          | Sessions whose age fits the window              |
+| `/recall <phrase>`    | Topic search (in-thread + cross-thread via FTS) |
+| `/recall <phrase> 7d` | Topic + window, combined                        |
+
+If you're editing `gateway/recall.py`, keep this principle: **Python = mechanical
+candidate gathering. LLM = judgment.** Don't reintroduce regex mode parsing or a
+two-stage hunter+summarizer — that's the design the 2026-05-25 rewrite explicitly
+removed. The maintainer's framing: _"way too complicated to do all the parsing in
+Python. Just have the LLM do the work."_
 
 **After `/new`**, if a prior session exists in the same thread, the agent automatically
 appends:
@@ -136,11 +190,7 @@ tgcli login
 ### Sync
 
 ```bash
-# Recent window (fast)
 tgcli sync --chat <chat_id_or_username> --msgs-per-chat 200
-
-# Full history — omit the flag when recovering older/pre-Hermes conversations
-tgcli sync --chat <chat_id_or_username>
 ```
 
 Messages land in `~/.tgcli/tgcli.db` (table: `messages`, columns:
