@@ -292,6 +292,44 @@ hermes config show | grep -A1 "^◆ Model"
 
 You should see your intended model block reflected, not a list-style placeholder.
 
+### 4f. Disable auto session-reset (recommended)
+
+Hermes ships with `session_reset.mode: both`, which clears a thread's conversation
+history when **either** of two timers fires:
+
+- **Idle:** 24 hours since the thread's last message.
+- **Daily:** at `at_hour` local time (default `4` = 4am), any thread last touched before
+  that hour today is reset.
+
+For single-thread / low-volume users this is fine. For operators living across many
+Telegram topics, Discord threads, or Slack channels, the daily-reset rule fires every
+morning on every thread you didn't message after 4am — and produces the very confusing
+"_session was automatically reset by the daily schedule_" notice when you return to a
+thread that was still mid-conversation.
+
+The recommended posture for active multi-topic users is to **disable auto-reset
+entirely** and let Hermes' built-in context compaction be the only mechanism that bounds
+conversation length:
+
+```yaml
+session_reset:
+  mode: none           # disabled — rely on compaction instead
+  # Other keys (at_hour, idle_minutes, notify) are ignored when mode: none
+```
+
+Apply on every machine you operate (`~/.hermes/config.yaml` — per-profile, if you use
+`HERMES_PROFILE`, also `~/.hermes/profiles/<profile>/config.yaml`). No gateway restart
+is required for this change to take effect on the next message into a new session;
+existing sessions are unaffected by the policy change going forward.
+
+**Trade-off:** without auto-reset, a genuinely abandoned thread will retain its full
+history until you `/reset` it manually. Compaction still bounds context length, so this
+is a state-bloat concern, not a context-window one.
+
+**Where this lives in code:** the policy is defined in `gateway/config.py`
+(`SessionResetPolicy`) and evaluated in `gateway/session.py` (`_should_reset`). When
+`mode: none`, both the idle and daily branches short-circuit.
+
 ## Phase 5 — Workflows → Skills
 
 The migrator does **not** port OpenClaw workflows (`workspace/workflows/<name>/`). You
