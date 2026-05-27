@@ -7,7 +7,7 @@ description: >
   sidecar conventions, exposing apps publicly via Funnel, Hermes dashboards behind a
   password, and the recurring pitfalls (Tailscale "serve reset" wars, the PM2 $HOME
   trap, funnel-eligible ports, strip-prefix requirements).
-version: 0.1.0
+version: 0.1.1
 license: MIT
 metadata:
   hermes:
@@ -341,14 +341,25 @@ that supervises nothing.
 **Always export this first:**
 
 ```bash
-export PM2_HOME=$HOME/.pm2   # on a real shell — under Hermes, hardcode the user's real home
+# Real shell only — DO NOT use this under Hermes (both $HOME and ~ expand to the rewritten profile home):
+export PM2_HOME=$HOME/.pm2
 ```
 
-If you're calling PM2 from inside a Hermes tool environment, hardcode the absolute path:
+If you're calling PM2 from inside a Hermes tool environment, hardcode the absolute path
+with **no shell expansion** — neither `~` nor `$HOME` resolves to the user's real home
+under the rewritten environment:
 
 ```bash
-export PM2_HOME=~/.pm2
-# (resolves under your real user, NOT the rewritten Hermes profile home)
+# Substitute your real username; do NOT use ~ or $HOME here.
+export PM2_HOME=/Users/<your-username>/.pm2     # macOS
+# export PM2_HOME=/home/<your-username>/.pm2    # Linux
+```
+
+Quick sanity check after exporting — this should print the real user's home, not a
+`.hermes/profiles/...` path:
+
+```bash
+echo "$PM2_HOME"
 ```
 
 Detect the trap:
@@ -360,9 +371,9 @@ ps -ef | grep "PM2.*God" | grep -v grep
 Two daemons with different `$HOME` paths = you spawned a shadow. Clean up:
 
 ```bash
-pm2 kill                              # kills the shadow
-export PM2_HOME=~/.pm2                # the real one
-pm2 list                              # now shows the actual fleet
+pm2 kill                                  # kills the shadow
+export PM2_HOME=/Users/<your-username>/.pm2   # the real one — literal path, no ~ or $HOME
+pm2 list                                  # now shows the actual fleet
 ```
 
 Same trap applies to skill-asset paths: `~/openclaw-apps/...` resolves under the
@@ -379,7 +390,7 @@ Changing a password in `ecosystem.config.js` and running
 To actually reload:
 
 ```bash
-export PM2_HOME=~/.pm2
+export PM2_HOME=/Users/<your-username>/.pm2   # literal path — no ~ or $HOME under Hermes
 pm2 delete auth-service
 pm2 start ~/openclaw-apps/ecosystem.config.js --only auth-service
 ```
