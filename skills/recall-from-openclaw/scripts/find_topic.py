@@ -28,7 +28,13 @@ from pathlib import Path
 from typing import Iterable
 
 TAIL_MAX_CHARS = 50_000  # cap synthesized tail so context stays manageable
-TOPIC_FILENAME_RE = re.compile(r"^(?P<uuid>[0-9a-f-]{36})-topic-(?P<thread>\d+)\.jsonl$")
+# Match both live topic transcripts and archived reset rotations:
+#   <uuid>-topic-<thread>.jsonl
+#   <uuid>-topic-<thread>.jsonl.reset.<iso-timestamp>
+TOPIC_FILENAME_RE = re.compile(
+    r"^(?P<uuid>[0-9a-f-]{36})-topic-(?P<thread>\d+)"
+    r"\.jsonl(?P<reset>\.reset\.[^/]+)?$"
+)
 
 
 @dataclass
@@ -38,6 +44,7 @@ class Hit:
     uuid: str
     size: int
     mtime: float
+    is_reset: bool = False
 
 
 def _expand_sessions_dirs(base: Path) -> list[Path]:
@@ -112,17 +119,33 @@ def candidate_session_dirs(explicit_root: str | None) -> list[Path]:
 
 def find_topic_sessions(dirs: Iterable[Path], thread_id: str) -> list[Hit]:
     hits: list[Hit] = []
+    seen: set[Path] = set()
+    # Scan for both live transcripts AND archived reset rotations.
+    # OpenClaw rotates `<uuid>-topic-<tid>.jsonl` to `<uuid>-topic-<tid>.jsonl.reset.<iso>`
+    # on session reset. Reset archives are the only remaining record of pre-reset
+    # conversation history — must be discoverable or post-reset topics return nothing.
+    patterns = (f"*-topic-{thread_id}.jsonl", f"*-topic-{thread_id}.jsonl.reset.*")
     for d in dirs:
-        for f in d.glob(f"*-topic-{thread_id}.jsonl"):
-            m = TOPIC_FILENAME_RE.match(f.name)
-            if not m:
-                continue
-            try:
-                st = f.stat()
-            except OSError:
-                continue
-            hits.append(Hit(path=f, thread_id=m.group("thread"), uuid=m.group("uuid"),
-                            size=st.st_size, mtime=st.st_mtime))
+        for pattern in patterns:
+            for f in d.glob(pattern):
+                if f in seen:
+                    continue
+                seen.add(f)
+                m = TOPIC_FILENAME_RE.match(f.name)
+                if not m:
+                    continue
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                hits.append(Hit(
+                    path=f,
+                    thread_id=m.group("thread"),
+                    uuid=m.group("uuid"),
+                    size=st.st_size,
+                    mtime=st.st_mtime,
+                    is_reset=bool(m.group("reset")),
+                ))
     # Newest first
     hits.sort(key=lambda h: -h.mtime)
     return hits
@@ -236,6 +259,39 @@ def _looks_like_heartbeat(first_user: str | None) -> bool:
     return any(head.startswith(m) for m in HEARTBEAT_MARKERS)
 
 
+def _is_real_conversation(tail: dict | None) -> bool:
+    """True iff this tail looks like a usable, non-heartbeat conversation.
+
+    A candidate counts only if:
+      - the read succeeded (no ``error`` key),
+      - the tail surfaced at least one user message (``first_user_message`` set),
+      - and that first user message is not a heartbeat marker.
+    Without this guard, ``--skip-heartbeats`` happily promotes empty / errored
+    transcripts as the new primary because their ``first_user_message`` is None.
+    """
+    if not tail or tail.get("error"):
+        return False
+    if not tail.get("first_user_message"):
+        return False
+    return not _looks_like_heartbeat(tail.get("first_user_message"))
+
+
+def _is_skip_candidate(tail: dict | None) -> bool:
+    """True iff a candidate should be SKIPPED in --skip-heartbeats mode.
+
+    Skip when the tail is unreadable/empty OR opens with a heartbeat marker.
+    These all share the same UX failure: they're not the "real" conversation
+    the operator wanted to recall.
+    """
+    if not tail:
+        return True
+    if tail.get("error"):
+        return True
+    if not tail.get("first_user_message"):
+        return True
+    return _looks_like_heartbeat(tail.get("first_user_message"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Find an OpenClaw session by Telegram thread id")
     ap.add_argument("--thread-id", default=os.environ.get("HERMES_SESSION_THREAD_ID", ""),
@@ -288,17 +344,26 @@ def main() -> int:
     )
 
     skipped: list[str] = []
-    if args.skip_heartbeats and not args.list_only and primary_is_heartbeat:
-        # Walk forward through candidates until we find one that doesn't open with a heartbeat
+    walk_exhausted = False
+    if args.skip_heartbeats and not args.list_only and _is_skip_candidate(primary_tail):
+        # Walk forward through candidates until we find a real, readable, non-heartbeat
+        # conversation. Empty tails, read errors, and heartbeat-only transcripts are all
+        # skipped — without this, the walk happily promotes an errored file as primary.
+        found_real = False
         for h in hits[1:]:
             t = tail_transcript(h.path, args.max_chars)
-            if not _looks_like_heartbeat(t.get("first_user_message")):
+            if _is_real_conversation(t):
                 skipped.append(str(primary.path))
                 primary = h
                 primary_tail = t
                 primary_is_heartbeat = False
+                found_real = True
                 break
             skipped.append(str(h.path))
+        if not found_real:
+            # Every candidate was skip-worthy — surface the walk_exhausted flag so the
+            # skill text / caller knows the "success" is degraded, not a real recall.
+            walk_exhausted = True
 
     result = {
         "ok": True,
@@ -310,14 +375,22 @@ def main() -> int:
                 "uuid": h.uuid,
                 "size_bytes": h.size,
                 "mtime_iso": __import__("datetime").datetime.fromtimestamp(h.mtime).isoformat(timespec="seconds"),
+                "is_reset_archive": h.is_reset,
             }
             for h in hits
         ],
         "primary": str(primary.path),
         "primary_is_heartbeat": primary_is_heartbeat,
+        "primary_is_reset_archive": primary.is_reset,
     }
     if skipped:
         result["skipped_heartbeat_sessions"] = skipped
+    if walk_exhausted:
+        result["walk_exhausted"] = True
+        result["warning"] = (
+            "--skip-heartbeats exhausted all candidates without finding a real "
+            "conversation; primary is still a heartbeat/empty/errored transcript."
+        )
 
     if primary_tail is not None:
         result["transcript"] = primary_tail
