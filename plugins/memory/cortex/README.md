@@ -1,19 +1,29 @@
 # Cortex Memory Provider
 
-A Hermes [MemoryProvider plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/memory-provider-plugin) backed by a hand-curated markdown knowledge base.
+A Hermes
+[MemoryProvider plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/memory-provider-plugin)
+backed by a hand-curated markdown knowledge base.
 
-Cortex is a personal knowledge compiler: pages organized into `people/`, `ventures/`, `topics/`, `decisions/`, `synthesis/`, `learning/`, `research/`, plus a `daily/` journal. Each page is markdown with YAML frontmatter (title, tags). Unlike server-backed memory providers (Mem0, Supermemory, Honcho), the KB is a regular filesystem you can `cd` into, edit by hand, version with git, and read with any tool.
+Cortex is a personal knowledge compiler: pages organized into `people/`, `ventures/`,
+`topics/`, `decisions/`, `synthesis/`, `learning/`, `research/`, plus a `daily/`
+journal. Each page is markdown with YAML frontmatter (title, tags). Unlike server-backed
+memory providers (Mem0, Supermemory, Honcho), the KB is a regular filesystem you can
+`cd` into, edit by hand, version with git, and read with any tool.
 
 This plugin makes that KB part of the agent loop:
 
-- **Prefetch** before every turn — full-text search over page bodies, top results injected into the system prompt
-- **Cortex tool** — `search`, `read`, `write`, `list`, `daily` for explicit recall and capture
+- **Prefetch** before every turn — full-text search over page bodies, top results
+  injected into the system prompt
+- **Cortex tool** — `search`, `read`, `write`, `list`, `daily` for explicit recall and
+  capture
 - **Auto-journal** (optional) — append meaningful turns to `daily/YYYY-MM-DD.md`
-- **Auto-synthesize** (optional) — drop session trails into `synthesis/` for the curation pass
+- **Auto-synthesize** (optional) — drop session trails into `synthesis/` for the
+  curation pass
 
 ## Requirements
 
-None beyond Hermes core. SQLite is bundled with Python. `pyyaml` is already a Hermes dependency.
+None beyond Hermes core. SQLite is bundled with Python. `pyyaml` is already a Hermes
+dependency.
 
 ## Storage layout
 
@@ -61,11 +71,13 @@ plugins:
   cortex:
     store_path: $HERMES_HOME/cortex
     prefetch_limit: 5
-    auto_journal: false       # append turns to daily/
-    auto_synthesize: false    # write session trails to synthesis/
+    auto_journal: false # append turns to daily/
+    auto_synthesize: false # write session trails to synthesis/
 ```
 
-The store directory and standard subfolders are created automatically on first run. If you already have a Cortex KB (e.g. from the `cortex` CLI in openclaw-config), just point `store_path` at it.
+The store directory and standard subfolders are created automatically on first run. If
+you already have a Cortex KB (e.g. from the `cortex` CLI in openclaw-config), just point
+`store_path` at it.
 
 ## Tool reference
 
@@ -91,23 +103,34 @@ cortex(action="daily", body="Notes about today's work")
 
 ## Single-provider constraint
 
-Hermes enforces one external memory provider at a time to prevent tool-schema bloat. Enabling Cortex disables any previously active provider (Honcho, Mem0, Hindsight, etc.) — they remain installed but inactive. Switch back via `hermes memory setup` or by editing `memory.provider` in `config.yaml`.
+Hermes enforces one external memory provider at a time to prevent tool-schema bloat.
+Enabling Cortex disables any previously active provider (Honcho, Mem0, Hindsight, etc.)
+— they remain installed but inactive. Switch back via `hermes memory setup` or by
+editing `memory.provider` in `config.yaml`.
 
 ## Companion CLI
 
-The standalone `cortex` CLI (in [`openclaw-config/skills/cortex`](https://github.com/TechNickAI/openclaw-config/tree/main/skills/cortex)) handles the *compiler* side of Cortex: scanning external sources, triaging into a review queue, and rebuilding index files. The plugin handles the *agent* side: search, retrieval, and capture during conversation. Both operate on the same store and are designed to coexist.
+The standalone `cortex` CLI (in
+[`openclaw-config/skills/cortex`](https://github.com/TechNickAI/openclaw-config/tree/main/skills/cortex))
+handles the _compiler_ side of Cortex: scanning external sources, triaging into a review
+queue, and rebuilding index files. The plugin handles the _agent_ side: search,
+retrieval, and capture during conversation. Both operate on the same store and are
+designed to coexist.
 
 Typical workflow:
 
 - Plugin captures durable facts during conversation (`cortex(action='write', ...)`)
-- Nightly cron runs `cortex link` / `cortex rebuild-index` to stitch new pages into category indexes
+- Nightly cron runs `cortex link` / `cortex rebuild-index` to stitch new pages into
+  category indexes
 - Plugin's FTS5 index auto-rebuilds for any page whose mtime changed
 
 ## Why not server-backed?
 
-If you already use Honcho or Mem0 and they work for you, keep them. Cortex is for the niche where:
+If you already use Honcho or Mem0 and they work for you, keep them. Cortex is for the
+niche where:
 
-- The KB is **yours**, lives on **your disk**, in a format you can read without any tool running
+- The KB is **yours**, lives on **your disk**, in a format you can read without any tool
+  running
 - You want hand-curation, not auto-extraction by an external LLM
 - You're already keeping markdown notes and want the agent to actually use them
 - You want a memory layer you can `git diff`, `grep`, and back up with `rsync`

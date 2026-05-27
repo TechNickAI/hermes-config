@@ -1,6 +1,8 @@
 name: cortex
 version: 0.1.0
-description: "Cortex memory — hand-curated markdown knowledge base with FTS5 search, auto-prefetch on each turn, and durable cross-session recall."
+description:
+  "Cortex memory — hand-curated markdown knowledge base with FTS5 search, auto-prefetch
+  on each turn, and durable cross-session recall."
 hooks:
   - prefetch
   - sync_turn
