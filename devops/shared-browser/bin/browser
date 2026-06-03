@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# browser — agent-facing CLI for the shared browser daemon (browserd).
+# Lazy-starts the daemon on first use, self-heals if it died, and ALWAYS
+# returns a non-zero exit code on failure (no silent exit-0 lies).
+#
+# MODEL: each AGENT owns a WINDOW; within its window it may open many TABS.
+# Parallel agents never collide because each drives its own window. Cookies and
+# logins are SHARED across every window/tab (one Chrome profile) — log in once,
+# every agent is logged in.
+#
+# Usage:
+#   browser nav <url>   [--window W] [--tab T]
+#   browser snap        [--window W] [--tab T]   # aria tree with clickable refs
+#   browser text        [--window W] [--tab T]   # visible page text
+#   browser eval '<js>' [--window W] [--tab T]
+#   browser click <ref> [--window W] [--tab T]   # ref like e12 from snap
+#   browser type <ref> <text> [--submit] [--window W] [--tab T]
+#   browser shot [path] [--full] [--window W] [--tab T]
+#   browser links       [--window W] [--tab T]
+#   browser back        [--window W] [--tab T]
+#   browser wait <ms|--selector SEL> [--window W] [--tab T]
+#   browser tabs        [--window W]             # list tabs in a window
+#   browser windows                              # list all windows
+#   browser cookies [domain]
+#   browser close       [--window W] [--tab T]   # close a tab, or whole window
+#   browser preflight                            # deep health: daemon + live nav
+#   browser restart                              # clean daemon restart
+#   browser stop
+#
+# Defaults: --window default, --tab main.
+
+set -euo pipefail
+
+BROWSER_HOME="${BROWSER_HOME:-$HOME/.hermes/shared-browser}"
+PORT="${BROWSER_PORT:-18722}"
+BASE="http://127.0.0.1:${PORT}"
+DAEMON="$BROWSER_HOME/browserd.mjs"
+LOG="$BROWSER_HOME/logs/browserd.log"
+LOCKDIR="$BROWSER_HOME/.start.lock"
+NODE="$(command -v node)"
+
+mkdir -p "$BROWSER_HOME/logs" "$BROWSER_HOME/output"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+is_up() { curl -fsS --max-time 3 "$BASE/health" >/dev/null 2>&1; }
+
+# Start the daemon under an atomic mkdir lock so a thundering herd of parallel
+# agents elects exactly ONE starter; everyone else just waits for the port.
+start_daemon() {
+  if is_up; then return 0; fi
+  if mkdir "$LOCKDIR" 2>/dev/null; then
+    trap 'rmdir "$LOCKDIR" 2>/dev/null || true' RETURN
+    if ! is_up; then
+      echo "starting browserd..." >&2
+      # Daemon self-detaches via Node spawn(detached).unref() — no shell
+      # nohup/&, which sandboxed terminals block. Returns immediately.
+      BROWSER_HOME="$BROWSER_HOME" BROWSER_PORT="$PORT" \
+        "$NODE" "$DAEMON" --spawn >/dev/null 2>&1 || true
+    fi
+  fi
+  # Whether we started it or someone else did, wait up to 30s for the port.
+  for _ in $(seq 1 60); do
+    if is_up; then return 0; fi
+    sleep 0.5
+  done
+  die "browserd failed to start within 30s (see $LOG)"
+}
+
+# Graceful stop. Used by restart/stop only — NEVER by the self-heal path
+# (a blanket kill would nuke a daemon still serving other parallel agents).
+stop_daemon() {
+  curl -fsS --max-time 5 -X POST "$BASE/shutdown" >/dev/null 2>&1 || true
+  for _ in $(seq 1 15); do is_up || return 0; sleep 0.3; done
+  pkill -f "browserd.mjs" 2>/dev/null || true
+}
+
+# Core request wrapper. Self-heals two failures without ever nuking a daemon
+# that may be serving other parallel agents:
+#   1. Dead page -> close just THIS window/tab; the daemon recreates it lazily
+#      on retry. Other windows untouched.
+#   2. Daemon unreachable -> re-elect a starter via the lock, retry once.
+# Always returns non-zero on real failure (no exit-0 lies).
+call() {
+  local route="$1"; shift
+  local payload="${1:-}"
+  [[ -z "$payload" ]] && payload='{}'
+  start_daemon
+  local attempt=0 resp http err w t
+  while :; do
+    attempt=$((attempt+1))
+    resp="$(curl -fsS --max-time 90 -X POST "$BASE/$route" \
+      -H 'content-type: application/json' -d "$payload" 2>/dev/null)" && http=0 || http=$?
+    if [[ $http -eq 0 ]]; then
+      if echo "$resp" | grep -q '"ok":true'; then
+        echo "$resp"
+        return 0
+      fi
+      err="$(echo "$resp" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')"
+      if [[ $attempt -eq 1 && "$err" =~ (context|browser|Target).*(closed|crash) ]]; then
+        echo "page died, recreating and retrying..." >&2
+        w="$(echo "$payload" | sed -n 's/.*"window":"\([^"]*\)".*/\1/p')"
+        t="$(echo "$payload" | sed -n 's/.*"tab":"\([^"]*\)".*/\1/p')"
+        curl -fsS --max-time 5 -X POST "$BASE/close" -H 'content-type: application/json' \
+          -d "{\"window\":\"${w:-default}\",\"tab\":\"${t:-main}\"}" >/dev/null 2>&1 || true
+        sleep 0.5; continue
+      fi
+      die "${err:-unknown daemon error}"
+    fi
+    if [[ $attempt -eq 1 ]]; then
+      echo "daemon unreachable, (re)starting and retrying..." >&2
+      start_daemon; continue
+    fi
+    die "browserd unreachable after restart (see $LOG)"
+  done
+}
+
+# Pretty-print a JSON field via node (always available here).
+jget() { "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const o=JSON.parse(s);const v=process.argv[1].split(".").reduce((a,k)=>a&&a[k],o);console.log(typeof v==="string"?v:JSON.stringify(v,null,2))}catch(e){console.log(s)}})' "$1"; }
+
+# JSON string escaper for arbitrary args (urls, js, text).
+esc() { "$NODE" -e 'console.log(JSON.stringify(process.argv[1]))' "$1"; }
+
+# Parse flags out of args.
+WINDOW="default"; TAB="main"; SUBMIT="false"; FULL="false"; SELECTOR=""; POS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --window) WINDOW="$2"; shift 2;;
+    --tab) TAB="$2"; shift 2;;
+    --selector) SELECTOR="$2"; shift 2;;
+    --submit) SUBMIT="true"; shift;;
+    --full) FULL="true"; shift;;
+    *) POS+=("$1"); shift;;
+  esac
+done
+set -- "${POS[@]:-}"
+
+# Common window/tab JSON fragment.
+WT="\"window\":\"$WINDOW\",\"tab\":\"$TAB\""
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  nav)
+    [[ $# -ge 1 ]] || die "usage: browser nav <url>"
+    out="$(call nav "{$WT,\"url\":$(esc "$1")}")"
+    echo "$out" | jget title; echo "$out" | jget url
+    ;;
+  snap)    call snap "{$WT}" | jget snapshot ;;
+  text)    call text "{$WT}" | jget text ;;
+  eval)
+    [[ $# -ge 1 ]] || die "usage: browser eval '<js>'"
+    call eval "{$WT,\"expr\":$(esc "$1")}" | jget value
+    ;;
+  click)
+    [[ $# -ge 1 ]] || die "usage: browser click <ref>"
+    call click "{$WT,\"ref\":$(esc "$1")}" >/dev/null && echo "clicked $1"
+    ;;
+  type)
+    [[ $# -ge 2 ]] || die "usage: browser type <ref> <text> [--submit]"
+    call type "{$WT,\"ref\":$(esc "$1"),\"text\":$(esc "$2"),\"submit\":$SUBMIT}" >/dev/null && echo "typed into $1"
+    ;;
+  shot)
+    p="${1:-}"
+    payload="{$WT,\"fullPage\":$FULL"
+    [[ -n "$p" ]] && payload="$payload,\"path\":$(esc "$p")"
+    payload="$payload}"
+    call shot "$payload" | jget path
+    ;;
+  links)   call links "{$WT}" | jget links ;;
+  back)    call back "{$WT}" | jget url ;;
+  wait)
+    if [[ -n "$SELECTOR" ]]; then call wait "{$WT,\"selector\":$(esc "$SELECTOR")}" >/dev/null && echo "waited"
+    else call wait "{$WT,\"ms\":\"${1:-1000}\"}" >/dev/null && echo "waited"; fi
+    ;;
+  tabs)    call tabs "{\"window\":\"$WINDOW\"}" | jget tabs ;;
+  windows) call windows "{}" | jget windows ;;
+  cookies)
+    d="${1:-}"
+    if [[ -n "$d" ]]; then call cookies "{\"domain\":$(esc "$d")}" | jget count
+    else call cookies "{}" | jget count; fi
+    ;;
+  close)
+    if [[ "$TAB" == "main" && "$#" -eq 0 && "${POS[*]:-}" == "" ]]; then
+      # Default behavior with explicit tab still closes that tab; to close a
+      # whole window pass --window W with no --tab override is ambiguous, so we
+      # close the specific tab named (main by default).
+      :
+    fi
+    call close "{$WT}" >/dev/null && echo "closed $WINDOW/$TAB"
+    ;;
+  preflight)
+    start_daemon
+    if out="$(call nav "{\"window\":\"__preflight__\",\"tab\":\"main\",\"url\":\"about:blank\"}" 2>&1)"; then
+      call close "{\"window\":\"__preflight__\"}" >/dev/null 2>&1 || true
+      echo "ok"
+    else
+      die "preflight failed: $out"
+    fi
+    ;;
+  restart) stop_daemon; sleep 1; start_daemon; echo "restarted" ;;
+  stop)    stop_daemon; echo "stopped" ;;
+  ""|help|-h|--help)
+    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *) die "unknown command: $cmd (try: browser help)" ;;
+esac
