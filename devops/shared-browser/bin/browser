@@ -89,9 +89,14 @@ call() {
   local attempt=0 resp http err w t
   while :; do
     attempt=$((attempt+1))
-    resp="$(curl -fsS --max-time 90 -X POST "$BASE/$route" \
+    # NOTE: no `-f`. With `-f`, curl returns non-zero on HTTP 500 and we'd
+    # never see the daemon's JSON error body (which is how a dead page is
+    # reported), so the page-recovery path below would be dead code. We treat
+    # a transport failure (curl exit) as "unreachable" and any HTTP response
+    # (200 or 500) as "daemon answered, inspect the JSON".
+    resp="$(curl -sS --max-time 90 -X POST "$BASE/$route" \
       -H 'content-type: application/json' -d "$payload" 2>/dev/null)" && http=0 || http=$?
-    if [[ $http -eq 0 ]]; then
+    if [[ $http -eq 0 && -n "$resp" ]]; then
       if echo "$resp" | grep -q '"ok":true'; then
         echo "$resp"
         return 0
@@ -122,11 +127,11 @@ jget() { "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try
 esc() { "$NODE" -e 'console.log(JSON.stringify(process.argv[1]))' "$1"; }
 
 # Parse flags out of args.
-WINDOW="default"; TAB="main"; SUBMIT="false"; FULL="false"; SELECTOR=""; POS=()
+WINDOW="default"; TAB="main"; TAB_SET="false"; SUBMIT="false"; FULL="false"; SELECTOR=""; POS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --window) WINDOW="$2"; shift 2;;
-    --tab) TAB="$2"; shift 2;;
+    --tab) TAB="$2"; TAB_SET="true"; shift 2;;
     --selector) SELECTOR="$2"; shift 2;;
     --submit) SUBMIT="true"; shift;;
     --full) FULL="true"; shift;;
@@ -180,13 +185,13 @@ case "$cmd" in
     else call cookies "{}" | jget count; fi
     ;;
   close)
-    if [[ "$TAB" == "main" && "$#" -eq 0 && "${POS[*]:-}" == "" ]]; then
-      # Default behavior with explicit tab still closes that tab; to close a
-      # whole window pass --window W with no --tab override is ambiguous, so we
-      # close the specific tab named (main by default).
-      :
+    # Without --tab, close the WHOLE window (all its tabs). With --tab, close
+    # just that tab. The daemon treats an omitted tab as a window-close.
+    if [[ "$TAB_SET" == "true" ]]; then
+      call close "{\"window\":\"$WINDOW\",\"tab\":\"$TAB\"}" >/dev/null && echo "closed tab $WINDOW/$TAB"
+    else
+      call close "{\"window\":\"$WINDOW\"}" >/dev/null && echo "closed window $WINDOW"
     fi
-    call close "{$WT}" >/dev/null && echo "closed $WINDOW/$TAB"
     ;;
   preflight)
     start_daemon

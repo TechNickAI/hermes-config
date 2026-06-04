@@ -13,7 +13,7 @@ echo "==> installing shared browser to $BROWSER_HOME"
 mkdir -p "$BROWSER_HOME/logs" "$BROWSER_HOME/output" "$BIN_DIR"
 
 install -m 0755 "$HERE/browserd.mjs" "$BROWSER_HOME/browserd.mjs"
-install -m 0755 "$HERE/browser" "$BROWSER_HOME/browser"
+install -m 0755 "$HERE/bin/browser" "$BROWSER_HOME/browser"
 
 # Put the CLI on PATH via symlink so updates to BROWSER_HOME propagate.
 ln -sf "$BROWSER_HOME/browser" "$BIN_DIR/browser"

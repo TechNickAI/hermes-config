@@ -121,11 +121,24 @@ async function ensureContext() {
       windows.clear();
     });
     context = ctx;
-    launching = null;
     return ctx;
   })();
-  return launching;
+  try {
+    return await launching;
+  } catch (e) {
+    // A failed launch must NOT leave a rejected promise cached forever, or
+    // every later request awaits the same failure. Clear it so the next call
+    // retries Chrome startup from scratch.
+    log("context launch failed, will retry next call:", e.message);
+    throw e;
+  } finally {
+    launching = null;
+  }
 }
+
+// Per-(window,tab) creation locks so two concurrent calls for the same tab
+// don't both newPage() and orphan one. Keyed "window\u0000tab".
+const pageLocks = new Map();
 
 async function getPage(window = "default", tab = "main") {
   const ctx = await ensureContext();
@@ -134,22 +147,41 @@ async function getPage(window = "default", tab = "main") {
     tabs = new Map();
     windows.set(window, tabs);
   }
-  let entry = tabs.get(tab);
+  const entry = tabs.get(tab);
   if (entry && !entry.page.isClosed()) {
     entry.lastUsed = Date.now();
     return entry.page;
   }
-  const page = await ctx.newPage();
-  page.on("close", () => {
-    const t = windows.get(window);
-    if (t) {
-      const e = t.get(tab);
-      if (e && e.page === page) t.delete(tab);
-      if (t.size === 0) windows.delete(window);
-    }
-  });
-  tabs.set(tab, { page, lastUsed: Date.now() });
-  return page;
+  // Serialize creation for this exact window/tab.
+  const key = `${window}\u0000${tab}`;
+  let pending = pageLocks.get(key);
+  if (!pending) {
+    pending = (async () => {
+      // Re-check inside the lock: a racing caller may have just created it.
+      const existing = tabs.get(tab);
+      if (existing && !existing.page.isClosed()) {
+        existing.lastUsed = Date.now();
+        return existing.page;
+      }
+      const page = await ctx.newPage();
+      page.on("close", () => {
+        const t = windows.get(window);
+        if (t) {
+          const e = t.get(tab);
+          if (e && e.page === page) t.delete(tab);
+          if (t.size === 0) windows.delete(window);
+        }
+      });
+      tabs.set(tab, { page, lastUsed: Date.now() });
+      return page;
+    })();
+    pageLocks.set(key, pending);
+  }
+  try {
+    return await pending;
+  } finally {
+    pageLocks.delete(key);
+  }
 }
 
 // Reap idle tabs (cookies live in the context, so closing tabs is safe).
