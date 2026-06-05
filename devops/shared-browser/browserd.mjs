@@ -174,6 +174,11 @@ const pageLocks = new Map();
 
 async function getPage(window = "default", tab = "main") {
   const ctx = await ensureContext();
+  // Get-or-create the window's tab map. This block MUST stay synchronous
+  // (no await between get and set): Node's single-threaded model then makes
+  // it atomic, so two concurrent callers for the same new window can't each
+  // create a map and overwrite the other. Per-tab creation is serialized
+  // separately by pageLocks below.
   let tabs = windows.get(window);
   if (!tabs) {
     tabs = new Map();

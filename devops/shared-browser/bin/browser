@@ -47,18 +47,43 @@ is_up() { curl -fsS --max-time 3 "$BASE/health" >/dev/null 2>&1; }
 
 # Start the daemon under an atomic mkdir lock so a thundering herd of parallel
 # agents elects exactly ONE starter; everyone else just waits for the port.
+stale_lock() {
+  [[ -d "$LOCKDIR" ]] || return 1
+  local pid=""
+  [[ -f "$LOCKDIR/pid" ]] && pid="$(cat "$LOCKDIR/pid" 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+  # Legacy locks may not have a pid file; only reap those after a grace window.
+  "$NODE" -e '
+    const fs = require("fs");
+    try { process.exit(Date.now() - fs.statSync(process.argv[1]).mtimeMs > 30000 ? 0 : 1); }
+    catch { process.exit(1); }
+  ' "$LOCKDIR"
+}
+
 start_daemon() {
   if is_up; then return 0; fi
-  if mkdir "$LOCKDIR" 2>/dev/null; then
-    trap 'rmdir "$LOCKDIR" 2>/dev/null || true' RETURN
-    if ! is_up; then
-      echo "starting browserd..." >&2
-      # Daemon self-detaches via Node spawn(detached).unref() — no shell
-      # nohup/&, which sandboxed terminals block. Returns immediately.
-      BROWSER_HOME="$BROWSER_HOME" BROWSER_PORT="$PORT" \
-        "$NODE" "$DAEMON" --spawn >/dev/null 2>&1 || true
+  for _lock_try in 1 2; do
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+      echo "$$" > "$LOCKDIR/pid"
+      trap 'rm -rf "$LOCKDIR" 2>/dev/null || true' RETURN
+      if ! is_up; then
+        echo "starting browserd..." >&2
+        # Daemon self-detaches via Node spawn(detached).unref() — no shell
+        # nohup/&, which sandboxed terminals block. Returns immediately.
+        BROWSER_HOME="$BROWSER_HOME" BROWSER_PORT="$PORT" \
+          "$NODE" "$DAEMON" --spawn >/dev/null 2>&1 || true
+      fi
+      break
     fi
-  fi
+    if ! is_up && stale_lock; then
+      echo "removing stale browserd start lock..." >&2
+      rm -rf "$LOCKDIR" 2>/dev/null || true
+      continue
+    fi
+    break
+  done
   # Whether we started it or someone else did, wait up to 30s for the port.
   for _ in $(seq 1 60); do
     if is_up; then return 0; fi
@@ -103,12 +128,20 @@ call() {
       fi
       err="$(echo "$resp" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')"
       if [[ $attempt -eq 1 && "$err" =~ (context|browser|Target).*(closed|crash) ]]; then
-        echo "page died, recreating and retrying..." >&2
         w="$(echo "$payload" | sed -n 's/.*"window":"\([^"]*\)".*/\1/p')"
         t="$(echo "$payload" | sed -n 's/.*"tab":"\([^"]*\)".*/\1/p')"
-        curl -fsS --max-time 5 -X POST "$BASE/close" -H 'content-type: application/json' \
-          -d "{\"window\":\"${w:-default}\",\"tab\":\"${t:-main}\"}" >/dev/null 2>&1 || true
-        sleep 0.5; continue
+        # Only recover page-scoped routes that actually named a window. Global
+        # routes (cookies, windows) carry no window, so defaulting to
+        # default/main here would close an unrelated agent's tab. Skip them.
+        if [[ -n "$w" ]]; then
+          echo "page died, recreating and retrying..." >&2
+          local close_payload="{\"window\":$(esc "$w")"
+          [[ -n "$t" ]] && close_payload="$close_payload,\"tab\":$(esc "$t")"
+          close_payload="$close_payload}"
+          curl -fsS --max-time 5 -X POST "$BASE/close" -H 'content-type: application/json' \
+            -d "$close_payload" >/dev/null 2>&1 || true
+          sleep 0.5; continue
+        fi
       fi
       die "${err:-unknown daemon error}"
     fi
@@ -140,8 +173,9 @@ while [[ $# -gt 0 ]]; do
 done
 set -- "${POS[@]:-}"
 
-# Common window/tab JSON fragment.
-WT="\"window\":\"$WINDOW\",\"tab\":\"$TAB\""
+# Common window/tab JSON fragment. Values are JSON-escaped via esc() so window
+# or tab names containing " or \ can't produce malformed JSON.
+WT="\"window\":$(esc "$WINDOW"),\"tab\":$(esc "$TAB")"
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
@@ -177,7 +211,7 @@ case "$cmd" in
     if [[ -n "$SELECTOR" ]]; then call wait "{$WT,\"selector\":$(esc "$SELECTOR")}" >/dev/null && echo "waited"
     else call wait "{$WT,\"ms\":\"${1:-1000}\"}" >/dev/null && echo "waited"; fi
     ;;
-  tabs)    call tabs "{\"window\":\"$WINDOW\"}" | jget tabs ;;
+  tabs)    call tabs "{\"window\":$(esc "$WINDOW")}" | jget tabs ;;
   windows) call windows "{}" | jget windows ;;
   cookies)
     d="${1:-}"
@@ -188,9 +222,9 @@ case "$cmd" in
     # Without --tab, close the WHOLE window (all its tabs). With --tab, close
     # just that tab. The daemon treats an omitted tab as a window-close.
     if [[ "$TAB_SET" == "true" ]]; then
-      call close "{\"window\":\"$WINDOW\",\"tab\":\"$TAB\"}" >/dev/null && echo "closed tab $WINDOW/$TAB"
+      call close "{\"window\":$(esc "$WINDOW"),\"tab\":$(esc "$TAB")}" >/dev/null && echo "closed tab $WINDOW/$TAB"
     else
-      call close "{\"window\":\"$WINDOW\"}" >/dev/null && echo "closed window $WINDOW"
+      call close "{\"window\":$(esc "$WINDOW")}" >/dev/null && echo "closed window $WINDOW"
     fi
     ;;
   preflight)
