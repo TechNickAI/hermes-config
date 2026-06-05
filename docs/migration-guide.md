@@ -313,14 +313,16 @@ conversation length:
 
 ```yaml
 session_reset:
-  mode: none           # disabled — rely on compaction instead
+  mode: none # disabled — rely on compaction instead
   # Other keys (at_hour, idle_minutes, notify) are ignored when mode: none
 ```
 
 Apply on every machine you operate (`~/.hermes/config.yaml` — per-profile, if you use
-`HERMES_PROFILE`, also `~/.hermes/profiles/<profile>/config.yaml`). No gateway restart
-is required for this change to take effect on the next message into a new session;
-existing sessions are unaffected by the policy change going forward.
+`HERMES_PROFILE`, also `~/.hermes/profiles/<profile>/config.yaml`). Restart any
+already-running gateway after saving the config: the gateway loads this policy at
+startup and keeps using the cached value, so a live process will not pick up the change
+until it restarts. Existing conversation history is not erased by changing the policy;
+future reset decisions use the new setting after restart.
 
 **Trade-off:** without auto-reset, a genuinely abandoned thread will retain its full
 history until you `/reset` it manually. Compaction still bounds context length, so this
