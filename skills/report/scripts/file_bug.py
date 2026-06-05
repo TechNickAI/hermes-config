@@ -18,7 +18,7 @@ session within a short window produces one card, not many.
 
 Usage:
   file_bug.py --title "..." --body-file /path/to/body.md \\
-              [--reporter NAME] [--profile NAME] [--owner-profile board-owner] \\
+              [--reporter NAME] [--profile NAME] [--owner-profile OWNER] \\
               [--tenant fleet-bugs] [--json]
 
 Session metadata (platform / chat / thread / user) is read from the environment
@@ -197,7 +197,17 @@ def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> d
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
-            resp = json.loads(r.read().decode() or "{}")
+            raw_resp = r.read().decode()
+        try:
+            resp = json.loads(raw_resp or "{}")
+        except json.JSONDecodeError:
+            # 2xx with a non-JSON body — we can't confirm the card was created,
+            # so treat it as a delivery failure and keep the report.
+            f = _dropfile(payload, f"remote returned non-JSON body: {raw_resp[:200]!r}")
+            return {
+                "ok": False, "path": "remote", "dropfile": str(f),
+                "error": "server returned a non-JSON response",
+            }
         task_id = resp.get("task_id") or resp.get("id")
         if not task_id:
             # Server returned 2xx but no task id — treat as a delivery failure.
@@ -225,7 +235,7 @@ def main() -> int:
     ap.add_argument("--profile", default="")
     ap.add_argument(
         "--owner-profile",
-        default=os.environ.get("BUG_BOARD_OWNER", "board-owner"),
+        default=os.environ.get("BUG_BOARD_OWNER", ""),
         help="Profile that owns the triage board (local short-circuit target). "
              "Set BUG_BOARD_OWNER env var or pass --owner-profile to override.",
     )
@@ -242,8 +252,11 @@ def main() -> int:
     args = ap.parse_args()
 
     body = ""
-    if args.body_file and Path(args.body_file).exists():
-        body = Path(args.body_file).read_text()
+    if args.body_file:
+        body_path = Path(args.body_file)
+        if not body_path.exists():
+            raise SystemExit(f"--body-file does not exist: {args.body_file}")
+        body = body_path.read_text()
     elif args.body:
         body = args.body
     if not body.strip():
@@ -268,7 +281,7 @@ def main() -> int:
     #      owns the board or it's a standalone single-host install. Filing
     #      directly to the local board is the safe default — worst case the
     #      report lands on this host's board instead of disappearing.
-    owner_named = bool(args.owner_profile) and args.owner_profile != "board-owner"
+    owner_named = bool(args.owner_profile)
     has_webhook = bool(_env("BUG_WEBHOOK_URL"))
 
     if args.force_remote:
