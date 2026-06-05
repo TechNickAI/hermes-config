@@ -234,6 +234,10 @@ def main() -> int:
         "--force-remote", action="store_true",
         help="Force the remote POST path even on the owner (for testing).",
     )
+    ap.add_argument(
+        "--force-local", action="store_true",
+        help="Force the local kanban path (single-host installs / testing).",
+    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -252,7 +256,32 @@ def main() -> int:
     idem = _idempotency_key(meta, args.title)
     active = _active_profile()
 
-    is_owner = (active == args.owner_profile) and not args.force_remote
+    # Routing is by *capability*, not by name-matching, to avoid the footgun
+    # where an unconfigured owner silently misroutes to the remote path and
+    # breaks. Rules, in priority order:
+    #   1. --force-remote / --force-local always win (testing + explicit control).
+    #   2. If this profile is explicitly named as the board owner, go local.
+    #   3. If a webhook URL is configured, this is a satellite -> remote.
+    #      (The board owner has direct kanban access and no reason to configure
+    #      a webhook pointing at itself.)
+    #   4. Otherwise (no webhook configured), assume local: either this profile
+    #      owns the board or it's a standalone single-host install. Filing
+    #      directly to the local board is the safe default — worst case the
+    #      report lands on this host's board instead of disappearing.
+    owner_named = bool(args.owner_profile) and args.owner_profile != "board-owner"
+    has_webhook = bool(_env("BUG_WEBHOOK_URL"))
+
+    if args.force_remote:
+        is_owner = False
+    elif args.force_local:
+        is_owner = True
+    elif owner_named:
+        is_owner = active == args.owner_profile
+    elif has_webhook:
+        is_owner = False
+    else:
+        is_owner = True
+
     try:
         result = (
             file_local(args, meta, body, idem)

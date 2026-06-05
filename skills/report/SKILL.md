@@ -161,7 +161,19 @@ Set these in `~/.hermes/.env` (or the profile's `.env`):
 
 The board-owner profile (the one where `$HERMES_PROFILE` matches `$BUG_BOARD_OWNER`)
 does not need the webhook env vars — it calls `hermes kanban` directly. All other fleet
-members need `BUG_BOARD_OWNER` plus both webhook vars.
+members need both webhook vars.
+
+### How the script decides local vs remote
+
+Routing is by **capability**, not by name-matching, so an unconfigured install never
+silently misroutes and breaks. In priority order:
+
+1. `--force-remote` / `--force-local` flags always win (testing / explicit control).
+2. If `BUG_BOARD_OWNER` is set and matches this profile → **local**.
+3. Else if `BUG_WEBHOOK_URL` is configured → this is a satellite → **remote**.
+4. Else (no webhook configured) → **local**. A single-host install with no webhook files
+   directly to its own board — the safe default (worst case the report lands on this
+   host's board rather than vanishing).
 
 ## Closed-loop notification
 
