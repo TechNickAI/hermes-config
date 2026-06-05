@@ -26,8 +26,10 @@ if ! node -e "require('playwright')" 2>/dev/null && \
   echo "==> installing playwright (npm i -g playwright)"
   npm install -g playwright >/dev/null 2>&1 || true
 fi
-# Ensure the real Chrome channel is available to Playwright.
-node -e "require('playwright')" 2>/dev/null && npx playwright install chrome >/dev/null 2>&1 || true
+# Ensure Playwright's bundled Chromium (Chrome-for-Testing) is available.
+# Do NOT install/use the real Chrome channel as the default; it can tie automation
+# to the macOS login keychain and the user's real Chrome app/profile lock.
+node -e "require('playwright')" 2>/dev/null && npx playwright install chromium >/dev/null 2>&1 || true
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) : ;;

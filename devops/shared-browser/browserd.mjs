@@ -47,6 +47,21 @@ const IDLE_MS = parseInt(process.env.BROWSER_IDLE_MS || "1800000", 10); // 30 mi
 const UA =
   process.env.BROWSER_UA ||
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
+// Browser binary selection (priority order):
+//   1. BROWSER_EXECUTABLE — explicit path to a browser binary (any platform).
+//   2. BROWSER_CHANNEL — a Playwright channel like "chrome"/"msedge" (uses the
+//      OS-installed app). NOT the default: real Chrome ties into the macOS login
+//      keychain and the user's own Chrome profile lock, which caused infinite
+//      "Keychain Not Found" loops and broke the user's real Chrome.
+//   3. (default) Playwright's BUNDLED Chromium — a fully separate "Chrome for
+//      Testing" app under ms-playwright cache. Zero keychain association, cannot
+//      collide with the user's real Chrome. This is the robust default.
+const EXECUTABLE = process.env.BROWSER_EXECUTABLE || "";
+const CHANNEL = process.env.BROWSER_CHANNEL || "";
+// Headless by default (fleet runs unattended). Set BROWSER_HEADLESS=0/false to
+// open a VISIBLE window — needed for a human to log into a site (2FA, captcha)
+// once; the session then persists in the shared profile for headless runs.
+const HEADLESS = !/^(0|false|no)$/i.test(process.env.BROWSER_HEADLESS || "1");
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const log = (...a) => {
@@ -105,11 +120,28 @@ async function ensureContext() {
     clearStaleLock();
     log("launching persistent context");
     const ctx = await chromium.launchPersistentContext(PROFILE, {
-      channel: "chrome",
-      headless: true,
+      // Binary: explicit executable > explicit channel > "chromium" channel.
+      // channel:"chromium" runs the FULL Chrome-for-Testing in new-headless mode
+      // (a real browser engine, not the stripped chromium-headless-shell), which
+      // beats bot detection AND is a separate app with no macOS keychain tie-in
+      // and no clash with the user's real Chrome. Default when nothing is set.
+      ...(EXECUTABLE
+        ? { executablePath: EXECUTABLE }
+        : { channel: CHANNEL || "chromium" }),
+      headless: HEADLESS,
       userAgent: UA,
       viewport: { width: 1280, height: 800 },
-      args: ["--no-first-run", "--no-default-browser-check"],
+      // --password-store=basic + --use-mock-keychain keep automation Chrome
+      // OUT of the macOS login keychain. Without these, real Chrome tries to
+      // store its "Safe Storage" key in the keychain and, under an agent's
+      // overridden $HOME (no keychain there), loops forever on a
+      // "Keychain Not Found" prompt. Automation never needs OS keychain access.
+      args: [
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--password-store=basic",
+        "--use-mock-keychain",
+      ],
     });
     // Stealth: real Chrome UA above + kill the webdriver tell.
     await ctx.addInitScript(() => {
