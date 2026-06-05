@@ -223,19 +223,34 @@ def build_handoff(
     return _clip(body, _MAX_BODY_CHARS)
 
 
+def _encode_id(value: str) -> str:
+    """Sanitize one id component into a slug-safe token, sign-preserving.
+
+    Negative gateway chat IDs (Telegram groups are negative) must not collide
+    with their positive counterpart: a naive ``strip("-")`` would map both
+    ``-1002`` and ``1002`` to ``1002``. We detect a leading minus and prefix the
+    cleaned body with ``n`` instead of dropping the sign.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    neg = raw.startswith("-")
+    body = re.sub(r"[^A-Za-z0-9_]+", "-", raw).strip("-")
+    if not body:
+        return ""
+    return f"n{body}" if neg else body
+
+
 def handoff_slug(chat_id: str = "", thread_id: str = "", session_id: str = "") -> str:
     """Deterministic, topic-stable slug so re-compactions overwrite in place.
 
     Prefer chat+thread (a Telegram topic / Discord thread is the durable unit of
-    work). Fall back to session_id, then a constant. The store sanitizes the
-    slug, but we pre-clean to keep it readable.
+    work). Fall back to session_id, then a constant. Each component is
+    sign-encoded so negative chat IDs stay distinct from positive ones.
     """
-    parts = [p for p in (str(chat_id or "").strip(), str(thread_id or "").strip()) if p]
+    parts = [t for t in (_encode_id(chat_id), _encode_id(thread_id)) if t]
     if parts:
         key = "-".join(parts)
-    elif session_id:
-        key = str(session_id).strip()
     else:
-        key = "default"
-    key = re.sub(r"[^A-Za-z0-9_-]+", "-", key).strip("-") or "default"
+        key = _encode_id(session_id) or "default"
     return f"handoff-{key}"

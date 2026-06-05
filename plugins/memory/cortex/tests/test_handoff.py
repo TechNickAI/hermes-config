@@ -119,7 +119,7 @@ def test_handoff_slug_is_topic_stable() -> None:
     # Same chat+thread → same slug (so re-compactions overwrite in place).
     a = handoff_slug(chat_id="-1002", thread_id="37")
     b = handoff_slug(chat_id="-1002", thread_id="37")
-    assert a == b == "handoff-1002-37"
+    assert a == b == "handoff-n1002-37"
     # Different thread → different slug.
     assert handoff_slug(chat_id="-1002", thread_id="38") != a
 
@@ -127,6 +127,18 @@ def test_handoff_slug_is_topic_stable() -> None:
 def test_handoff_slug_falls_back_to_session() -> None:
     assert handoff_slug(session_id="sess123") == "handoff-sess123"
     assert handoff_slug() == "handoff-default"
+
+
+def test_handoff_slug_negative_chat_id_no_collision() -> None:
+    # Telegram group chat IDs are negative. A negative chat id must NOT collide
+    # with its positive counterpart (regression: strip("-") used to drop the
+    # sign, mapping -1002/37 and 1002/37 to the same page).
+    neg = handoff_slug(chat_id="-1002", thread_id="37")
+    pos = handoff_slug(chat_id="1002", thread_id="37")
+    assert neg != pos
+    # Negative sign is encoded, not dropped.
+    assert neg == "handoff-n1002-37"
+    assert pos == "handoff-1002-37"
 
 
 def test_handoff_slug_sanitizes() -> None:
@@ -151,7 +163,7 @@ def test_handoff_writeback_roundtrip(tmp_path: Path) -> None:
             title="Handoff — T",
         )
         # Lands under handoff/ with the stable slug.
-        assert rel == "handoff/handoff-1002-37.md"
+        assert rel == "handoff/handoff-n1002-37.md"
 
         # Readable back with content intact.
         page = store.get_page(rel)
@@ -181,3 +193,82 @@ def test_handoff_rewrite_is_idempotent_in_place(tmp_path: Path) -> None:
         assert len(pages) == 1
     finally:
         store.close()
+
+
+# --------------------------------------------------------------------------- #
+# Provider integration — requires the Hermes runtime (agent.memory_provider).
+# Skipped automatically when run outside a Hermes checkout.
+# --------------------------------------------------------------------------- #
+
+def _load_provider_class():
+    """Import CortexMemoryProvider, making the Hermes runtime importable.
+
+    Returns None if `agent.memory_provider` can't be found (e.g. CI without a
+    Hermes checkout), so the test self-skips rather than failing.
+    """
+    import importlib
+    import os
+
+    candidates = [
+        os.environ.get("HERMES_AGENT_DIR"),
+        os.path.expanduser("~/.hermes/hermes-agent"),
+    ]
+    for path in candidates:
+        if path and os.path.isdir(path) and path not in sys.path:
+            sys.path.insert(0, path)
+    # Make `cortex` importable as a package (parent of the plugin dir).
+    pkg_parent = str(PLUGIN_DIR.parent)
+    if pkg_parent not in sys.path:
+        sys.path.insert(0, pkg_parent)
+    try:
+        mod = importlib.import_module("cortex")
+        return mod.CortexMemoryProvider
+    except Exception:
+        return None
+
+
+def test_cli_session_writes_handoff_via_session_id(tmp_path: Path) -> None:
+    """A CLI session (no chat/thread, only session_id) still gets a handoff.
+
+    Regression for the Codex review note: the hook must not gate on
+    chat_id/thread_id being present — substance, not surface, decides.
+    """
+    Provider = _load_provider_class()
+    if Provider is None:
+        pytest.skip("Hermes runtime (agent.memory_provider) not importable")
+
+    store_dir = str(tmp_path / "cortex")
+    p = Provider(config={"store_path": store_dir})
+    # No chat_id / thread_id — pure CLI-style init.
+    p.initialize(session_id="cli-sess-9", hermes_home=str(tmp_path))
+    try:
+        out = p.on_pre_compress(_sample_thread())
+        # A handoff page keyed by session_id was written and surfaced.
+        assert "handoff saved to" in out
+        assert "handoff-cli-sess-9" in out
+        pages = list((tmp_path / "cortex" / "handoff").glob("*.md"))
+        assert any("cli-sess-9" in pth.name for pth in pages)
+    finally:
+        p.shutdown()
+
+
+def test_gateway_session_keys_handoff_by_topic(tmp_path: Path) -> None:
+    """A gateway session keys the handoff by chat+thread (the durable topic)."""
+    Provider = _load_provider_class()
+    if Provider is None:
+        pytest.skip("Hermes runtime (agent.memory_provider) not importable")
+
+    p = Provider(config={"store_path": str(tmp_path / "cortex")})
+    p.initialize(
+        session_id="s1",
+        hermes_home=str(tmp_path),
+        chat_id="-1002",
+        thread_id="37",
+        chat_name="Project Thread",
+    )
+    try:
+        out = p.on_pre_compress(_sample_thread())
+        assert "handoff-n1002-37" in out
+    finally:
+        p.shutdown()
+

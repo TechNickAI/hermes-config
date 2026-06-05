@@ -338,9 +338,12 @@ class CortexMemoryProvider(MemoryProvider):
             f"Use `cortex(action='search', query=...)` to recall.]\n"
         )
 
-        # Only auto-write handoffs for real task threads (chat/thread present);
-        # one-off CLI sessions don't benefit and would litter the KB.
-        if not (self._chat_id or self._thread_id):
+        # Write a handoff for any session with enough substance. build_handoff()
+        # returns "" for trivial threads, so it — not a gateway/CLI distinction —
+        # decides whether a digest is worth persisting. Keying prefers the
+        # durable topic (chat+thread) and falls back to session_id, so CLI
+        # sessions are covered too.
+        if not messages:
             return reminder
 
         try:
