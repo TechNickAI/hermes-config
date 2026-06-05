@@ -4,9 +4,9 @@
 Two delivery paths, auto-selected:
 
   LOCAL  — when this process is the board-owning profile (the one whose gateway
-           runs the kanban dispatcher/notifier, default "bosun"), call the
-           ``hermes kanban`` CLI directly. The card lands in the triage column
-           and the reporter's chat is subscribed for the done/blocked ping.
+           runs the kanban dispatcher/notifier, identified by ``BUG_BOARD_OWNER``),
+           call the ``hermes kanban`` CLI directly. The card lands in the triage
+           column and the reporter's chat is subscribed for the done/blocked ping.
 
   REMOTE — when run on any other fleet member, POST an HMAC-signed payload to the
            board owner's webhook. If the POST fails (owner gateway down, network
@@ -18,7 +18,7 @@ session within a short window produces one card, not many.
 
 Usage:
   file_bug.py --title "..." --body-file /path/to/body.md \\
-              [--reporter NAME] [--profile NAME] [--owner-profile bosun] \\
+              [--reporter NAME] [--profile NAME] [--owner-profile board-owner] \\
               [--tenant fleet-bugs] [--json]
 
 Session metadata (platform / chat / thread / user) is read from the environment
@@ -78,12 +78,22 @@ def _active_profile() -> str:
     return "default"
 
 
-def _idempotency_key(meta: dict) -> str:
-    # One card per session per ~2-minute bucket: mashing /report doesn't spam.
+def _idempotency_key(meta: dict, title: str = "") -> str:
+    # One card per (reporter + title-hash) per ~2-minute bucket.
+    # Including the title means two different reports from the same session within
+    # the window still produce distinct cards.  A per-process nonce is used when no
+    # session identifier is present so unrelated CLI callers never share a key.
     bucket = int(time.time()) // 120
-    basis = (
-        f"{meta.get('session_id') or meta.get('session_key') or meta.get('chat_id')}:{bucket}"
+    reporter_id = (
+        meta.get("session_id")
+        or meta.get("session_key")
+        or meta.get("chat_id")
+        or meta.get("user_id")
+        # Last resort: per-process nonce so concurrent CLI callers don't collide.
+        or str(os.getpid())
     )
+    title_slug = hashlib.sha256(title.encode()).hexdigest()[:8] if title else "notitle"
+    basis = f"{reporter_id}:{title_slug}:{bucket}"
     return "bug-" + hashlib.sha256(basis.encode()).hexdigest()[:16]
 
 
@@ -152,8 +162,8 @@ def file_local(args: argparse.Namespace, meta: dict, body: str, idem: str) -> di
 # REMOTE path — non-owner fleet member POSTs an HMAC-signed payload.
 # --------------------------------------------------------------------------- #
 def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> dict:
-    url = _env("BOSUN_BUG_WEBHOOK_URL")
-    secret = _env("BOSUN_BUG_WEBHOOK_SECRET")
+    url = _env("BUG_WEBHOOK_URL")
+    secret = _env("BUG_WEBHOOK_SECRET")
     payload = {
         "title": args.title,
         "body": body,
@@ -172,7 +182,7 @@ def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> d
         f = _dropfile(payload, "no webhook url/secret configured")
         return {
             "ok": False, "path": "remote", "dropfile": str(f),
-            "error": "BOSUN_BUG_WEBHOOK_URL / BOSUN_BUG_WEBHOOK_SECRET not set",
+            "error": "BUG_WEBHOOK_URL / BUG_WEBHOOK_SECRET not set",
         }
 
     raw = json.dumps(payload, separators=(",", ":")).encode()
@@ -188,9 +198,17 @@ def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> d
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             resp = json.loads(r.read().decode() or "{}")
+        task_id = resp.get("task_id") or resp.get("id")
+        if not task_id:
+            # Server returned 2xx but no task id — treat as a delivery failure.
+            f = _dropfile(payload, f"remote returned 2xx but no task_id: {resp!r:.200}")
+            return {
+                "ok": False, "path": "remote", "dropfile": str(f),
+                "error": f"server response missing task_id: {resp!r:.100}",
+            }
         return {
             "ok": True, "path": "remote",
-            "task_id": resp.get("task_id") or resp.get("id"),
+            "task_id": task_id,
             "status": resp.get("status"),
         }
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
@@ -207,8 +225,9 @@ def main() -> int:
     ap.add_argument("--profile", default="")
     ap.add_argument(
         "--owner-profile",
-        default=os.environ.get("BUG_BOARD_OWNER", "bosun"),
-        help="Profile that owns the triage board (local short-circuit target).",
+        default=os.environ.get("BUG_BOARD_OWNER", "board-owner"),
+        help="Profile that owns the triage board (local short-circuit target). "
+             "Set BUG_BOARD_OWNER env var or pass --owner-profile to override.",
     )
     ap.add_argument("--tenant", default="fleet-bugs")
     ap.add_argument(
@@ -230,7 +249,7 @@ def main() -> int:
         )
 
     meta = _session_meta()
-    idem = _idempotency_key(meta)
+    idem = _idempotency_key(meta, args.title)
     active = _active_profile()
 
     is_owner = (active == args.owner_profile) and not args.force_remote

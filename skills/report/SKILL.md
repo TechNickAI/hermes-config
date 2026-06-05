@@ -56,8 +56,10 @@ or a suggestion.
 5. **Run the helper script** (see Script Path below). It handles both paths:
    - **Local (board-owner profile):** `hermes kanban create --triage` +
      `hermes kanban notify-subscribe`
-   - **Remote (all other fleet members):** HMAC-signed POST to `$BOSUN_BUG_WEBHOOK_URL`;
-     dropfile fallback if gateway is down
+
+- **Remote (all other fleet members):** HMAC-signed POST to `$BUG_WEBHOOK_URL`; dropfile
+  fallback if gateway is down dropfile fallback if gateway is down
+
 6. **Parse the result.** On success, confirm to the user with the task id. On failure,
    DM the maintainer the raw report body so nothing drops.
 7. **Confirm.** Tell the user the card id and, if the closed loop was wired: _"You'll
@@ -151,14 +153,15 @@ After a failure with dropfile:
 
 Set these in `~/.hermes/.env` (or the profile's `.env`):
 
-| Variable                   | Required on                 | Purpose                               |
-| -------------------------- | --------------------------- | ------------------------------------- |
-| `BOSUN_BUG_WEBHOOK_URL`    | Non-owner fleet members     | Endpoint to POST the report to        |
-| `BOSUN_BUG_WEBHOOK_SECRET` | Non-owner fleet members     | HMAC-SHA256 signing secret            |
-| `BUG_BOARD_OWNER`          | Optional (default: `bosun`) | Override which profile owns the board |
+| Variable             | Required on        | Purpose                                                                               |
+| -------------------- | ------------------ | ------------------------------------------------------------------------------------- |
+| `BUG_BOARD_OWNER`    | All profiles       | Profile name that owns the triage board (required — no default ships in the template) |
+| `BUG_WEBHOOK_URL`    | Non-owner profiles | Endpoint to POST the report to                                                        |
+| `BUG_WEBHOOK_SECRET` | Non-owner profiles | HMAC-SHA256 signing secret                                                            |
 
-The board-owner profile (default: `bosun`) does not need the webhook env vars — it calls
-`hermes kanban` directly. All other fleet members need both vars.
+The board-owner profile (the one where `$HERMES_PROFILE` matches `$BUG_BOARD_OWNER`)
+does not need the webhook env vars — it calls `hermes kanban` directly. All other fleet
+members need `BUG_BOARD_OWNER` plus both webhook vars.
 
 ## Closed-loop notification
 
