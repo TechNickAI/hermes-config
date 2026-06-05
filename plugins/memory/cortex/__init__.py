@@ -35,6 +35,10 @@ from hermes_cli.config import cfg_get
 
 from .store import CortexStore, KNOWLEDGE_CATEGORIES, DAILY_DIR
 from .retrieval import CortexRetriever
+from .handoff import build_handoff, handoff_slug
+
+# Category (subdirectory) the pre-compress handoff digests are written under.
+HANDOFF_CATEGORY = "handoff"
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +136,10 @@ class CortexMemoryProvider(MemoryProvider):
         self._store: Optional[CortexStore] = None
         self._retriever: Optional[CortexRetriever] = None
         self._session_id: str = ""
+        # Topic identity for pre-compress handoff keying (captured at init).
+        self._chat_id: str = ""
+        self._thread_id: str = ""
+        self._topic_label: str = ""
 
     @property
     def name(self) -> str:
@@ -153,6 +161,12 @@ class CortexMemoryProvider(MemoryProvider):
         self._store = CortexStore(store_path=store_path, db_path=db_path)
         self._retriever = CortexRetriever(self._store)
         self._session_id = session_id
+        # Capture topic identity for handoff keying. on_pre_compress() only
+        # receives `messages`, so we must stash chat/thread context here.
+        self._chat_id = str(kwargs.get("chat_id") or "")
+        self._thread_id = str(kwargs.get("thread_id") or "")
+        chat_name = str(kwargs.get("chat_name") or "").strip()
+        self._topic_label = chat_name or self._chat_id or self._session_id
         logger.info(
             "Cortex memory: %d pages indexed at %s",
             self._store.count(), store_path,
@@ -294,7 +308,20 @@ class CortexMemoryProvider(MemoryProvider):
     # -- Pre-compress ------------------------------------------------------
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        """Return a markdown block to preserve before compression."""
+        """Capture a handoff digest before compression drops old messages.
+
+        Two jobs, both fail-safe (any error degrades to the lightweight KB
+        reminder, never blocks compaction):
+
+          1. Build a deterministic, no-LLM handoff digest (GOAL / STATE /
+             DECISIONS / OPEN LOOPS / ARTIFACTS) from the live messages and
+             write it to a topic-keyed page under `handoff/`. Because the store
+             indexes it into FTS5, the normal prefetch hook re-pulls it on the
+             next turn — so the digest both survives compaction on disk *and*
+             gets re-injected into context automatically.
+          2. Return a short markdown block (the digest summary + a recall
+             pointer) to fold into the compression window immediately.
+        """
         if not self._store:
             return ""
         try:
@@ -302,15 +329,53 @@ class CortexMemoryProvider(MemoryProvider):
             cats = self._store.category_counts()
         except Exception:
             return ""
-        if count == 0:
+        if count == 0 and not messages:
             return ""
-        # Just remind the agent the KB is there; the prefetch hook still fires
-        # on the next turn and re-pulls relevant pages.
+
         breakdown = ", ".join(f"{c}={n}" for c, n in sorted(cats.items()))
-        return (
+        reminder = (
             f"\n[Cortex KB still available: {count} pages ({breakdown}). "
             f"Use `cortex(action='search', query=...)` to recall.]\n"
         )
+
+        # Only auto-write handoffs for real task threads (chat/thread present);
+        # one-off CLI sessions don't benefit and would litter the KB.
+        if not (self._chat_id or self._thread_id):
+            return reminder
+
+        try:
+            now = datetime.now()
+            body = build_handoff(
+                messages,
+                topic_label=self._topic_label,
+                now_str=now.strftime("%Y-%m-%d %H:%M"),
+            )
+            if not body:
+                return reminder
+            slug = handoff_slug(
+                chat_id=self._chat_id,
+                thread_id=self._thread_id,
+                session_id=self._session_id,
+            )
+            label = self._topic_label or slug
+            rel = self._store.write_page(
+                category=HANDOFF_CATEGORY,
+                slug_or_title=slug,
+                body=body,
+                tags=["handoff", "auto", "pre-compress"],
+                title=f"Handoff — {label}",
+            )
+            logger.info("Cortex handoff written: %s", rel)
+            return (
+                f"\n[Cortex handoff saved to `{rel}` before compaction — "
+                f"the active task spine (GOAL/STATE/DECISIONS/NEXT MOVE) is "
+                f"preserved and will be auto-recalled. "
+                f"Use `cortex(action='read', rel_path='{rel}')` for the full "
+                f"digest.]\n{reminder}"
+            )
+        except Exception as e:
+            logger.debug("Cortex handoff write failed: %s", e)
+            return reminder
 
     # -- Tool surface ------------------------------------------------------
 
