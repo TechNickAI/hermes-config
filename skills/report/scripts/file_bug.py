@@ -220,6 +220,7 @@ def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> d
             "ok": True, "path": "remote",
             "task_id": task_id,
             "status": resp.get("status"),
+            "subscribed": bool(resp.get("subscribed")),
         }
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         f = _dropfile(payload, f"POST failed: {type(e).__name__}: {e}")
