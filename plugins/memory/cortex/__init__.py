@@ -35,6 +35,7 @@ from hermes_cli.config import cfg_get
 
 from .store import CortexStore, KNOWLEDGE_CATEGORIES, DAILY_DIR
 from .retrieval import CortexRetriever
+from .embeddings import OpenAIEmbeddingClient
 from .handoff import build_handoff, handoff_slug
 
 # Category (subdirectory) the pre-compress handoff digests are written under.
@@ -158,7 +159,8 @@ class CortexMemoryProvider(MemoryProvider):
         db_path_raw = self._config.get("db_path") or ""
         db_path = _resolve_path(db_path_raw, hermes_home) if db_path_raw else None
 
-        self._store = CortexStore(store_path=store_path, db_path=db_path)
+        embedder = self._build_embedder()
+        self._store = CortexStore(store_path=store_path, db_path=db_path, embedder=embedder)
         self._retriever = CortexRetriever(self._store)
         self._session_id = session_id
         # Capture topic identity for handoff keying. on_pre_compress() only
@@ -167,10 +169,42 @@ class CortexMemoryProvider(MemoryProvider):
         self._thread_id = str(kwargs.get("thread_id") or "")
         chat_name = str(kwargs.get("chat_name") or "").strip()
         self._topic_label = chat_name or self._chat_id or self._session_id
+        stats = self._store.embedding_stats() if embedder else {"embedded": 0}
         logger.info(
-            "Cortex memory: %d pages indexed at %s",
+            "Cortex memory: %d pages indexed at %s (semantic: %s, embedded=%d)",
             self._store.count(), store_path,
+            "on" if embedder else "off", stats.get("embedded", 0),
         )
+
+    def _build_embedder(self):
+        """Construct the embedding client when the semantic tier is enabled.
+
+        Enabled by default but fails safe: if the configured endpoint is
+        unreachable at init, we log and fall back to lexical-only FTS5 so a down
+        embedding host never breaks Cortex recall.
+        """
+        if not _config_bool(self._config, "semantic", default=True):
+            return None
+        try:
+            client = OpenAIEmbeddingClient(
+                url=self._config.get("embed_url") or None,
+                model=self._config.get("embed_model") or None,
+                api_key=self._config.get("embed_key") or None,
+                dimensions=int(self._config["embed_dim"]) if self._config.get("embed_dim") else None,
+            )
+            if not client.url:
+                logger.info("Cortex: no embed_url configured — semantic tier off, lexical-only")
+                return None
+            if not client.health():
+                logger.warning(
+                    "Cortex: embedding endpoint %s unreachable — semantic tier disabled this session",
+                    client.url,
+                )
+                return None
+            return client
+        except Exception as e:
+            logger.warning("Cortex: failed to init embedder (%s) — lexical-only", e)
+            return None
 
     def shutdown(self) -> None:
         if self._store:

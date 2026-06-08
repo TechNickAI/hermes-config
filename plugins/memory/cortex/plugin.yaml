@@ -1,10 +1,21 @@
 name: cortex
-version: 0.1.0
+version: 0.2.0
 description:
-  "Cortex memory — hand-curated markdown knowledge base with FTS5 search, auto-prefetch
-  on each turn, and durable cross-session recall."
+  "Cortex memory — hand-curated markdown knowledge base with hybrid retrieval (FTS5 BM25
+  + semantic embeddings fused via RRF), auto-prefetch on each turn, and durable
+  cross-session recall."
 hooks:
   - prefetch
   - sync_turn
   - on_session_end
   - on_pre_compress
+config:
+  # Semantic tier (page-level embeddings). Fails safe to lexical-only FTS5 if
+  # the embedding endpoint is unreachable at init.
+  semantic: true
+  # OpenAI-compatible /v1/embeddings endpoint. Leave blank unless the user has
+  # configured a private embedding service for this profile.
+  embed_url: ""
+  embed_model: "" # default: text-embedding-embeddinggemma-300m-qat
+  embed_key: "" # default: none
+  embed_dim: "" # default: 768

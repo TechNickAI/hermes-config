@@ -1,4 +1,10 @@
-"""CortexRetriever — search the page index using FTS5 with sensible ranking."""
+"""CortexRetriever — hybrid lexical + semantic search over the page index.
+
+Lexical tier: SQLite FTS5 + BM25 over title/tags/body.
+Semantic tier: optional page-level embeddings stored by CortexStore.
+Fusion: Reciprocal Rank Fusion (RRF), so pages that rank well in both tiers rise
+without either tier needing calibrated comparable scores.
+"""
 
 from __future__ import annotations
 
@@ -41,7 +47,7 @@ def _sanitize_query(q: str, max_tokens: int = 8) -> str:
 
 
 class CortexRetriever:
-    """Search Cortex pages via FTS5 ranked by BM25 with title/tag boosts."""
+    """Search Cortex pages via FTS5 and optional semantic embeddings."""
 
     def __init__(self, store):
         self.store = store
@@ -50,9 +56,14 @@ class CortexRetriever:
         # via a property. Resolve fresh on every call so search() works from
         # whatever thread the agent's tool worker dispatches us on.
 
-    def search(self, query: str, *, limit: int = 5, category: str | None = None, snippet_chars: int = 240) -> list[dict]:
-        if not query:
-            return []
+    def _fts_search(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        category: str | None = None,
+        snippet_chars: int = 240,
+    ) -> list[dict]:
         fts_q = _sanitize_query(query)
         if not fts_q:
             return []
@@ -84,5 +95,72 @@ class CortexRetriever:
             d = dict(row)
             if snippet_chars and d.get("snippet") and len(d["snippet"]) > snippet_chars:
                 d["snippet"] = d["snippet"][:snippet_chars] + "…"
+            d["fts_score"] = d.get("score")
+            d["source"] = "fts"
             rows.append(d)
         return rows
+
+    def search(self, query: str, *, limit: int = 5, category: str | None = None, snippet_chars: int = 240) -> list[dict]:
+        """Return ranked Cortex pages.
+
+        If semantic embeddings are available, combines FTS5 BM25 and vector
+        cosine search via Reciprocal Rank Fusion. If the embedding service/index
+        is absent or fails, this remains exactly the old FTS5-only behavior.
+        """
+        if not query:
+            return []
+
+        # Pull a larger candidate set from each tier before fusion.
+        candidate_limit = max(limit * 4, 20)
+        fts_rows = self._fts_search(query, limit=candidate_limit, category=category, snippet_chars=snippet_chars)
+        vector_rows: list[dict] = []
+        vector_search = getattr(self.store, "vector_search", None)
+        if callable(vector_search):
+            vector_rows = vector_search(query, limit=candidate_limit, category=category)
+
+        if not vector_rows:
+            return fts_rows[:limit]
+        if not fts_rows:
+            return vector_rows[:limit]
+
+        # Reciprocal Rank Fusion. k=60 is the standard conservative default: it
+        # rewards agreement across tiers without letting a single rank-1 result
+        # swamp the other list.
+        k = 60.0
+        merged: dict[str, dict] = {}
+        fusion: dict[str, float] = {}
+
+        def add_rows(rows: list[dict], tier: str) -> None:
+            for rank, row in enumerate(rows, start=1):
+                rel = row["rel_path"]
+                if rel not in merged:
+                    merged[rel] = dict(row)
+                    fusion[rel] = 0.0
+                else:
+                    # Prefer lexical snippets (highlighted) when available, but
+                    # preserve vector score/source metadata from both sides.
+                    if tier == "fts" and row.get("snippet"):
+                        merged[rel]["snippet"] = row["snippet"]
+                    for key in ["fts_score", "vector_score"]:
+                        if key in row:
+                            merged[rel][key] = row[key]
+                fusion[rel] += 1.0 / (k + rank)
+
+        add_rows(fts_rows, "fts")
+        add_rows(vector_rows, "vector")
+
+        out: list[dict] = []
+        for rel, row in merged.items():
+            row["fusion_score"] = fusion[rel]
+            has_fts = "fts_score" in row
+            has_vec = "vector_score" in row
+            row["source"] = "hybrid" if has_fts and has_vec else ("vector" if has_vec else "fts")
+            # Keep legacy lower-is-better `score` roughly meaningful for callers
+            # that display it, while the actual sort uses fusion_score.
+            row["score"] = -row["fusion_score"]
+            if snippet_chars and row.get("snippet") and len(row["snippet"]) > snippet_chars:
+                row["snippet"] = row["snippet"][:snippet_chars] + "…"
+            out.append(row)
+
+        out.sort(key=lambda r: r["fusion_score"], reverse=True)
+        return out[:limit]
