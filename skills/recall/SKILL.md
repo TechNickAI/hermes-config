@@ -2,8 +2,10 @@
 name: recall
 description: >
   Restore context from prior sessions, memories, and transcripts. Run /recall after /new
-  to pick up where you left off. Designed to never dead-end — if one source comes up
-  empty, keep searching others until you have a useful picture.
+  to pick up where you left off, and also use when a bare-pronoun follow-up like "ship
+  it", "do it", or "send that" likely points at a prior-session artifact. Designed to
+  never dead-end — if one source has nothing, keep searching others until you have a
+  useful picture.
 version: 0.2.1
 license: MIT
 metadata:
