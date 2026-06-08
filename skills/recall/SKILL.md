@@ -2,9 +2,11 @@
 name: recall
 description: >
   Restore context from prior sessions, memories, and transcripts. Run /recall after /new
-  to pick up where you left off. Designed to never dead-end — if one source comes up
-  empty, keep searching others until you have a useful picture.
-version: 0.2.0
+  to pick up where you left off, and also use when a bare-pronoun follow-up like "ship
+  it", "do it", or "send that" likely points at a prior-session artifact. Designed to
+  never dead-end — if one source has nothing, keep searching others until you have a
+  useful picture.
+version: 0.2.1
 license: MIT
 metadata:
   hermes:
@@ -24,6 +26,16 @@ The user ran `/recall` (possibly with a topic hint like `/recall project X statu
 `/recall alice relationship analysis`) after a `/new` reset or context overrun. They
 want to pick up where they left off. Your job is to find that thread and hand it back to
 them.
+
+**Implicit recall (no `/recall` command):** A common case is a bare-pronoun follow-up
+right after a daily reset or `/new` — e.g. "ok deliver this", "ship it", "send that",
+"do it", "go ahead". The antecedent ("this", "that", "it") points at an artifact from
+the previous session that you no longer have in context. Treat these as recall triggers:
+go straight to step 2b (raw jsonl tail of the most recent prior session) and find the
+last assistant artifact — usually a draft, a ranked list, a proposed plan, or a
+pending-approval message. Then either confirm what they mean before acting, or surface
+the candidate artifact verbatim so they can say yes/no. Do **not** guess and execute on
+a deictic without verifying — the wrong "this" is worse than a clarifying question.
 
 ## What to do
 
