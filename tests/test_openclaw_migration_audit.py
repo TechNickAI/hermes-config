@@ -37,7 +37,7 @@ def test_flags_cron_scanner_tripwire_without_blocking_cleanup(tmp_path: Path) ->
     assert findings[0].kind == "cron-scanner-tripwire"
 
 
-def test_workflow_detector_blocks_when_source_workflow_missing_from_hermes(tmp_path: Path) -> None:
+def test_workflow_detector_warns_when_source_workflow_missing_from_hermes(tmp_path: Path) -> None:
     openclaw = tmp_path / ".openclaw"
     hermes = tmp_path / ".hermes"
     (openclaw / "workspace" / "workflows" / "daily-brief").mkdir(parents=True)
@@ -45,8 +45,9 @@ def test_workflow_detector_blocks_when_source_workflow_missing_from_hermes(tmp_p
     findings = audit_mod.audit(openclaw, hermes)
 
     assert [finding.kind for finding in findings] == ["openclaw-workflows"]
-    assert findings[0].severity == audit_mod.BLOCKER
+    assert findings[0].severity == audit_mod.WARNING
     assert findings[0].details["missing_from_hermes"] == ["daily-brief"]
+    assert findings[0].details["ported_to_hermes"] == []
 
 
 def test_workflow_detector_warns_when_workflow_was_lifted_to_hermes(tmp_path: Path) -> None:
@@ -60,6 +61,7 @@ def test_workflow_detector_warns_when_workflow_was_lifted_to_hermes(tmp_path: Pa
     assert [finding.kind for finding in findings] == ["openclaw-workflows"]
     assert findings[0].severity == audit_mod.WARNING
     assert findings[0].details["missing_from_hermes"] == []
+    assert findings[0].details["ported_to_hermes"] == ["daily-brief"]
 
 
 def test_live_workspace_prompt_openclaw_path_is_cleanup_blocker(tmp_path: Path) -> None:

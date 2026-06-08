@@ -126,19 +126,21 @@ def audit_unmigrated_workflows(openclaw_root: Path, hermes_root: Path) -> list[F
     if not source_names:
         return []
     missing = [name for name in source_names if not (hermes_workflows_dir / name).exists()]
-    severity = BLOCKER if missing else WARNING
+    ported = [name for name in source_names if (hermes_workflows_dir / name).exists()]
     return [
         Finding(
-            severity=severity,
+            severity=WARNING,
             kind="openclaw-workflows",
             path=str(workflows_dir),
             message=(
-                "OpenClaw workflows are not migrated by Hermes itself. Port each "
-                "workflow into ~/.hermes/workspace or rewrite it as a skill before cleanup."
+                "OpenClaw workflows are not migrated by Hermes itself. Review any "
+                "workflows that still matter: port them into ~/.hermes/workspace, rewrite "
+                "them as skills, or explicitly drop them. This is a cleanup blocker only "
+                "when a live Hermes cron/workspace file still references the old tree."
             ),
             details={
                 "source_count": len(source_names),
-                "source_workflows": source_names,
+                "ported_to_hermes": ported,
                 "missing_from_hermes": missing,
             },
         )
