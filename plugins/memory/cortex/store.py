@@ -19,6 +19,7 @@ based on file mtime — only changed/added pages are reindexed each open.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -27,6 +28,11 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+
+try:  # package import (normal Hermes runtime)
+    from .embeddings import pack_vector, unpack_vector
+except ImportError:  # flat import (tests add plugin dir to sys.path)
+    from embeddings import pack_vector, unpack_vector
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +106,14 @@ def _safe_slug(s: str) -> str:
 class CortexStore:
     """Filesystem-backed KB with a SQLite FTS5 index over page bodies."""
 
-    def __init__(self, store_path: str | Path, db_path: str | Path | None = None):
+    def __init__(self, store_path: str | Path, db_path: str | Path | None = None, embedder=None):
         self.store_path = Path(store_path).expanduser()
         self.store_path.mkdir(parents=True, exist_ok=True)
+
+        # Optional semantic tier. When set, page bodies are embedded and stored
+        # in page_embeddings for hybrid retrieval. None => lexical-only (FTS5),
+        # which is the safe default if the embedding service is unreachable.
+        self.embedder = embedder
 
         # Ensure standard subdirs exist
         for cat in KNOWLEDGE_CATEGORIES + [DAILY_DIR, "learning/archive"]:
@@ -122,6 +133,7 @@ class CortexStore:
         conn = self._get_conn()
         self._init_schema(conn)
         self._reindex_changed(conn)
+        self._heal_fts_if_needed(conn)
 
     # -- Connection management --------------------------------------------
 
@@ -184,6 +196,15 @@ class CortexStore:
                 INSERT INTO pages_fts(rowid, rel_path, title, tags, body)
                 VALUES (new.rowid, new.rel_path, new.title, new.tags, new.body);
             END;
+            CREATE TABLE IF NOT EXISTS page_embeddings (
+                rel_path TEXT PRIMARY KEY REFERENCES pages(rel_path) ON DELETE CASCADE,
+                model TEXT NOT NULL,
+                dimensions INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                embedding BLOB NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS page_embeddings_model_idx ON page_embeddings(model, dimensions);
         """)
         conn.commit()
 
@@ -257,12 +278,185 @@ class CortexStore:
             for rel in list(indexed):
                 if rel not in seen:
                     conn.execute("DELETE FROM pages WHERE rel_path = ?", (rel,))
+                    conn.execute("DELETE FROM page_embeddings WHERE rel_path = ?", (rel,))
                     changed += 1
 
             if changed:
                 conn.commit()
                 logger.info("CortexStore: reindexed %d pages", changed)
             return changed
+
+    def _heal_fts_if_needed(self, conn: sqlite3.Connection | None = None) -> bool:
+        """Detect and repair a desynced external-content FTS5 index.
+
+        Root cause: ``pages_fts`` is an external-content table keyed by rowid.
+        ``INSERT OR REPLACE INTO pages`` reassigns rowids, which can leave the
+        FTS index pointing at content rows that have moved ("missing row N from
+        content table pages"). When that happens BM25-ordered MATCH joins raise
+        and lexical search silently returns nothing. We probe cheaply and, on
+        error, rebuild the index from the content table. Returns True if a
+        rebuild ran.
+        """
+        conn = conn or self._get_conn()
+        try:
+            conn.execute(
+                "SELECT pages.rowid FROM pages_fts JOIN pages ON pages.rowid = pages_fts.rowid "
+                "WHERE pages_fts MATCH 'the OR a OR memory' ORDER BY bm25(pages_fts) LIMIT 1"
+            ).fetchall()
+            return False  # join works — index is healthy
+        except sqlite3.Error as e:
+            logger.warning("CortexStore: FTS index desynced (%s) — rebuilding", e)
+            try:
+                with self._write_lock:
+                    conn.execute("INSERT INTO pages_fts(pages_fts) VALUES('rebuild')")
+                    conn.commit()
+                logger.info("CortexStore: FTS index rebuilt")
+                return True
+            except sqlite3.Error as e2:
+                logger.error("CortexStore: FTS rebuild failed: %s", e2)
+                return False
+
+    # -- Semantic embeddings ----------------------------------------------
+
+    @staticmethod
+    def _embedding_text(row: sqlite3.Row | dict) -> str:
+        """Text embedded for semantic retrieval: title/tags/body, page-level."""
+        title = row["title"] or ""
+        tags = row["tags"] or ""
+        body = row["body"] or ""
+        return f"{title}\nTags: {tags}\n\n{body}".strip()
+
+    @staticmethod
+    def _embedding_hash(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+    def backfill_embeddings(self, *, force: bool = False, limit: int | None = None) -> int:
+        """Embed missing/stale pages. Returns the number of rows written.
+
+        The embedding tier is optional. If no embedder is configured, this is a
+        no-op and FTS5 remains fully functional. Staleness is tracked by content
+        hash plus model/dimension, so changing either model or page text triggers
+        a fresh vector on the next backfill.
+        """
+        if self.embedder is None:
+            return 0
+        conn = self._conn
+        model = getattr(self.embedder, "model", "unknown")
+        configured_dim = int(getattr(self.embedder, "dimensions", 0) or 0)
+        sql = """
+            SELECT p.rel_path, p.category, p.title, p.tags, p.body, e.content_hash, e.model, e.dimensions
+            FROM pages p
+            LEFT JOIN page_embeddings e ON e.rel_path = p.rel_path
+            ORDER BY p.mtime DESC
+        """
+        candidates: list[tuple[sqlite3.Row, str, str]] = []
+        for row in conn.execute(sql).fetchall():
+            text = self._embedding_text(row)
+            h = self._embedding_hash(text)
+            stale = (
+                force
+                or row["content_hash"] != h
+                or row["model"] != model
+                or (configured_dim and row["dimensions"] != configured_dim)
+            )
+            if stale:
+                candidates.append((row, text, h))
+                if limit is not None and len(candidates) >= limit:
+                    break
+        if not candidates:
+            return 0
+
+        texts = [c[1] for c in candidates]
+        try:
+            vectors = self.embedder.embed(texts)
+        except Exception as e:
+            logger.warning("CortexStore: embedding backfill failed: %s", e)
+            return 0
+        if len(vectors) != len(candidates):
+            logger.warning("CortexStore: embedder returned %d vectors for %d texts", len(vectors), len(candidates))
+            return 0
+
+        now = datetime.now().isoformat(timespec="seconds")
+        written = 0
+        with self._write_lock:
+            for (row, _text, h), vec in zip(candidates, vectors):
+                if not vec:
+                    continue
+                dim = len(vec)
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO page_embeddings
+                    (rel_path, model, dimensions, content_hash, embedding, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (row["rel_path"], model, dim, h, pack_vector([float(x) for x in vec]), now),
+                )
+                written += 1
+            conn.commit()
+        if written:
+            logger.info("CortexStore: embedded %d pages with %s", written, model)
+        return written
+
+    def vector_search(self, query: str, *, limit: int = 5, category: str | None = None) -> list[dict]:
+        """Exact semantic search over page-level embeddings.
+
+        Returns rows shaped like CortexRetriever.search(), with vector_score in
+        cosine-similarity units (higher is better). If the embedder or index is
+        unavailable, returns [] so callers can fall back to lexical FTS5.
+        """
+        if self.embedder is None or not query.strip():
+            return []
+        try:
+            qvecs = self.embedder.embed([query])
+        except Exception as e:
+            logger.debug("CortexStore: query embedding failed: %s", e)
+            return []
+        if not qvecs:
+            return []
+        q = [float(x) for x in qvecs[0]]
+        qdim = len(q)
+        sql = """
+            SELECT p.rel_path, p.category, p.title, p.tags, p.body, e.embedding, e.dimensions, e.model
+            FROM page_embeddings e
+            JOIN pages p ON p.rel_path = e.rel_path
+            WHERE e.dimensions = ?
+        """
+        params: list[Any] = [qdim]
+        if category:
+            sql += " AND p.category = ?"
+            params.append(category)
+        rows = []
+        for row in self._conn.execute(sql, params).fetchall():
+            try:
+                v = unpack_vector(row["embedding"])
+            except Exception:
+                continue
+            if len(v) != qdim:
+                continue
+            score = sum(a * b for a, b in zip(q, v))  # normalized vectors => cosine
+            body = row["body"] or ""
+            snippet = body[:240] + ("…" if len(body) > 240 else "")
+            rows.append({
+                "rel_path": row["rel_path"],
+                "category": row["category"],
+                "title": row["title"],
+                "tags": row["tags"],
+                "snippet": snippet,
+                "score": -score,  # preserve lower-is-better convention for combined sorting
+                "vector_score": score,
+                "source": "vector",
+            })
+        rows.sort(key=lambda r: r["vector_score"], reverse=True)
+        return rows[:limit]
+
+    def embedding_stats(self) -> dict:
+        cur = self._conn.execute(
+            "SELECT COUNT(*) AS n, MIN(dimensions) AS min_dim, MAX(dimensions) AS max_dim, model FROM page_embeddings GROUP BY model ORDER BY n DESC"
+        )
+        by_model = [dict(r) for r in cur.fetchall()]
+        total_pages = self.count()
+        total_embedded = sum(r["n"] for r in by_model)
+        return {"pages": total_pages, "embedded": total_embedded, "by_model": by_model}
 
     # -- Page CRUD ---------------------------------------------------------
 
