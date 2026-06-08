@@ -234,11 +234,10 @@ model:
   base_url: https://openrouter.ai/api/v1
 ```
 
-**Case B — routing through an OmniRoute-compatible custom router:** replace the
-entire `model:` block AND the `custom_providers:` list with the mapped `providers:`
-dict form. Use a generic OpenAI-compatible provider for `/v1/chat/completions` and,
-if your router exposes Anthropic Messages compatibility, a second provider for that
-API shape:
+**Case B — routing through an OmniRoute-compatible custom router:** replace the entire
+`model:` block AND the `custom_providers:` list with the mapped `providers:` dict form.
+Use a generic OpenAI-compatible provider for `/v1/chat/completions` and, if your router
+exposes Anthropic Messages compatibility, a second provider for that API shape:
 
 ```yaml
 model:
