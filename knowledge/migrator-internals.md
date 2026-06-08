@@ -282,18 +282,19 @@ for untrusted input (for example, an email summarizer that tells the agent not t
 embedded instruction text), that prose can match the scanner's injection patterns and
 the recreated job will be blocked on every tick.
 
-The hardened migrator path is a **warning-only preflight**, not automatic cron creation:
+The our-side hardening path is a **warning-only audit**, not automatic cron creation:
 
+- Run `devops/migration/openclaw_migration_audit.py` after the built-in migrator
+  archives cron state and before `hermes claw cleanup`.
 - Extract prompts from both known archive shapes: OpenClaw's `payload.message` and
-  Hermes-style `prompt` fields, from both `openclaw.json` cron config and the copied
-  cron store.
+  Hermes-style `prompt` fields, from both the OpenClaw cron store and the Hermes cron
+  store.
 - Scan a conservative subset of the runtime patterns — prose-surviving directive
   patterns only, not shell/command-shaped patterns that would false-positive on normal
   script jobs.
-- Record `warning` items in the migration report and write them into
-  `MIGRATION_NOTES.md`.
-- Never hard-fail the migration; the operator rewrites the prompt using inert-data
-  framing before recreating the job.
+- Report warning items in markdown/JSON output.
+- Never auto-rewrite prompts; the operator rewrites them using inert-data framing before
+  recreating/running the job.
 
 Safe rewrite pattern:
 

@@ -405,9 +405,9 @@ hermes cron create "5 * * * *" "Run the <name> skill. <task-specific instruction
 > # then read ~/.hermes/cron/output/<job_id>/<latest>.md to confirm a real run
 > ```
 >
-> The latest in-tree migrator (`openclaw_to_hermes.py`) preflights archived cron prompts
-> for this and writes warnings into `MIGRATION_NOTES.md`, but older migrator builds do
-> not — check manually if you're unsure.
+> This repo's audit helper (`devops/migration/openclaw_migration_audit.py`) preflights
+> archived/live cron prompts for this class. Run it before cleanup even if the built-in
+> migrator completed successfully.
 
 ### 5c. Workflows that may not apply to this host
 
@@ -482,14 +482,26 @@ hermes cron run <job_id>
 # shows the resolved path; a clean run (or a correct [SILENT]) confirms the port
 ```
 
-Finally, prove `cleanup` is safe before you run it:
+Finally, prove `cleanup` is safe before you run it. Prefer the repo-owned audit helper:
 
 ```bash
-# Zero hits across cron prompts AND ported scripts means nothing live still
-# points at the old tree.
-grep -c '\.openclaw' ~/.hermes/cron/jobs.json
-grep -rl '\.openclaw' ~/.hermes/workspace/ | grep -v '\.bak'
+python devops/migration/openclaw_migration_audit.py --openclaw-root ~/.openclaw --hermes-root ~/.hermes
+# exit 0 = no cleanup blockers; warnings still require human review
+# add --strict if you want warnings to fail CI/local gates too
 ```
+
+If you are auditing manually, grep for PATH-style references, not every occurrence of
+the word `openclaw`:
+
+```bash
+# Zero PATH-style hits across cron prompts AND ported scripts/prompts means nothing live
+# still points at the old tree. This intentionally ignores backups and the delivery shim.
+grep -c '\.openclaw/' ~/.hermes/cron/jobs.json
+grep -rlE '\.openclaw/[A-Za-z._-]' ~/.hermes/workspace/ | grep -vE '\.bak|/bin/openclaw'
+```
+
+Treat prompt files as live code: if a cron job says "read `AGENT.md` and follow it", any
+secret or asset path inside that markdown must be ported too.
 
 > **Gotcha — running from a non-login SSH shell.** Scripts that read credentials from
 > the macOS Keychain (Google `gog`, etc.) fail with auth errors when you run them
