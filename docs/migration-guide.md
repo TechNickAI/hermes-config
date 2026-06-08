@@ -234,36 +234,38 @@ model:
   base_url: https://openrouter.ai/api/v1
 ```
 
-**Case B — routing through a custom router (e.g. 9router on the fleet's Mac Studio):**
-replace the entire `model:` block AND the `custom_providers:` list with the mapped
-`providers:` dict form. This is the shape the rest of the fleet runs:
+**Case B — routing through an OmniRoute-compatible custom router:** replace the
+entire `model:` block AND the `custom_providers:` list with the mapped `providers:`
+dict form. Use a generic OpenAI-compatible provider for `/v1/chat/completions` and,
+if your router exposes Anthropic Messages compatibility, a second provider for that
+API shape:
 
 ```yaml
 model:
   default: chat
-  provider: custom:9router-anthropic
+  provider: custom:omniroute-anthropic
   base_url: http://<router-host>:<port>
   api_mode: anthropic_messages
   context_length: 200000
 
 providers:
-  9router:
-    name: 9Router OpenAI Compat
+  omniroute:
+    name: OmniRoute OpenAI Compat
     base_url: http://<router-host>:<port>/v1
-    key_env: NINEROUTER_KEY
+    key_env: OMNIROUTE_KEY
     api_mode: chat_completions
     models:
-      cx/gpt-5.5:
-        context_length: 1000000
-  9router-anthropic:
-    name: 9Router Anthropic
+      chat: { context_length: 200000 }
+      think: { context_length: 200000 }
+      work: { context_length: 200000 }
+      simple: { context_length: 200000 }
+      cheap: { context_length: 128000 }
+  omniroute-anthropic:
+    name: OmniRoute Anthropic Compat
     base_url: http://<router-host>:<port>
-    key_env: NINEROUTER_KEY
+    key_env: OMNIROUTE_KEY
     api_mode: anthropic_messages
     models:
-      cc/claude-opus-4-7: { context_length: 200000 }
-      cc/claude-sonnet-4-6: { context_length: 200000 }
-      cc/claude-haiku-4-5-20251001: { context_length: 200000 }
       chat: { context_length: 200000 }
       think: { context_length: 200000 }
       work: { context_length: 200000 }
@@ -271,18 +273,17 @@ providers:
       cheap: { context_length: 128000 }
 ```
 
-Then add the env var Hermes is actually looking for (`key_env: NINEROUTER_KEY`):
+Then add the env var Hermes is actually looking for (`key_env: OMNIROUTE_KEY`):
 
 ```bash
-grep -q "^NINEROUTER_KEY=" ~/.hermes/.env || \
-  echo "NINEROUTER_KEY=$(grep ^9ROUTER_ANTHROPIC_API_KEY= ~/.hermes/.env | cut -d= -f2-)" \
-    >> ~/.hermes/.env
+# Store the router key securely; do not paste it into shell history in shared environments.
+grep -q "^OMNIROUTE_KEY=" ~/.hermes/.env || \
+  printf '%s\n' 'OMNIROUTE_KEY=<router-api-key>' >> ~/.hermes/.env
 ```
 
-(The migrator copies OpenClaw's key into `9ROUTER_ANTHROPIC_API_KEY` / `9ROUTER_API_KEY`
-but the provider blocks reference `NINEROUTER_KEY`. Either rename the env var or update
-the `key_env:` to match. We rename above to match the rest of the fleet's working
-config.)
+If your router or migration snapshot uses legacy environment variable names, either
+rename them to `OMNIROUTE_KEY` or update `key_env:` consistently in both provider
+blocks.
 
 ### 4e. Confirm
 
@@ -609,7 +610,7 @@ cat ~/.hermes/cron/output/<job_id>/<latest>.md | tail -10
 
 # 3. Check for stray warnings in the gateway log
 journalctl --user -u hermes-gateway --since "5 minutes ago" --no-pager | \
-  grep -iE "error|warn|api_key|9router|placeholder|invalid|401|400" | \
+  grep -iE "error|warn|api_key|omniroute|placeholder|invalid|401|400" | \
   grep -viE "missing_scope|Discord.*No bot token"
 # Empty output = healthy. Any "no resolvable api_key" line = Phase 4d was incomplete.
 ```
@@ -794,13 +795,13 @@ because the migrator copies the OpenClaw model identifier verbatim
 `openrouter/` prefix when the base_url already targets OpenRouter.
 
 **Symptom (b):** Gateway log shows
-`WARNING agent.auxiliary_client: resolve_provider_client: named custom provider '9router-anthropic' has no resolvable api_key — request will be sent with placeholder`
+`WARNING agent.auxiliary_client: resolve_provider_client: named custom provider 'omniroute-anthropic' has no resolvable api_key — request will be sent with placeholder`
 every minute. Caused by the migrator emitting the list-form `custom_providers:` shape
 with a literal empty `api_key: ''` instead of the mapped `providers:` dict with
 `key_env: <ENV_VAR_NAME>`.
 
 **Symptom (c):** Even when the API key IS in `.env`, the env-var name the migrator emits
-(`9ROUTER_API_KEY`) doesn't match what the provider block references (`NINEROUTER_KEY`).
+doesn't match what the provider block references (`key_env: OMNIROUTE_KEY`).
 
 **Root cause (design):** The migrator currently _transforms_ model config (strips
 prefixes, rewrites provider shape, picks an env-var name). It should _reimplement_ it:
