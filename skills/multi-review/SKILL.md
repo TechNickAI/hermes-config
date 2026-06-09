@@ -359,17 +359,26 @@ risk. Explain the reasoning briefly. Complexity is a real cost.
 
 ### Verdicts and stop criteria
 
-- **pass** — no material findings remain; the artifact is ready for the intended next
-  step.
-- **edit** — changes are needed, but they are straightforward and can be applied without
-  a human judgment call.
+A verdict describes the state of the **remaining open** findings (after auto-fixes,
+deferrals, and wontfix decisions):
+
+- **pass** — no open Critical, High, or Medium findings remain. Every Medium was fixed,
+  explicitly deferred with a recorded reason, or accepted as wontfix. Only un-actioned
+  Lows may remain. The artifact is ready for the intended next step.
+- **edit** — open findings remain but they are straightforward and can be applied
+  without a human judgment call.
 - **hold** — a human decision is needed before proceeding.
 - **block** — unsafe, incorrect, or policy-violating to proceed in current form.
 
+An open Medium (one that is neither fixed, deferred-with-reason, nor wontfix) blocks a
+`pass`; resolve it or downgrade the verdict to `edit`/`hold`. "Deferred with reason"
+means a real, recorded decision — not silently leaving it open.
+
 If the user asked you to execute and the fixes are safe, apply auto-fixes before
-reporting. If the task is review-only, report without modifying. Stop when every High or
-Critical finding is fixed, held for human decision, or explicitly accepted as wontfix
-with reasoning; don't keep reviewing for theoretical improvements forever.
+reporting. If the task is review-only, report without modifying. **Stop criteria:**
+every Critical, High, and Medium finding must be fixed, held for human decision,
+explicitly deferred with a reason, or accepted as wontfix with reasoning before you
+stop. Lows do not block. Don't keep reviewing for theoretical improvements forever.
 
 ## Meta-Review
 
