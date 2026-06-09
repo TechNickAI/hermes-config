@@ -379,14 +379,23 @@ deferrals, and wontfix decisions):
 - **block** — unsafe, incorrect, or policy-violating to proceed in current form.
 
 An open Medium (one that is neither fixed, deferred-with-reason, nor wontfix) blocks a
-`pass`; resolve it or downgrade the verdict to `edit`/`hold`. "Deferred with reason"
-means a real, recorded decision — not silently leaving it open.
+`pass`; resolve it or report the verdict as `edit`/`hold` with the finding and a
+recommendation. "Deferred with reason" means a real, recorded decision — not silently
+leaving it open.
 
-If the user asked you to execute and the fixes are safe, apply auto-fixes before
-reporting. If the task is review-only, report without modifying. **Stop criteria:**
-every Critical, High, and Medium finding must be fixed, held for human decision,
-explicitly deferred with a reason, or accepted as wontfix with reasoning before you
-stop. Lows do not block. Don't keep reviewing for theoretical improvements forever.
+**Resolved vs. silently open.** A finding counts as resolved when it is fixed, asked,
+deferred-with-reason, wontfixed-with-reasoning, **or reported to the caller with a
+concrete recommendation** under an `edit`/`hold`/`block` verdict. Handing a documented
+finding back to the human is a valid terminal state; silently dropping it is not.
+
+If the user asked you to **execute** and the fixes are safe, apply auto-fixes before
+reporting; do not stop with open Critical/High/Medium findings you were authorized to
+fix. If the task is **review-only**, you do not edit the artifact — instead report every
+Critical/High/Medium finding with a recommendation under the appropriate verdict
+(`edit`/`hold`/`block`), which resolves it for the purposes of stopping. **Stop
+criteria:** every Critical, High, and Medium finding must be fixed, asked, held,
+deferred-with-reason, wontfixed-with-reasoning, or reported-with-recommendation before
+you stop. Lows do not block. Don't keep reviewing for theoretical improvements forever.
 
 ## Meta-Review
 
@@ -476,7 +485,7 @@ smallest path to unblock.
 - [ ] Target, audience, and stakes identified
 - [ ] Depth chosen based on risk
 - [ ] Lenses selected for the scenario, not from habit
-- [ ] At least two model families used when available
+- [ ] At least two model families used when available (or degradation stamped if not)
 - [ ] Privacy/PII constraints re-injected into every isolated reviewer prompt
 - [ ] Reviewers ran independently
 - [ ] Findings synthesized into auto-fix / ask / defer / wontfix
