@@ -97,8 +97,16 @@ Use the strongest practical isolation mechanism available:
 3. **Same-model subagents with different lenses** when only one model family is
    available. Increase lens diversity, include at least one contrarian reviewer and one
    meta-review, and stamp `degraded: model-diversity unavailable`.
-4. **Manual single-pass review** only for quick/low-stakes work. Stamp
+4. **Manual single-pass review** only for quick/low-stakes work that is **below every
+   minimum depth floor** (see below). Never use this mode for money/auth/secrets/user-
+   data/irreversible/public/rollout targets, even if they look small. Stamp
    `degraded: single-reviewer` and do not present it as a panel.
+
+**Privacy applies to every path.** The re-injection rule in execution rule 3 below is
+not specific to `--ignore-rules`: any isolated reviewer — native subagent, headless
+one-shot, or same-model subagent — runs without the calling context's project rules. If
+the artifact may contain private data, or you are in a repo with a privacy/PII policy,
+copy those constraints into **every** reviewer prompt regardless of execution path.
 
 ## Depth Scaling
 
@@ -468,6 +476,7 @@ smallest path to unblock.
 - [ ] Depth chosen based on risk
 - [ ] Lenses selected for the scenario, not from habit
 - [ ] At least two model families used when available
+- [ ] Privacy/PII constraints re-injected into every isolated reviewer prompt
 - [ ] Reviewers ran independently
 - [ ] Findings synthesized into auto-fix / ask / defer / wontfix
 - [ ] Safe auto-fixes applied when authorized
