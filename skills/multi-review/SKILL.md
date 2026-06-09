@@ -395,7 +395,8 @@ Before declaring success, review the review:
 - Did the panel match the actual stakes, or did it over-focus on one domain?
 - Did any reviewer hallucinate commands, requirements, or facts?
 - Were false positives rejected with reasons rather than blindly fixed?
-- Were all high-confidence findings either fixed, asked, or explicitly deferred?
+- Were all high-confidence findings resolved — fixed, asked, deferred with a reason, or
+  accepted as wontfix with reasoning?
 - Is the final artifact simpler and safer, not just more complicated?
 - Did the synthesis honestly label degraded conditions, such as unavailable models?
 
