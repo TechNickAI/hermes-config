@@ -367,35 +367,38 @@ risk. Explain the reasoning briefly. Complexity is a real cost.
 
 ### Verdicts and stop criteria
 
-A verdict describes the state of the **remaining open** findings (after auto-fixes,
-deferrals, and wontfix decisions):
+Two distinct ideas — keep them separate:
 
-- **pass** — no open Critical, High, or Medium findings remain. Every Medium was fixed,
-  explicitly deferred with a recorded reason, or accepted as wontfix. Only un-actioned
-  Lows may remain. The artifact is ready for the intended next step.
-- **edit** — open findings remain but they are straightforward and can be applied
-  without a human judgment call.
-- **hold** — a human decision is needed before proceeding.
-- **block** — unsafe, incorrect, or policy-violating to proceed in current form.
+- **Stop criteria** decide when you may _stop reviewing_.
+- **Verdict** reports the _readiness of the artifact_ given what is still open.
 
-An open Medium (one that is neither fixed, deferred-with-reason, nor wontfix) blocks a
-`pass`; resolve it or report the verdict as `edit`/`hold` with the finding and a
-recommendation. "Deferred with reason" means a real, recorded decision — not silently
-leaving it open.
+A finding is **actioned** (you may stop reviewing it) when it is one of: `fixed` ·
+`asked` · `deferred-with-reason` · `wontfixed-with-reasoning` ·
+`reported-with-recommendation`. **Stop criteria:** every Critical, High, and Medium
+finding must be actioned before you stop; Lows do not block. Don't keep reviewing for
+theoretical improvements forever. Actioned ≠ resolved — a deferred Critical is actioned
+but still open.
 
-**Resolved vs. silently open.** A finding counts as resolved when it is fixed, asked,
-deferred-with-reason, wontfixed-with-reasoning, **or reported to the caller with a
-concrete recommendation** under an `edit`/`hold`/`block` verdict. Handing a documented
-finding back to the human is a valid terminal state; silently dropping it is not.
+A finding is **cleared** only when it is `fixed` or `wontfixed-with-reasoning`. Anything
+still requiring work or a human decision (`asked`, `deferred`, `reported`, `held`) is
+**open**, regardless of severity.
 
-If the user asked you to **execute** and the fixes are safe, apply auto-fixes before
-reporting; do not stop with open Critical/High/Medium findings you were authorized to
-fix. If the task is **review-only**, you do not edit the artifact — instead report every
-Critical/High/Medium finding with a recommendation under the appropriate verdict
-(`edit`/`hold`/`block`), which resolves it for the purposes of stopping. **Stop
-criteria:** every Critical, High, and Medium finding must be fixed, asked, held,
-deferred-with-reason, wontfixed-with-reasoning, or reported-with-recommendation before
-you stop. Lows do not block. Don't keep reviewing for theoretical improvements forever.
+The verdict is then mechanical:
+
+- **pass** — no open Critical, High, or Medium findings; every one was _cleared_ (fixed
+  or wontfixed). Only un-actioned Lows may remain. Ready for the next step. A deferred
+  or merely-reported Critical/High/Medium can **never** be `pass`.
+- **edit** — open findings remain, but they are straightforward and applyable without a
+  human judgment call.
+- **hold** — an open finding needs a human decision before proceeding.
+- **block** — unsafe, incorrect, or policy-violating to proceed in current form. Any
+  open Critical that was not cleared lands here (or `hold`), never `pass`.
+
+If the user asked you to **execute** and the fixes are safe, clear what you're
+authorized to clear before reporting; don't stop with fixable open Critical/High/Medium.
+If the task is **review-only**, you don't edit the artifact — report each open
+Critical/High/Medium with a recommendation under `edit`/`hold`/`block`. That satisfies
+the stop criteria (actioned) without claiming the artifact is ready (it isn't `pass`).
 
 ## Meta-Review
 
@@ -404,8 +407,9 @@ Before declaring success, review the review:
 - Did the panel match the actual stakes, or did it over-focus on one domain?
 - Did any reviewer hallucinate commands, requirements, or facts?
 - Were false positives rejected with reasons rather than blindly fixed?
-- Were all high-confidence findings resolved — fixed, asked, deferred with a reason, or
-  accepted as wontfix with reasoning?
+- Were all high-confidence findings actioned — fixed, asked, deferred-with-reason,
+  wontfixed-with-reasoning, or reported-with-recommendation (and Critical/High only
+  marked `pass` if actually cleared, not merely deferred)?
 - Is the final artifact simpler and safer, not just more complicated?
 - Did the synthesis honestly label degraded conditions, such as unavailable models?
 
