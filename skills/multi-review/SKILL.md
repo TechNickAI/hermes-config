@@ -161,26 +161,36 @@ The cleanest way to run an independent reviewer is a headless `hermes -z` call a
 chosen provider/model. Confirm the local profile actually has the provider before using
 it: `hermes config get model.providers` (or read `~/.hermes/config.yaml`).
 
-**Three execution rules that prevent silent failures:**
+**Four execution rules that prevent silent failures:**
 
-1. **Never inline a large artifact into the command string.** PR diffs, logs, and full
-   files blow past the shell `ARG_MAX` limit (`Argument list too long`) and break on
-   quote nesting. Write the full prompt (lens instructions + artifact) to a temp file,
-   then read it in: `hermes -z "$(cat /tmp/review-grok.txt)" ...`. For very large or
-   binary-ish inputs, invoke the subprocess from the `execute_code` Python tool instead
-   of a shell.
+1. **Mind the artifact size.** A `hermes -z "$PROMPT"` call places the whole prompt on
+   the process argv, and command substitution like `hermes -z "$(cat file)"` does the
+   same — it does **not** dodge the limit. Normal artifacts (a function, a small diff, a
+   message) are fine. For large inputs — big PR diffs, full logs, multi-file dumps —
+   argv can hit `ARG_MAX` (`Argument list too long`). When the artifact is large, prefer
+   **subagents with a per-task model** (the artifact travels in-band, not on argv) or
+   **chunk the artifact** into per-file/per-section reviews and synthesize. Do not
+   pretend a temp file plus `$(cat ...)` solves this; it doesn't.
 2. **Always disable tools with `-t ''`.** A headless reviewer that tries to call a tool
    will hang waiting for an approval that never comes. `-t ''` keeps it a pure text-in /
    text-out review. Do not remove it when customizing.
-3. **Use `--ignore-rules`** so the calling profile's persona and project rules do not
-   wash out the specialized review lens.
+3. **Use `--ignore-rules` deliberately, and re-inject any safety rules you still need.**
+   It stops the calling profile's persona from washing out the review lens — but it also
+   strips project rules. If the artifact may contain private data (real names, host
+   paths, ports, secrets, internal context) or you're operating in a repo with a
+   privacy/PII policy (for example an `AGENTS.md` zero-PII block), **copy those
+   constraints into the reviewer prompt** so the headless reviewer doesn't echo
+   sensitive data into its output or any follow-up text. Independence of lens, not loss
+   of safety.
+4. **Confirm the provider exists first** with `hermes config get model.providers` (or
+   read `~/.hermes/config.yaml`) before selecting it.
 
 ```bash
 # Provider/model names are illustrative — match them to the local config.
-# Public/standard providers:
-hermes -z "$(cat /tmp/review-grok.txt)"   --provider openrouter -m x-ai/grok-4.3            --ignore-rules -t ''
-hermes -z "$(cat /tmp/review-gemini.txt)" --provider google     -m gemini-2.5-pro           --ignore-rules -t ''
-hermes -z "$(cat /tmp/review-gpt.txt)"    --provider openai     -m gpt-4o                   --ignore-rules -t ''
+# Suitable for normal-sized artifacts; for large inputs, prefer subagents or chunking.
+hermes -z "$PROMPT_GROK"   --provider openrouter -m x-ai/grok-4.3  --ignore-rules -t ''
+hermes -z "$PROMPT_GEMINI" --provider google     -m gemini-2.5-pro --ignore-rules -t ''
+hermes -z "$PROMPT_GPT"    --provider openai      -m gpt-4o         --ignore-rules -t ''
 ```
 
 If the profile routes everything through a custom multi-provider router, the providers
@@ -282,6 +292,9 @@ Give each reviewer the same target but a different job. Keep prompts focused:
 ```text
 You are the <lens> reviewer in a multi-review panel.
 
+[If the artifact may contain private data or you are in a repo with a privacy/PII
+policy, paste those constraints here so this reviewer keeps them in force.]
+
 Review target:
 <artifact or action plan>
 
@@ -296,6 +309,7 @@ Your job:
 - Distinguish real issues from tradeoffs, false positives, and merely theoretical
   improvements.
 - Do not rewrite the whole artifact unless the lens requires it.
+- Do not echo private data (names, host paths, ports, secrets) into your output.
 ```
 
 Do not ask every reviewer to solve everything. Reviewers are sharper when their scope is
@@ -435,6 +449,9 @@ smallest path to unblock.
    back honestly and note how to improve the panel next time.
 8. **Confusing optimization with defect discovery.** The goal is meaningful risk
    reduction, not generating feedback for its own sake.
+9. **Letting `--ignore-rules` strip safety, not just persona.** It also removes project
+   privacy/PII rules. Re-inject any privacy or safety constraints the artifact needs
+   into each reviewer prompt before ignoring rules.
 
 ## Verification Checklist
 
