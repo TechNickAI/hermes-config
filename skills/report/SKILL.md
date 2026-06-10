@@ -53,17 +53,17 @@ or a suggestion.
      form (enough to let a triager reproduce or understand)
    - Do NOT include raw API keys, tokens, or personal credentials anywhere in the body.
 4. **Write body to a temp file** (e.g. `/tmp/bug-body-<session_id>.md`).
-5. **Run the helper script** (see Script Path below). It handles both paths:
-   - **Local (board-owner profile):** `hermes kanban create --triage` +
-     `hermes kanban notify-subscribe`
-
-- **Remote (all other fleet members):** HMAC-signed POST to `$BUG_WEBHOOK_URL`; dropfile
-  fallback if gateway is down dropfile fallback if gateway is down
-
-6. **Parse the result.** On success, confirm to the user with the task id. On failure,
-   DM the maintainer the raw report body so nothing drops.
-7. **Confirm.** Tell the user the card id and, if the closed loop was wired: _"You'll
-   get a ping here when it's resolved."_
+5. **File the report.** Prefer the helper script if it is installed with this skill (see
+   Script Path below). If only this `SKILL.md` is installed, use the self-contained
+   fallback workflow below — do not fail just because `scripts/file_bug.py` is absent.
+6. **Confirm.**
+   - Local path: tell the user the card id and: _"You'll get a ping here when it's
+     resolved."_
+   - Remote path: tell the user the report was sent to the triage board and they will
+     get a ping when it is triaged or resolved. The remote path is asynchronous, so it
+     may not have a card id immediately.
+7. **Never drop the report.** If filing fails, save the markdown body to a local
+   dropfile and tell the maintainer where it is.
 
 ## Script path
 
@@ -114,6 +114,10 @@ Parse stdout as JSON:
 
 ## Fallback (if script not found)
 
+The fallback is self-contained so a single-file skill install still works.
+
+### Local fallback (no `BUG_WEBHOOK_URL` configured)
+
 ```bash
 hermes kanban create "<title>" \
   --triage \
@@ -123,7 +127,7 @@ hermes kanban create "<title>" \
   --json
 ```
 
-Then:
+Then subscribe the reporter's current chat, using fields that exist in the session env:
 
 ```bash
 hermes kanban notify-subscribe <task_id> \
@@ -131,6 +135,68 @@ hermes kanban notify-subscribe <task_id> \
   --chat-id <HERMES_SESSION_CHAT_ID> \
   [--thread-id <HERMES_SESSION_THREAD_ID>] \
   [--user-id <HERMES_SESSION_USER_ID>]
+```
+
+### Remote fallback (`BUG_WEBHOOK_URL` configured)
+
+Run this with `TITLE`, `BODY_FILE`, and `REPORTER` exported. It posts to the board owner
+using Hermes' generic webhook signature contract (`X-Webhook-Signature` = hex
+HMAC-SHA256 of the raw JSON body). The receiver is asynchronous and returns a delivery
+id, not a card id.
+
+```bash
+python3 - <<'PY'
+import hashlib, hmac, json, os, pathlib, time, urllib.error, urllib.request
+
+url = os.environ["BUG_WEBHOOK_URL"]
+secret = os.environ["BUG_WEBHOOK_SECRET"]
+title = os.environ["TITLE"]
+body = open(os.environ["BODY_FILE"]).read()
+reporter_id = (
+    os.environ.get("HERMES_SESSION_ID")
+    or os.environ.get("HERMES_SESSION_CHAT_ID")
+    or os.environ.get("HERMES_PROFILE")
+    or f"cli-{os.getpid()}"
+)
+bucket = int(time.time()) // 120
+title_slug = hashlib.sha256(title.encode()).hexdigest()[:8]
+idem_basis = f"{reporter_id}:{title_slug}:{bucket}"
+idem = "bug-" + hashlib.sha256(idem_basis.encode()).hexdigest()[:16]
+payload = {
+    "event_type": "bug_report",
+    "title": title,
+    "body": body,
+    "idempotency_key": idem,
+    "reporter": os.environ.get("REPORTER") or os.environ.get("HERMES_SESSION_USER_NAME", "fleet-user"),
+    "profile": os.environ.get("HERMES_PROFILE", ""),
+    "tenant": os.environ.get("BUG_TENANT", "fleet-bugs"),
+    "platform": os.environ.get("HERMES_SESSION_PLATFORM", ""),
+    "chat_id": os.environ.get("HERMES_SESSION_CHAT_ID", ""),
+    "thread_id": os.environ.get("HERMES_SESSION_THREAD_ID", ""),
+    "user_id": os.environ.get("HERMES_SESSION_USER_ID", ""),
+    "session_id": os.environ.get("HERMES_SESSION_ID", ""),
+    "timestamp": int(time.time()),
+}
+raw = json.dumps(payload, separators=(",", ":")).encode()
+sig = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+req = urllib.request.Request(url, data=raw, method="POST", headers={
+    "content-type": "application/json",
+    "X-Webhook-Signature": sig,
+    "X-Idempotency-Key": idem,
+})
+try:
+    with urllib.request.urlopen(req, timeout=15) as r:
+        resp = json.loads(r.read().decode() or "{}")
+    status = resp.get("status")
+    if status is not None and status not in {"accepted", "delivered", "duplicate"}:
+        raise RuntimeError(f"server response not accepted: {resp!r}")
+    print(json.dumps({"ok": True, "path": "remote", "status": status or "accepted"}))
+except (Exception, urllib.error.HTTPError) as e:
+    drop = pathlib.Path("/tmp") / f"bug-report-{idem}.json"
+    drop.write_text(json.dumps({"payload": payload, "error": str(e)}, indent=2))
+    print(json.dumps({"ok": False, "path": "remote", "dropfile": str(drop), "error": str(e)}))
+    raise SystemExit(3)
+PY
 ```
 
 ## User-facing confirmation
@@ -151,7 +217,8 @@ After a failure with dropfile:
 
 ## Configuration
 
-Set these in `~/.hermes/.env` (or the profile's `.env`):
+Set these as environment variables in your Hermes profile's dotenv file (the `.env` next
+to your profile config), or export them in the gateway's environment:
 
 | Variable             | Required on        | Purpose                                                                               |
 | -------------------- | ------------------ | ------------------------------------------------------------------------------------- |
