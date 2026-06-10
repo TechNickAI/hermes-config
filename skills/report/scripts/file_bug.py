@@ -345,10 +345,16 @@ def main() -> int:
         if result.get("ok"):
             if result.get("async"):
                 # Remote path: accepted by the board owner, card id assigned there.
-                print(
-                    "Report sent to the triage board. "
-                    "You'll get a ping here when it's triaged or resolved."
-                )
+                if result.get("status") == "duplicate":
+                    print(
+                        "This report was already filed (deduplicated). "
+                        "You'll get a ping here when it's triaged or resolved."
+                    )
+                else:
+                    print(
+                        "Report sent to the triage board. "
+                        "You'll get a ping here when it's triaged or resolved."
+                    )
             else:
                 tid = result.get("task_id", "?")
                 loop = (

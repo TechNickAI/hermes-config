@@ -149,11 +149,21 @@ python3 - <<'PY'
 import hashlib, hmac, json, os, sys, time, urllib.request
 url = os.environ["BUG_WEBHOOK_URL"]
 secret = os.environ["BUG_WEBHOOK_SECRET"]
+title = os.environ["TITLE"]
 body = open(os.environ["BODY_FILE"]).read()
+session_key = (
+    os.environ.get("HERMES_SESSION_ID")
+    or os.environ.get("HERMES_SESSION_CHAT_ID")
+    or os.environ.get("HERMES_PROFILE")
+    or "fleet"
+)
+title_hash = hashlib.sha256(title.encode()).hexdigest()[:12]
+idem = f"report:{session_key}:{title_hash}"
 payload = {
     "event_type": "bug_report",
-    "title": os.environ["TITLE"],
+    "title": title,
     "body": body,
+    "idempotency_key": idem,
     "reporter": os.environ.get("REPORTER") or os.environ.get("HERMES_SESSION_USER_NAME", "fleet-user"),
     "profile": os.environ.get("HERMES_PROFILE", ""),
     "tenant": os.environ.get("BUG_TENANT", "fleet-bugs"),
@@ -169,6 +179,7 @@ sig = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
 req = urllib.request.Request(url, data=raw, method="POST", headers={
     "content-type": "application/json",
     "X-Webhook-Signature": sig,
+    "X-Idempotency-Key": idem,
 })
 with urllib.request.urlopen(req, timeout=15) as r:
     print(r.read().decode())
