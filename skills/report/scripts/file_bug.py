@@ -165,6 +165,7 @@ def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> d
     url = _env("BUG_WEBHOOK_URL")
     secret = _env("BUG_WEBHOOK_SECRET")
     payload = {
+        "event_type": "bug_report",
         "title": args.title,
         "body": body,
         "reporter": args.reporter or meta.get("user_name") or "fleet-user",
@@ -191,38 +192,60 @@ def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> d
         url, data=raw,
         headers={
             "content-type": "application/json",
-            "x-hermes-signature": f"sha256={sig}",
+            # Hermes' generic webhook receiver expects exactly this header: a hex
+            # HMAC-SHA256 over the raw request body, with NO "sha256=" prefix.
+            "X-Webhook-Signature": sig,
+            # Receiver uses payload.event_type for route filtering; this header is
+            # informational and harmless if the route ignores it.
+            "X-Idempotency-Key": idem,
         },
         method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
+            status_code = r.status
             raw_resp = r.read().decode()
         try:
             resp = json.loads(raw_resp or "{}")
         except json.JSONDecodeError:
-            # 2xx with a non-JSON body — we can't confirm the card was created,
-            # so treat it as a delivery failure and keep the report.
+            # 2xx with a non-JSON body — we can't confirm acceptance, so treat it
+            # as a delivery failure and keep the report.
             f = _dropfile(payload, f"remote returned non-JSON body: {raw_resp[:200]!r}")
             return {
                 "ok": False, "path": "remote", "dropfile": str(f),
                 "error": "server returned a non-JSON response",
             }
-        task_id = resp.get("task_id") or resp.get("id")
-        if not task_id:
-            # Server returned 2xx but no task id — treat as a delivery failure.
-            f = _dropfile(payload, f"remote returned 2xx but no task_id: {resp!r:.200}")
+
+        # The Hermes webhook receiver is ASYNC: it returns 202 {status:"accepted",
+        # delivery_id:...} and spawns the board-owner agent to create the card and
+        # subscribe this reporter's chat. There is no synchronous task_id. We treat
+        # any of the receiver's success statuses as "accepted for processing".
+        status = resp.get("status")
+        accepted_statuses = {"accepted", "delivered", "duplicate"}
+        if status in accepted_statuses or 200 <= status_code < 300:
             return {
-                "ok": False, "path": "remote", "dropfile": str(f),
-                "error": f"server response missing task_id: {resp!r:.100}",
+                "ok": True, "path": "remote",
+                "status": status or "accepted",
+                # delivery_id is the receiver's idempotency/tracking handle; the
+                # card id is assigned asynchronously on the board owner.
+                "delivery_id": resp.get("delivery_id"),
+                "async": True,
             }
+
+        # 2xx but an unrecognized/negative status — keep the report.
+        f = _dropfile(payload, f"remote returned unexpected status: {resp!r:.200}")
         return {
-            "ok": True, "path": "remote",
-            "task_id": task_id,
-            "status": resp.get("status"),
-            "subscribed": bool(resp.get("subscribed")),
+            "ok": False, "path": "remote", "dropfile": str(f),
+            "error": f"server response not an accepted status: {resp!r:.100}",
         }
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+    except urllib.error.HTTPError as e:
+        # 4xx/5xx — surface the code so a 401 (bad signature) is debuggable.
+        f = _dropfile(payload, f"POST rejected: HTTP {e.code}")
+        return {
+            "ok": False, "path": "remote", "dropfile": str(f),
+            "error": f"HTTP {e.code}: {e.reason}",
+        }
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
         f = _dropfile(payload, f"POST failed: {type(e).__name__}: {e}")
         return {"ok": False, "path": "remote", "dropfile": str(f), "error": str(e)}
 
@@ -309,11 +332,20 @@ def main() -> int:
         print(json.dumps(result, indent=2))
     else:
         if result.get("ok"):
-            tid = result.get("task_id", "?")
-            loop = (
-                " You'll get a ping here when it's resolved." if result.get("subscribed") else ""
-            )
-            print(f"Filed as {tid}.{loop}")
+            if result.get("async"):
+                # Remote path: accepted by the board owner, card id assigned there.
+                print(
+                    "Report sent to the triage board. "
+                    "You'll get a ping here when it's triaged or resolved."
+                )
+            else:
+                tid = result.get("task_id", "?")
+                loop = (
+                    " You'll get a ping here when it's resolved."
+                    if result.get("subscribed")
+                    else ""
+                )
+                print(f"Filed as {tid}.{loop}")
         else:
             drop = result.get("dropfile")
             print(
