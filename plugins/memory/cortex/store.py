@@ -269,6 +269,8 @@ class CortexStore:
                             "INSERT OR REPLACE INTO pages (rel_path, category, title, tags, body, mtime, size) VALUES (?,?,?,?,?,?,?)",
                             (rel, category, title, tags_str, body, mtime, p.stat().st_size),
                         )
+                        # Invalidate stale embedding so backfill regenerates it from new content
+                        conn.execute("DELETE FROM page_embeddings WHERE rel_path = ?", (rel,))
                         changed += 1
                     except sqlite3.Error as e:
                         logger.debug("CortexStore: failed to index %s: %s", rel, e)
@@ -415,13 +417,15 @@ class CortexStore:
             return []
         q = [float(x) for x in qvecs[0]]
         qdim = len(q)
+        active_model = getattr(self.embedder, "model", "unknown")
         sql = """
             SELECT p.rel_path, p.category, p.title, p.tags, p.body, e.embedding, e.dimensions, e.model
             FROM page_embeddings e
             JOIN pages p ON p.rel_path = e.rel_path
             WHERE e.dimensions = ?
+            AND e.model = ?
         """
-        params: list[Any] = [qdim]
+        params: list[Any] = [qdim, active_model]
         if category:
             sql += " AND p.category = ?"
             params.append(category)
