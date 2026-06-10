@@ -146,19 +146,22 @@ id, not a card id.
 
 ```bash
 python3 - <<'PY'
-import hashlib, hmac, json, os, sys, time, urllib.request
+import hashlib, hmac, json, os, pathlib, time, urllib.error, urllib.request
+
 url = os.environ["BUG_WEBHOOK_URL"]
 secret = os.environ["BUG_WEBHOOK_SECRET"]
 title = os.environ["TITLE"]
 body = open(os.environ["BODY_FILE"]).read()
-session_key = (
+reporter_id = (
     os.environ.get("HERMES_SESSION_ID")
     or os.environ.get("HERMES_SESSION_CHAT_ID")
     or os.environ.get("HERMES_PROFILE")
-    or "fleet"
+    or f"cli-{os.getpid()}"
 )
-title_hash = hashlib.sha256(title.encode()).hexdigest()[:12]
-idem = f"report:{session_key}:{title_hash}"
+bucket = int(time.time()) // 120
+title_slug = hashlib.sha256(title.encode()).hexdigest()[:8]
+idem_basis = f"{reporter_id}:{title_slug}:{bucket}"
+idem = "bug-" + hashlib.sha256(idem_basis.encode()).hexdigest()[:16]
 payload = {
     "event_type": "bug_report",
     "title": title,
@@ -181,8 +184,18 @@ req = urllib.request.Request(url, data=raw, method="POST", headers={
     "X-Webhook-Signature": sig,
     "X-Idempotency-Key": idem,
 })
-with urllib.request.urlopen(req, timeout=15) as r:
-    print(r.read().decode())
+try:
+    with urllib.request.urlopen(req, timeout=15) as r:
+        resp = json.loads(r.read().decode() or "{}")
+    status = resp.get("status")
+    if status is not None and status not in {"accepted", "delivered", "duplicate"}:
+        raise RuntimeError(f"server response not accepted: {resp!r}")
+    print(json.dumps({"ok": True, "path": "remote", "status": status or "accepted"}))
+except (Exception, urllib.error.HTTPError) as e:
+    drop = pathlib.Path("/tmp") / f"bug-report-{idem}.json"
+    drop.write_text(json.dumps({"payload": payload, "error": str(e)}, indent=2))
+    print(json.dumps({"ok": False, "path": "remote", "dropfile": str(drop), "error": str(e)}))
+    raise SystemExit(3)
 PY
 ```
 
