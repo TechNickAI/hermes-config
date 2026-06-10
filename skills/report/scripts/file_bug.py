@@ -218,11 +218,21 @@ def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> d
 
         # The Hermes webhook receiver is ASYNC: it returns 202 {status:"accepted",
         # delivery_id:...} and spawns the board-owner agent to create the card and
-        # subscribe this reporter's chat. There is no synchronous task_id. We treat
-        # any of the receiver's success statuses as "accepted for processing".
+        # subscribe this reporter's chat. There is no synchronous task_id.
+        #
+        # Trust the application-level `status` field FIRST. A 2xx transport code
+        # only means the request was received, not that the report was accepted —
+        # a receiver may return 200 {"status":"rejected"} or {"status":"error"}.
+        # Only fall back to the transport code when the body carries no status at
+        # all (e.g. a bare 202 with an empty/idless body).
         status = resp.get("status")
         accepted_statuses = {"accepted", "delivered", "duplicate"}
-        if status in accepted_statuses or 200 <= status_code < 300:
+        is_accepted = (
+            status in accepted_statuses
+            if status is not None
+            else 200 <= status_code < 300
+        )
+        if is_accepted:
             return {
                 "ok": True, "path": "remote",
                 "status": status or "accepted",
@@ -232,7 +242,8 @@ def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> d
                 "async": True,
             }
 
-        # 2xx but an unrecognized/negative status — keep the report.
+        # 2xx transport but an explicit non-accepted application status
+        # (rejected/error/etc.) — keep the report so nothing drops silently.
         f = _dropfile(payload, f"remote returned unexpected status: {resp!r:.200}")
         return {
             "ok": False, "path": "remote", "dropfile": str(f),
