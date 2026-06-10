@@ -87,17 +87,28 @@ routing is unavailable, say `degraded: single-model` and explain what still ran.
 
 ### Execution hierarchy
 
-Use the strongest practical isolation mechanism available:
+Use the strongest practical isolation mechanism available, but match it to the task's
+shape:
 
 1. **Native subagents with per-task model override** when the runtime supports selecting
-   provider/model per child agent. This is best because prompts, context, and failures
-   are naturally isolated.
-2. **Headless Hermes one-shots** (`hermes -z ... --provider ... -m ... -t ''`) when
-   subagents cannot select model families. This is the most portable Hermes pattern.
-3. **Same-model subagents with different lenses** when only one model family is
+   provider/model per child agent **and the reviewer task is bounded reasoning**: a
+   self-contained artifact, a clear lens, and no exploratory I/O. This is best because
+   prompts, context, and failures are naturally isolated.
+2. **Headless Hermes one-shots** (`hermes -z ... --provider ... -m ... -t ''`) for pure
+   text-in/text-out reviewer calls, especially when subagents cannot select model
+   families. This is the most portable Hermes pattern. Use a higher timeout than the
+   default for real reviews; 300-600 seconds is usually reasonable, and deep/slow model
+   panels may need the upper end.
+3. **Parent-gathered I/O + reviewer one-shots** for open-ended or I/O-heavy review work
+   (large filesystem searches, email/search crawls, binary downloads, multi-step data
+   collection). Do the I/O in the parent with normal tools, reduce it to a bounded
+   brief, then send that brief to reviewers. Do **not** hand an open-ended crawl to
+   subagents — many runtimes enforce a child timeout (often about 600 seconds), and the
+   review will fail before synthesis.
+4. **Same-model subagents with different lenses** when only one model family is
    available. Increase lens diversity, include at least one contrarian reviewer and one
    meta-review, and stamp `degraded: model-diversity unavailable`.
-4. **Manual single-pass review** only for quick/low-stakes work that is **below every
+5. **Manual single-pass review** only for quick/low-stakes work that is **below every
    minimum depth floor** (see below). Never use this mode for money/auth/secrets/user-
    data/irreversible/public/rollout targets, even if they look small. Stamp
    `degraded: single-reviewer` and do not present it as a panel.
@@ -169,20 +180,25 @@ The cleanest way to run an independent reviewer is a headless `hermes -z` call a
 chosen provider/model. Confirm the local profile actually has the provider before using
 it: `hermes config get model.providers` (or read `~/.hermes/config.yaml`).
 
-**Four execution rules that prevent silent failures:**
+**Five execution rules that prevent silent failures:**
 
 1. **Mind the artifact size.** A `hermes -z "$PROMPT"` call places the whole prompt on
    the process argv, and command substitution like `hermes -z "$(cat file)"` does the
    same — it does **not** dodge the limit. Normal artifacts (a function, a small diff, a
    message) are fine. For large inputs — big PR diffs, full logs, multi-file dumps —
    argv can hit `ARG_MAX` (`Argument list too long`). When the artifact is large, prefer
-   **subagents with a per-task model** (the artifact travels in-band, not on argv) or
-   **chunk the artifact** into per-file/per-section reviews and synthesize. Do not
-   pretend a temp file plus `$(cat ...)` solves this; it doesn't.
+   **chunking** into per-file/per-section reviews or gather in the parent and send a
+   bounded brief. Do not pretend a temp file plus `$(cat ...)` solves this; it doesn't.
 2. **Always disable tools with `-t ''`.** A headless reviewer that tries to call a tool
    will hang waiting for an approval that never comes. `-t ''` keeps it a pure text-in /
    text-out review. Do not remove it when customizing.
-3. **Use `--ignore-rules` deliberately, and re-inject any safety rules you still need.**
+3. **Use a higher timeout than the default for real reviews.** Review models often take
+   longer than normal chat, especially with long prompts or slow/deep models. When
+   launching via an agent terminal tool, set the tool timeout to **300 seconds for
+   normal reviews** and **600 seconds for deep/slow panels**. If the run still times
+   out, shrink the artifact or split the panel; don't silently fall back to a partial
+   review.
+4. **Use `--ignore-rules` deliberately, and re-inject any safety rules you still need.**
    It stops the calling profile's persona from washing out the review lens — but it also
    strips project rules. If the artifact may contain private data (real names, host
    paths, ports, secrets, internal context) or you're operating in a repo with a
@@ -190,12 +206,14 @@ it: `hermes config get model.providers` (or read `~/.hermes/config.yaml`).
    constraints into the reviewer prompt** so the headless reviewer doesn't echo
    sensitive data into its output or any follow-up text. Independence of lens, not loss
    of safety.
-4. **Confirm the provider exists first** with `hermes config get model.providers` (or
+5. **Confirm the provider exists first** with `hermes config get model.providers` (or
    read `~/.hermes/config.yaml`) before selecting it.
 
 ```bash
 # Provider/model names are illustrative — match them to the local config.
-# Suitable for normal-sized artifacts; for large inputs, prefer subagents or chunking.
+# Suitable for normal-sized artifacts; for large inputs, chunk or send a bounded brief.
+# When running these through an agent terminal tool, set timeout=300 for normal reviews
+# and timeout=600 for deep/slow model panels.
 hermes -z "$PROMPT_GROK"   --provider openrouter -m x-ai/grok-4.3  --ignore-rules -t ''
 hermes -z "$PROMPT_GEMINI" --provider google     -m gemini-2.5-pro --ignore-rules -t ''
 hermes -z "$PROMPT_GPT"    --provider openai      -m gpt-4o         --ignore-rules -t ''
@@ -483,6 +501,13 @@ smallest path to unblock.
 9. **Letting `--ignore-rules` strip safety, not just persona.** It also removes project
    privacy/PII rules. Re-inject any privacy or safety constraints the artifact needs
    into each reviewer prompt before ignoring rules.
+10. **Delegating open-ended I/O-heavy review work.** Subagents are best for bounded
+    reasoning. For crawls, searches, downloads, or broad file inspection, gather and
+    reduce in the parent first, then send reviewers a self-contained brief.
+11. **Committing private routing notes to a public skill.** Profile-specific provider
+    aliases, private endpoints, key env names, and owner-specific panel recipes belong
+    in private profile references, not the public repo. Public guidance should describe
+    the pattern and safety constraints, not private infrastructure.
 
 ## Verification Checklist
 
