@@ -274,7 +274,7 @@ def main() -> int:
         help="Profile that owns the triage board (local short-circuit target). "
              "Set REPORT_BOARD_OWNER env var or pass --owner-profile to override.",
     )
-    ap.add_argument("--tenant", default=os.environ.get("REPORT_TENANT", "fleet-reports"))
+    ap.add_argument("--tenant", default=os.environ.get("REPORT_TENANT") or "fleet-reports")
     ap.add_argument(
         "--force-remote", action="store_true",
         help="Force the remote POST path even on the owner (for testing).",
@@ -304,17 +304,20 @@ def main() -> int:
     idem = _idempotency_key(meta, args.title)
     active = _active_profile()
 
-    # Migration guard: the pre-rename rollout used BUG_* env vars. If a host still
-    # has a legacy BUG_* var set but not its REPORT_* replacement, fail loudly with
-    # a migration hint rather than silently routing to the local board (which would
-    # quietly drop the report off the shared triage queue during the rename window).
-    legacy_pairs = [
-        ("BUG_WEBHOOK_URL", "REPORT_WEBHOOK_URL"),
-        ("BUG_WEBHOOK_SECRET", "REPORT_WEBHOOK_SECRET"),
-        ("BUG_BOARD_OWNER", "REPORT_BOARD_OWNER"),
-        ("BUG_TENANT", "REPORT_TENANT"),
-    ]
-    stale = [old for old, new in legacy_pairs if os.environ.get(old) and not os.environ.get(new)]
+    # Migration guard: the pre-rename rollout used BUG_* env vars. Only the
+    # routing-affecting ones matter — a stale BUG_WEBHOOK_URL or BUG_BOARD_OWNER
+    # without its REPORT_* replacement can silently change where a report lands
+    # (e.g. fall through to the local board, dropping it off the shared queue).
+    # We deliberately do NOT block on a properly-configured owner who merely has
+    # a harmless leftover BUG_* var, nor on non-routing vars (secret/tenant).
+    has_report_webhook = bool(_env("REPORT_WEBHOOK_URL"))
+    has_report_owner = bool(os.environ.get("REPORT_BOARD_OWNER"))
+    is_named_owner = has_report_owner and active == os.environ["REPORT_BOARD_OWNER"]
+    stale = []
+    if os.environ.get("BUG_WEBHOOK_URL") and not has_report_webhook and not is_named_owner:
+        stale.append("BUG_WEBHOOK_URL")
+    if os.environ.get("BUG_BOARD_OWNER") and not has_report_owner:
+        stale.append("BUG_BOARD_OWNER")
     if stale:
         msg = (
             "Stale pre-rename config detected: "

@@ -117,6 +117,11 @@ Parse stdout as JSON:
 
 The fallback is self-contained so a single-file skill install still works.
 
+> **Migration note:** if this host still has pre-rename `BUG_WEBHOOK_URL` /
+> `BUG_BOARD_OWNER` set but not the new `REPORT_*` names, do NOT fall through to the
+> local path — that would drop the report off the shared queue. Rename the env vars to
+> their `REPORT_*` equivalents first, then file.
+
 ### Local fallback (no `REPORT_WEBHOOK_URL` configured)
 
 ```bash
@@ -170,7 +175,7 @@ payload = {
     "idempotency_key": idem,
     "reporter": os.environ.get("REPORTER") or os.environ.get("HERMES_SESSION_USER_NAME", "fleet-user"),
     "profile": os.environ.get("HERMES_PROFILE", ""),
-    "tenant": os.environ.get("REPORT_TENANT", "fleet-reports"),
+    "tenant": os.environ.get("REPORT_TENANT") or "fleet-reports",
     "platform": os.environ.get("HERMES_SESSION_PLATFORM", ""),
     "chat_id": os.environ.get("HERMES_SESSION_CHAT_ID", ""),
     "thread_id": os.environ.get("HERMES_SESSION_THREAD_ID", ""),
