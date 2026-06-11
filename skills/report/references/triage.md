@@ -11,7 +11,7 @@ body:       Markdown with:
               - Reporter metadata (profile, platform, timestamp)
               - Context block (transcript excerpt if captured)
               - Reproduction info
-tenant:     fleet-bugs
+tenant:     fleet-reports
 status:     triage
 created-by: the reporting user's name or platform handle
 ```
@@ -48,9 +48,9 @@ or blocked, the reporter gets a `⏸` ping instead.
 
 ## Labels / tenants
 
-All fleet bug reports land in `--tenant fleet-bugs`. Use
-`hermes kanban ls --tenant fleet-bugs` for the full queue. Other tenants are unrelated
-work streams; don't mix.
+All fleet bug reports land in `--tenant fleet-reports`. Use
+`hermes kanban ls --tenant fleet-reports` for the full queue. Other tenants are
+unrelated work streams; don't mix.
 
 ## Escalation
 
