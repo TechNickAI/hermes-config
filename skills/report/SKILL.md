@@ -1,12 +1,12 @@
 ---
 name: report
 description: >
-  File a bug report or piece of feedback from any Hermes platform session. Load this
-  skill when the user says "/report", "file a bug", "report a bug", "something's
-  broken", "something's wrong", "that's weird", "this is wrong", "this isn't working",
-  "log this issue", or any other signal that they want to capture a problem for triage.
-  Works on Telegram, Discord, Slack, and the CLI — the closed loop (a notification back
-  to this chat when the issue is resolved) is wired automatically for gateway sessions.
+  File a report or piece of feedback from any Hermes platform session. Load this skill
+  when the user says "/report", "file a bug", "report a bug", "something's broken",
+  "something's wrong", "that's weird", "this is wrong", "this isn't working", "log this
+  issue", or any other signal that they want to capture a problem for triage. Works on
+  Telegram, Discord, Slack, and the CLI — the closed loop (a notification back to this
+  chat when the issue is resolved) is wired automatically for gateway sessions.
 version: 0.2.0
 license: MIT
 metadata:
@@ -52,10 +52,11 @@ or a suggestion.
    - **Transcript excerpt:** the last 5–10 turns of the current session in condensed
      form (enough to let a triager reproduce or understand)
    - Do NOT include raw API keys, tokens, or personal credentials anywhere in the body.
-4. **Write body to a temp file** (e.g. `/tmp/bug-body-<session_id>.md`).
+4. **Write body to a temp file** (e.g. `/tmp/report-body-<session_id>.md`).
 5. **File the report.** Prefer the helper script if it is installed with this skill (see
    Script Path below). If only this `SKILL.md` is installed, use the self-contained
-   fallback workflow below — do not fail just because `scripts/file_bug.py` is absent.
+   fallback workflow below — do not fail just because `scripts/file_report.py` is
+   absent.
 6. **Confirm.**
    - Local path: tell the user the card id and: _"You'll get a ping here when it's
      resolved."_
@@ -71,16 +72,16 @@ The helper lives alongside this skill. Resolve it relative to this file:
 
 ```bash
 SKILL_DIR=$(dirname "$(hermes skills list --paths 2>/dev/null | grep '/report/SKILL.md' | head -1)")
-SCRIPT="$SKILL_DIR/scripts/file_bug.py"
+SCRIPT="$SKILL_DIR/scripts/file_report.py"
 ```
 
 Or resolve via Hermes's skills directory convention:
 
 ```bash
 # The skill is installed at one of these locations:
-#   ~/.hermes/skills/report/scripts/file_bug.py          (single-profile install)
-#   ~/.hermes/profiles/<name>/skills/*/report/scripts/file_bug.py  (profile install)
-SCRIPT=$(find ~/.hermes -path "*/report/scripts/file_bug.py" 2>/dev/null | head -1)
+#   ~/.hermes/skills/report/scripts/file_report.py          (single-profile install)
+#   ~/.hermes/profiles/<name>/skills/*/report/scripts/file_report.py  (profile install)
+SCRIPT=$(find ~/.hermes -path "*/report/scripts/file_report.py" 2>/dev/null | head -1)
 ```
 
 If the script is not found, fall back to calling `hermes kanban create` inline (see
@@ -91,7 +92,7 @@ Fallback section below).
 ```bash
 python3 "$SCRIPT" \
   --title "<10-word title you distilled>" \
-  --body-file /tmp/bug-body-<session_id>.md \
+  --body-file /tmp/report-body-<session_id>.md \
   --reporter "<user's display name or Telegram handle>" \
   --json
 ```
@@ -116,12 +117,12 @@ Parse stdout as JSON:
 
 The fallback is self-contained so a single-file skill install still works.
 
-### Local fallback (no `BUG_WEBHOOK_URL` configured)
+### Local fallback (no `REPORT_WEBHOOK_URL` configured)
 
 ```bash
 hermes kanban create "<title>" \
   --triage \
-  --tenant fleet-bugs \
+  --tenant fleet-reports \
   --created-by "<reporter>" \
   --body "<condensed body>" \
   --json
@@ -137,7 +138,7 @@ hermes kanban notify-subscribe <task_id> \
   [--user-id <HERMES_SESSION_USER_ID>]
 ```
 
-### Remote fallback (`BUG_WEBHOOK_URL` configured)
+### Remote fallback (`REPORT_WEBHOOK_URL` configured)
 
 Run this with `TITLE`, `BODY_FILE`, and `REPORTER` exported. It posts to the board owner
 using Hermes' generic webhook signature contract (`X-Webhook-Signature` = hex
@@ -148,8 +149,8 @@ id, not a card id.
 python3 - <<'PY'
 import hashlib, hmac, json, os, pathlib, time, urllib.error, urllib.request
 
-url = os.environ["BUG_WEBHOOK_URL"]
-secret = os.environ["BUG_WEBHOOK_SECRET"]
+url = os.environ["REPORT_WEBHOOK_URL"]
+secret = os.environ["REPORT_WEBHOOK_SECRET"]
 title = os.environ["TITLE"]
 body = open(os.environ["BODY_FILE"]).read()
 reporter_id = (
@@ -161,15 +162,15 @@ reporter_id = (
 bucket = int(time.time()) // 120
 title_slug = hashlib.sha256(title.encode()).hexdigest()[:8]
 idem_basis = f"{reporter_id}:{title_slug}:{bucket}"
-idem = "bug-" + hashlib.sha256(idem_basis.encode()).hexdigest()[:16]
+idem = "report-" + hashlib.sha256(idem_basis.encode()).hexdigest()[:16]
 payload = {
-    "event_type": "bug_report",
+    "event_type": "report",
     "title": title,
     "body": body,
     "idempotency_key": idem,
     "reporter": os.environ.get("REPORTER") or os.environ.get("HERMES_SESSION_USER_NAME", "fleet-user"),
     "profile": os.environ.get("HERMES_PROFILE", ""),
-    "tenant": os.environ.get("BUG_TENANT", "fleet-bugs"),
+    "tenant": os.environ.get("REPORT_TENANT", "fleet-reports"),
     "platform": os.environ.get("HERMES_SESSION_PLATFORM", ""),
     "chat_id": os.environ.get("HERMES_SESSION_CHAT_ID", ""),
     "thread_id": os.environ.get("HERMES_SESSION_THREAD_ID", ""),
@@ -192,7 +193,7 @@ try:
         raise RuntimeError(f"server response not accepted: {resp!r}")
     print(json.dumps({"ok": True, "path": "remote", "status": status or "accepted"}))
 except (Exception, urllib.error.HTTPError) as e:
-    drop = pathlib.Path("/tmp") / f"bug-report-{idem}.json"
+    drop = pathlib.Path("/tmp") / f"report-{idem}.json"
     drop.write_text(json.dumps({"payload": payload, "error": str(e)}, indent=2))
     print(json.dumps({"ok": False, "path": "remote", "dropfile": str(drop), "error": str(e)}))
     raise SystemExit(3)
@@ -220,13 +221,13 @@ After a failure with dropfile:
 Set these as environment variables in your Hermes profile's dotenv file (the `.env` next
 to your profile config), or export them in the gateway's environment:
 
-| Variable             | Required on        | Purpose                                                                               |
-| -------------------- | ------------------ | ------------------------------------------------------------------------------------- |
-| `BUG_BOARD_OWNER`    | All profiles       | Profile name that owns the triage board (required — no default ships in the template) |
-| `BUG_WEBHOOK_URL`    | Non-owner profiles | Endpoint to POST the report to                                                        |
-| `BUG_WEBHOOK_SECRET` | Non-owner profiles | HMAC-SHA256 signing secret                                                            |
+| Variable                | Required on        | Purpose                                                                               |
+| ----------------------- | ------------------ | ------------------------------------------------------------------------------------- |
+| `REPORT_BOARD_OWNER`    | All profiles       | Profile name that owns the triage board (required — no default ships in the template) |
+| `REPORT_WEBHOOK_URL`    | Non-owner profiles | Endpoint to POST the report to                                                        |
+| `REPORT_WEBHOOK_SECRET` | Non-owner profiles | HMAC-SHA256 signing secret                                                            |
 
-The board-owner profile (the one where `$HERMES_PROFILE` matches `$BUG_BOARD_OWNER`)
+The board-owner profile (the one where `$HERMES_PROFILE` matches `$REPORT_BOARD_OWNER`)
 does not need the webhook env vars — it calls `hermes kanban` directly. All other fleet
 members need both webhook vars.
 
@@ -236,8 +237,8 @@ Routing is by **capability**, not by name-matching, so an unconfigured install n
 silently misroutes and breaks. In priority order:
 
 1. `--force-remote` / `--force-local` flags always win (testing / explicit control).
-2. If `BUG_BOARD_OWNER` is set and matches this profile → **local**.
-3. Else if `BUG_WEBHOOK_URL` is configured → this is a satellite → **remote**.
+2. If `REPORT_BOARD_OWNER` is set and matches this profile → **local**.
+3. Else if `REPORT_WEBHOOK_URL` is configured → this is a satellite → **remote**.
 4. Else (no webhook configured) → **local**. A single-host install with no webhook files
    directly to its own board — the safe default (worst case the report lands on this
    host's board rather than vanishing).
@@ -262,7 +263,7 @@ manual DM required.
   maintainer). Only include turns from the session where `/report` was invoked.
 - Do **not** include personal credentials, API keys, or sensitive financial/health
   context in the body.
-- The `fleet-bugs` kanban board is local (SQLite on the maintainer's machine), not
+- The `fleet-reports` kanban board is local (SQLite on the maintainer's machine), not
   cloud-synced. The webhook payload is HMAC-signed for integrity but transmitted over
   the network — use Tailscale or another private tunnel, not a public URL.
 

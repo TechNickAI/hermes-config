@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""file_bug.py — file a fleet bug report onto the triage board and wire the closed loop.
+"""file_report.py — file a fleet report onto the triage board and wire the closed loop.
 
 Two delivery paths, auto-selected:
 
   LOCAL  — when this process is the board-owning profile (the one whose gateway
-           runs the kanban dispatcher/notifier, identified by ``BUG_BOARD_OWNER``),
+           runs the kanban dispatcher/notifier, identified by ``REPORT_BOARD_OWNER``),
            call the ``hermes kanban`` CLI directly. The card lands in the triage
            column and the reporter's chat is subscribed for the done/blocked ping.
 
@@ -17,9 +17,9 @@ The script is intentionally self-contained (stdlib only) and idempotent: the sam
 session within a short window produces one card, not many.
 
 Usage:
-  file_bug.py --title "..." --body-file /path/to/body.md \\
+  file_report.py --title "..." --body-file /path/to/body.md \\
               [--reporter NAME] [--profile NAME] [--owner-profile OWNER] \\
-              [--tenant fleet-bugs] [--json]
+              [--tenant fleet-reports] [--json]
 
 Session metadata (platform / chat / thread / user) is read from the environment
 the gateway injects (HERMES_SESSION_*). Override with flags for testing.
@@ -94,7 +94,7 @@ def _idempotency_key(meta: dict, title: str = "") -> str:
     )
     title_slug = hashlib.sha256(title.encode()).hexdigest()[:8] if title else "notitle"
     basis = f"{reporter_id}:{title_slug}:{bucket}"
-    return "bug-" + hashlib.sha256(basis.encode()).hexdigest()[:16]
+    return "report-" + hashlib.sha256(basis.encode()).hexdigest()[:16]
 
 
 def _run(cmd: list[str]) -> tuple[int, str, str]:
@@ -104,9 +104,9 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
 
 def _dropfile(payload: dict, reason: str) -> Path:
     """Persist a report that couldn't be delivered so nothing is lost."""
-    d = Path(os.path.expanduser("~/.hermes")) / "bug-report-dropbox"
+    d = Path(os.path.expanduser("~/.hermes")) / "report-dropbox"
     d.mkdir(parents=True, exist_ok=True)
-    fname = f"bug-{int(time.time())}-{payload['idempotency_key'][-8:]}.json"
+    fname = f"report-{int(time.time())}-{payload['idempotency_key'][-8:]}.json"
     f = d / fname
     f.write_text(json.dumps({"reason": reason, "payload": payload}, indent=2))
     return f
@@ -162,10 +162,10 @@ def file_local(args: argparse.Namespace, meta: dict, body: str, idem: str) -> di
 # REMOTE path — non-owner fleet member POSTs an HMAC-signed payload.
 # --------------------------------------------------------------------------- #
 def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> dict:
-    url = _env("BUG_WEBHOOK_URL")
-    secret = _env("BUG_WEBHOOK_SECRET")
+    url = _env("REPORT_WEBHOOK_URL")
+    secret = _env("REPORT_WEBHOOK_SECRET")
     payload = {
-        "event_type": "bug_report",
+        "event_type": "report",
         "title": args.title,
         "body": body,
         "reporter": args.reporter or meta.get("user_name") or "fleet-user",
@@ -183,7 +183,7 @@ def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> d
         f = _dropfile(payload, "no webhook url/secret configured")
         return {
             "ok": False, "path": "remote", "dropfile": str(f),
-            "error": "BUG_WEBHOOK_URL / BUG_WEBHOOK_SECRET not set",
+            "error": "REPORT_WEBHOOK_URL / REPORT_WEBHOOK_SECRET not set",
         }
 
     raw = json.dumps(payload, separators=(",", ":")).encode()
@@ -262,7 +262,7 @@ def file_remote(args: argparse.Namespace, meta: dict, body: str, idem: str) -> d
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="File a fleet bug report.")
+    ap = argparse.ArgumentParser(description="File a fleet report.")
     ap.add_argument("--title", required=True)
     ap.add_argument("--body-file", help="Path to markdown file with the report body.")
     ap.add_argument("--body", help="Inline body (alternative to --body-file).")
@@ -270,11 +270,11 @@ def main() -> int:
     ap.add_argument("--profile", default="")
     ap.add_argument(
         "--owner-profile",
-        default=os.environ.get("BUG_BOARD_OWNER", ""),
+        default=os.environ.get("REPORT_BOARD_OWNER", ""),
         help="Profile that owns the triage board (local short-circuit target). "
-             "Set BUG_BOARD_OWNER env var or pass --owner-profile to override.",
+             "Set REPORT_BOARD_OWNER env var or pass --owner-profile to override.",
     )
-    ap.add_argument("--tenant", default="fleet-bugs")
+    ap.add_argument("--tenant", default=os.environ.get("REPORT_TENANT", "fleet-reports"))
     ap.add_argument(
         "--force-remote", action="store_true",
         help="Force the remote POST path even on the owner (for testing).",
@@ -317,7 +317,7 @@ def main() -> int:
     #      directly to the local board is the safe default — worst case the
     #      report lands on this host's board instead of disappearing.
     owner_named = bool(args.owner_profile)
-    has_webhook = bool(_env("BUG_WEBHOOK_URL"))
+    has_webhook = bool(_env("REPORT_WEBHOOK_URL"))
 
     if args.force_remote:
         is_owner = False
@@ -366,7 +366,7 @@ def main() -> int:
         else:
             drop = result.get("dropfile")
             print(
-                f"Could not file bug: {result.get('error')}."
+                f"Could not file report: {result.get('error')}."
                 + (f" Saved to {drop} — DM the human the raw report." if drop else "")
             )
 
