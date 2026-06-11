@@ -304,6 +304,28 @@ def main() -> int:
     idem = _idempotency_key(meta, args.title)
     active = _active_profile()
 
+    # Migration guard: the pre-rename rollout used BUG_* env vars. If a host still
+    # has a legacy BUG_* var set but not its REPORT_* replacement, fail loudly with
+    # a migration hint rather than silently routing to the local board (which would
+    # quietly drop the report off the shared triage queue during the rename window).
+    legacy_pairs = [
+        ("BUG_WEBHOOK_URL", "REPORT_WEBHOOK_URL"),
+        ("BUG_WEBHOOK_SECRET", "REPORT_WEBHOOK_SECRET"),
+        ("BUG_BOARD_OWNER", "REPORT_BOARD_OWNER"),
+        ("BUG_TENANT", "REPORT_TENANT"),
+    ]
+    stale = [old for old, new in legacy_pairs if os.environ.get(old) and not os.environ.get(new)]
+    if stale:
+        msg = (
+            "Stale pre-rename config detected: "
+            + ", ".join(stale)
+            + ". Rename these to their REPORT_* equivalents "
+            "(e.g. BUG_WEBHOOK_URL -> REPORT_WEBHOOK_URL) and retry."
+        )
+        result = {"ok": False, "path": "config", "error": msg}
+        print(json.dumps(result, indent=2) if args.json else f"Could not file report: {msg}")
+        return 1
+
     # Routing is by *capability*, not by name-matching, to avoid the footgun
     # where an unconfigured owner silently misroutes to the remote path and
     # breaks. Rules, in priority order:
