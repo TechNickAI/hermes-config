@@ -36,6 +36,7 @@ from hermes_cli.config import cfg_get
 from .store import CortexStore, KNOWLEDGE_CATEGORIES, DAILY_DIR
 from .retrieval import CortexRetriever
 from .embeddings import OpenAIEmbeddingClient
+from .reranker import CortexReranker
 from .handoff import build_handoff, handoff_slug
 
 # Category (subdirectory) the pre-compress handoff digests are written under.
@@ -161,7 +162,8 @@ class CortexMemoryProvider(MemoryProvider):
 
         embedder = self._build_embedder()
         self._store = CortexStore(store_path=store_path, db_path=db_path, embedder=embedder)
-        self._retriever = CortexRetriever(self._store)
+        reranker = self._build_reranker()
+        self._retriever = CortexRetriever(self._store, reranker=reranker)
         self._session_id = session_id
         # Capture topic identity for handoff keying. on_pre_compress() only
         # receives `messages`, so we must stash chat/thread context here.
@@ -204,6 +206,36 @@ class CortexMemoryProvider(MemoryProvider):
             return client
         except Exception as e:
             logger.warning("Cortex: failed to init embedder (%s) — lexical-only", e)
+            return None
+
+    def _build_reranker(self):
+        """Construct the optional reranker client.
+
+        Reranking is off unless a rerank endpoint is configured. If enabled but
+        unhealthy at init, we log and keep the existing RRF order so a down
+        reranker never breaks Cortex recall.
+        """
+        if not _config_bool(self._config, "rerank", default=True):
+            return None
+        try:
+            client = CortexReranker(
+                url=self._config.get("rerank_url") or None,
+                model=self._config.get("rerank_model") or None,
+                api_key=self._config.get("rerank_key") or None,
+                timeout=float(self._config.get("rerank_timeout") or 5.0),
+            )
+            if not client.url:
+                logger.info("Cortex: no rerank_url configured — rerank tier off, RRF order preserved")
+                return None
+            if not client.health():
+                logger.warning(
+                    "Cortex: rerank endpoint %s unreachable — rerank tier disabled this session",
+                    client.url,
+                )
+                return None
+            return client
+        except Exception as e:
+            logger.warning("Cortex: failed to init reranker (%s) — RRF order preserved", e)
             return None
 
     def shutdown(self) -> None:
