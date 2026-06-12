@@ -99,11 +99,20 @@ class CortexReranker:
 
         order: list[int] = []
         seen: set[int] = set()
-        for r in results:
-            idx = r.get("index")
-            if isinstance(idx, int) and 0 <= idx < len(documents) and idx not in seen:
-                order.append(idx)
-                seen.add(idx)
+        # The parse loop is inside the fail-safe envelope: a service that returns
+        # a `results` array of non-objects (e.g. [1] or [null]) must degrade to
+        # the existing order, not raise into the retrieval hot path.
+        try:
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                idx = r.get("index")
+                if isinstance(idx, int) and 0 <= idx < len(documents) and idx not in seen:
+                    order.append(idx)
+                    seen.add(idx)
+        except Exception as e:  # defensive: malformed result shape must not break recall
+            logger.debug("CortexReranker: malformed rerank results (%s) — preserving order", e)
+            return None
         if not order:
             return None
         # Safety net: append any candidate the reranker didn't mention.

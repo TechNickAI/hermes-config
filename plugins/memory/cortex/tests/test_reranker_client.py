@@ -55,6 +55,12 @@ def test_malformed_response_fails_safe(monkeypatch) -> None:
     assert rr.rerank("q", ["a", "b"]) is None
 
 
+def test_non_object_result_entries_fail_safe(monkeypatch) -> None:
+    rr = CortexReranker(url="http://localhost:9/v1/rerank")
+    monkeypatch.setattr(rr, "_post", lambda q, d, n: [1, None, "bad"])
+    assert rr.rerank("q", ["a", "b"]) is None
+
+
 def test_out_of_range_indices_are_ignored(monkeypatch) -> None:
     rr = CortexReranker(url="http://localhost:9/v1/rerank")
     monkeypatch.setattr(
