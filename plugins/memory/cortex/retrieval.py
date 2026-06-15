@@ -47,10 +47,11 @@ def _sanitize_query(q: str, max_tokens: int = 8) -> str:
 
 
 class CortexRetriever:
-    """Search Cortex pages via FTS5 and optional semantic embeddings."""
+    """Search Cortex pages via FTS5, optional semantic embeddings, and optional rerank."""
 
-    def __init__(self, store):
+    def __init__(self, store, reranker=None):
         self.store = store
+        self.reranker = reranker
         # NB: do NOT cache `store._conn` here. SQLite connections are
         # thread-affine, and CortexStore now hands out per-thread connections
         # via a property. Resolve fresh on every call so search() works from
@@ -100,6 +101,83 @@ class CortexRetriever:
             rows.append(d)
         return rows
 
+    def _rerank_texts(self, rows: list[dict], query: str = "", max_chars: int = 1000) -> list[str]:
+        """Fetch compact, query-focused candidate text for reranking.
+
+        The local cross-encoder has a finite context window. Feeding the first N
+        chars of every page is both wasteful and lower quality when the
+        answer-bearing sentence sits later in a page. Instead, send stable page
+        identity (title/path/tags), the display snippet, and short windows around
+        query-token hits in the body. Fall back to the page opening only when no
+        query terms are present.
+        """
+        if not rows:
+            return []
+        rels = [r.get("rel_path") for r in rows if r.get("rel_path")]
+        placeholders = ",".join("?" for _ in rels)
+        body_by_rel: dict[str, str] = {}
+        if placeholders:
+            try:
+                cur = self.store._conn.execute(
+                    f"SELECT rel_path, body FROM pages WHERE rel_path IN ({placeholders})", rels
+                )
+                body_by_rel = {str(r["rel_path"]): str(r["body"] or "") for r in cur.fetchall()}
+            except Exception as e:
+                logger.debug("CortexRetriever: rerank body hydration failed: %s", e)
+        query_terms = [t for t in _TOKEN_RE.findall(query.lower()) if t not in _FTS_STOPWORDS][:8]
+        docs: list[str] = []
+        for row in rows:
+            rel = str(row.get("rel_path") or "")
+            title = str(row.get("title") or "")
+            tags = str(row.get("tags") or "")
+            snippet = str(row.get("snippet") or "").replace("\n", " ").strip()
+            body = body_by_rel.get(rel) or snippet
+            pieces = [f"Title: {title}", f"Path: {rel}", f"Tags: {tags}"]
+            if snippet:
+                pieces.append(f"Snippet: {snippet}")
+            lower = body.lower()
+            windows: list[str] = []
+            seen_spans: set[tuple[int, int]] = set()
+            for term in query_terms:
+                pos = lower.find(term)
+                if pos < 0:
+                    continue
+                start = max(0, pos - 180)
+                end = min(len(body), pos + 420)
+                span = (start, end)
+                if span in seen_spans:
+                    continue
+                seen_spans.add(span)
+                windows.append(body[start:end].replace("\n", " ").strip())
+                if len(windows) >= 3:
+                    break
+            if windows:
+                pieces.append("Relevant body windows: " + " … ".join(windows))
+            else:
+                pieces.append(body[:600].replace("\n", " ").strip())
+            doc = "\n".join(p for p in pieces if p)
+            docs.append(doc[:max_chars])
+        return docs
+
+    def _apply_rerank(self, query: str, rows: list[dict]) -> list[dict]:
+        """Rerank candidates if configured; otherwise preserve input order."""
+        reranker = getattr(self, "reranker", None)
+        rerank = getattr(reranker, "rerank", None)
+        if not callable(rerank) or not rows:
+            return rows
+        docs = self._rerank_texts(rows, query=query)
+        order = rerank(query, docs, top_n=len(rows))
+        if not order:
+            return rows
+        ranked: list[dict] = []
+        for rank, idx in enumerate(order, start=1):
+            if 0 <= idx < len(rows):
+                row = dict(rows[idx])
+                row["rerank_rank"] = rank
+                row["source"] = f"{row.get('source', 'unknown')}+rerank"
+                ranked.append(row)
+        return ranked or rows
+
     def search(self, query: str, *, limit: int = 5, category: str | None = None, snippet_chars: int = 240) -> list[dict]:
         """Return ranked Cortex pages.
 
@@ -119,9 +197,9 @@ class CortexRetriever:
             vector_rows = vector_search(query, limit=candidate_limit, category=category)
 
         if not vector_rows:
-            return fts_rows[:limit]
+            return self._finalize(query, fts_rows, limit)
         if not fts_rows:
-            return vector_rows[:limit]
+            return self._finalize(query, vector_rows, limit)
 
         # Reciprocal Rank Fusion. k=60 is the standard conservative default: it
         # rewards agreement across tiers without letting a single rank-1 result
@@ -163,4 +241,21 @@ class CortexRetriever:
             out.append(row)
 
         out.sort(key=lambda r: r["fusion_score"], reverse=True)
-        return out[:limit]
+        return self._finalize(query, out, limit)
+
+    def _finalize(self, query: str, rows: list[dict], limit: int) -> list[dict]:
+        """Optionally rerank the fused candidate set, then truncate to `limit`.
+
+        Reranking happens on a bounded candidate window (not the full list) so
+        latency stays predictable on large stores. If no reranker is configured
+        or it fails, this returns the existing order — exactly the prior behavior.
+        """
+        reranker = getattr(self, "reranker", None)
+        if reranker is None or not rows:
+            return rows[:limit]
+        # Cap the rerank window: enough candidates to meaningfully reorder the
+        # top `limit`, without shipping the whole store to the cross-encoder.
+        window = max(limit * 4, 20)
+        reranked = self._apply_rerank(query, rows[:window])
+        return reranked[:limit]
+

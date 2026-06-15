@@ -19,3 +19,12 @@ config:
   embed_model: "" # default: text-embedding-embeddinggemma-300m-qat
   embed_key: "" # default: none
   embed_dim: "" # default: 768
+  # Rerank tier (cross-encoder reordering of the fused candidate set before
+  # truncation). Fails safe to the RRF order if the endpoint is unreachable.
+  # Speaks the Cohere /v1/rerank request/response shape.
+  rerank: true
+  rerank_url: "" # OpenAI/Cohere-compatible /v1/rerank endpoint; blank ⇒ rerank off
+  rerank_model: "" # default: bge-reranker-v2-m3
+  rerank_key: "" # default: none
+  rerank_timeout: "" # default: 5.0 seconds
+
