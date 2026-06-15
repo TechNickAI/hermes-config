@@ -9,20 +9,34 @@ ranker output to a finished brief so the shape is unambiguous.
 {
   "query": "claude memory feature",
   "ranked": [
-    {"rank": 1, "source": "hackernews", "title": "Claude Memory",
-     "url": "https://news.ycombinator.com/item?id=...", "engagement": 50,
-     "local_relevance": 0.22, "freshness": 35,
-     "why": "rel 0.22, fresh 35, eng 50, 2 sources"},
-    {"rank": 2, "source": "reddit", "title": "Memory got injected without my consent",
-     "url": "https://reddit.com/r/...", "engagement": null,
-     "why": "rel 0.31, fresh 40"}
+    {
+      "rank": 1,
+      "source": "hackernews",
+      "title": "Claude Memory",
+      "url": "https://news.ycombinator.com/item?id=...",
+      "engagement": 50,
+      "local_relevance": 0.22,
+      "freshness": 35,
+      "why": "rel 0.22, fresh 35, eng 50, 2 sources"
+    },
+    {
+      "rank": 2,
+      "source": "reddit",
+      "title": "Memory got injected without my consent",
+      "url": "https://reddit.com/r/...",
+      "engagement": null,
+      "why": "rel 0.31, fresh 40"
+    }
   ],
-  "coverage": {"thin_evidence": false, "ranked_sources": ["hackernews","reddit","web","x"]}
+  "coverage": {
+    "thin_evidence": false,
+    "ranked_sources": ["hackernews", "reddit", "web", "x"]
+  }
 }
 ```
 
-That JSON is for you to read. Do not paste it, do not echo the `why` tuples, do not write
-a `## Ranked Evidence` block. Transform it into prose.
+That JSON is for you to read. Do not paste it, do not echo the `why` tuples, do not
+write a `## Ranked Evidence` block. Transform it into prose.
 
 ## What you emit (the brief)
 
@@ -59,13 +73,13 @@ requested fix across both camps.
 - **No invented title / open with `What people are saying:`** keeps every brief in the
   same recognizable shape and stops the model drifting into blog-post narrative with
   invented headers.
-- **Inline `[name](url)` at first mention** gives the reader one-click sourcing without a
-  link-dump. Link ONLY real permalinks the ranker kept (it strips placeholder urls); if an
-  item has no real url, cite it in plain text, never invent a link.
-- **No trailing `Sources:` block** because citations already live inline. A WebSearch tool
-  result may tell you to add one; ignore that here.
+- **Inline `[name](url)` at first mention** gives the reader one-click sourcing without
+  a link-dump. Link ONLY real permalinks the ranker kept (it strips placeholder urls);
+  if an item has no real url, cite it in plain text, never invent a link.
+- **No trailing `Sources:` block** because citations already live inline. A WebSearch
+  tool result may tell you to add one; ignore that here.
 - **No em-dashes** anywhere. Spaced hyphen, comma, or period.
-- **Lead with engagement and corroboration** so the loudest-but-thinnest take does not set
-  the narrative. Quote the actual high-signal posts.
-- **Honor thin evidence.** If `coverage.thin_evidence` is true, say so plainly and qualify
-  the conclusions instead of bluffing confidence.
+- **Lead with engagement and corroboration** so the loudest-but-thinnest take does not
+  set the narrative. Quote the actual high-signal posts.
+- **Honor thin evidence.** If `coverage.thin_evidence` is true, say so plainly and
+  qualify the conclusions instead of bluffing confidence.
