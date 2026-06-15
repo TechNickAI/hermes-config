@@ -467,11 +467,23 @@ def rank(payload: dict, top: int, mode_override: str | None) -> dict:
 
     ranked_sources = {r["source"] for r in ranked}
     thin = len(ranked) < THIN_EVIDENCE_MIN_ITEMS or len(ranked_sources) < THIN_EVIDENCE_MIN_SOURCES
+    # Engagement coverage: how many ranked items carry a real engagement number.
+    with_eng = sum(1 for r in ranked if r.get("engagement") is not None)
+    eng_frac = round(with_eng / len(ranked), 2) if ranked else 0.0
+    eng_thin = bool(ranked) and eng_frac < 0.5
     notes = []
     if thin:
         notes.append(
             "THIN EVIDENCE: too few items or sources to synthesize a confident brief. "
             "Report what was found, name the gaps, and do not overstate."
+        )
+    if eng_thin:
+        notes.append(
+            f"LOW ENGAGEMENT COVERAGE: only {with_eng}/{len(ranked)} ranked items have a "
+            "real engagement number. Engagement is this skill's core signal. Go back and "
+            "web_extract the top threads to read actual upvote/point/view counts before "
+            "synthesizing. Do NOT invent numbers; use qualitative language for any you "
+            "genuinely cannot recover."
         )
     return {
         "query": query,
@@ -483,6 +495,8 @@ def rank(payload: dict, top: int, mode_override: str | None) -> dict:
             "total_ranked": len(ranked),
             "ranked_sources": sorted(ranked_sources),
             "thin_evidence": thin,
+            "engagement_coverage": eng_frac,
+            "low_engagement_coverage": eng_thin,
         },
         "notes": notes,
     }
@@ -589,8 +603,19 @@ def self_test() -> int:
     assert "review" in ud["ranked"][0]["title"], \
         f"undated on-topic item buried: {ud['ranked'][0]['title']}"
 
+    # Engagement coverage flag: a corpus where <50% of ranked items have engagement
+    # numbers should raise low_engagement_coverage so the agent goes back to extract.
+    ec = rank({"query": "widget review", "now": now, "items": [
+        {"source": "web", "id": f"w{i}", "title": f"widget review {i}",
+         "snippet": "widget review details and analysis", "author": None,
+         "published_at": "2026-06-10T00:00:00Z", "engagement": {}}
+        for i in range(5)
+    ]}, top=25, mode_override=None)
+    assert ec["coverage"]["low_engagement_coverage"] is True, \
+        f"low engagement coverage not flagged: {ec['coverage']}"
+
     print("self-test: PASS (golden ordering, author cap, thin-evidence, freshness mode, "
-          "source-quality tiebreak, undated floor, url safety)")
+          "source-quality tiebreak, undated floor, engagement coverage, url safety)")
     return 0
 
 

@@ -136,6 +136,22 @@ For each item capture: `source`, `id` (or url), `title`, `url`, `snippet` (the a
 text/quote), `author`, `published_at` (ISO date), and an `engagement` object with
 whatever numbers you saw. Missing numbers are fine; the ranker handles nulls.
 
+**Engagement-recovery pass (do before ranking, this is the core job, not optional).**
+Engagement counts are this skill's whole differentiator and search snippets hide them, so
+you MUST open the actual threads. For the ~6-10 most promising items, `web_extract` the
+real page and read the real number off it: the Reddit post score and comment count and
+top-comment score; the HN points and comments; visible X likes/reposts; YouTube
+views/likes; GitHub stars. Put every number you read into the item's `engagement` object.
+Target: real engagement on at least half your top items. The ranker reports your coverage
+and will tell you if it is too thin to proceed.
+
+Honesty rule that does NOT mean "skip the work": record a number ONLY if you actually read
+it from the extracted page or an API. If an extract genuinely does not show a count, leave
+that one null and, in the brief, describe it qualitatively ("one of the most-upvoted
+replies"). Never invent or round-guess a figure. The goal is real numbers from real
+extraction, with qualitative language as the honest fallback for the few you could not
+recover, not a reason to avoid extracting.
+
 **Degradation rule:** if a source errors or returns nothing, note it and move on. If
 after fetching you have fewer than ~4 quality items or fewer than 2 sources, the ranker
 will flag `thin_evidence`. When that fires, say so plainly in the brief ("Thin evidence:
@@ -187,13 +203,16 @@ is a brief that reads like a sharp human analyst, not an SEO blog or an evidence
 
 1. **No invented title line.** For NEWS / GENERAL / RECOMMENDATIONS / PERSON, open with
    the prose label `What people are saying:` on its own line, then bold-lead-in
-   paragraphs. For COMPARISON, open with `# {A} vs {B}: what the community says` then a
-   one-line verdict.
+   paragraphs. For COMPARISON, open with exactly `# {A} vs {B}` (no subtitle, no trailing
+   clause) then a one-line verdict on the next line.
 2. **No `##` section headers in the body** (except COMPARISON, which may use `## {A}`,
    `## {B}`, `## Verdict`). The shape is lead-in paragraphs, then a prose label
    `Key patterns:` followed by a short numbered list.
 3. **No em-dashes or en-dashes.** Use a spaced hyphen ` - `, comma, or period. (Em-dashes
-   are the top AI-slop tell.)
+   are the top AI-slop tell.) This includes em-dashes carried in from quoted source
+   titles or link text: when a cited headline contains an em-dash character, normalize it
+   to ` - ` in your link text. Before sending, scan the whole brief for em-dash and
+   en-dash characters and replace any you find.
 4. **Every citation is an inline markdown link `[name](url)`** at first mention: each
    @handle, r/subreddit, publication, channel, and market. Never a raw URL string, never
    a plain name when a URL exists, never a broken empty `[name]()`. If a URL is genuinely
@@ -205,10 +224,17 @@ is a brief that reads like a sharp human analyst, not an SEO blog or an evidence
    you to read, not output to paste. Turn them into prose. If your draft contains the
    literal ranker JSON, a `(score N ...)` tuple, or a raw cluster list, you dumped
    instead of synthesizing. Regenerate.
-7. **Lead with engagement and corroboration.** A claim backed by a 1,500-upvote thread or
-   corroborated across three sources leads. Quote the actual high-signal posts. Attribute
-   honestly ("per a 2M-view review", "the top r/<sub> thread").
-8. **Honor thin evidence.** If `coverage.thin_evidence` is true, say so and qualify.
+7. **Lead with engagement and corroboration.** A claim corroborated across three sources,
+   or carried by a clearly high-traffic thread, leads. Quote the actual high-signal posts.
+8. **Numbers must be read, never guessed.** State a specific engagement figure, view
+   count, star count, version number, date, or statistic ONLY if it came from a source
+   you actually read (extracted page, API, the ranker input you built from real reads).
+   If you did not read the exact number, describe magnitude qualitatively instead: "one of
+   the most-upvoted threads", "a widely-shared video", "broad agreement across the top
+   comments". Oddly precise unverifiable figures ("a 559-point thread", "78% of claims",
+   "acquired by OpenAI") are the failure mode judges penalize hardest. When in doubt, go
+   qualitative. Never present a single anecdote as representative; say "one user reports".
+9. **Honor thin evidence.** If `coverage.thin_evidence` is true, say so and qualify.
 
 See `references/output-contract.md` for a full worked transformation example.
 
