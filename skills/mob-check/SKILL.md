@@ -145,6 +145,11 @@ views/likes; GitHub stars. Put every number you read into the item's `engagement
 Target: real engagement on at least half your top items. The ranker reports your coverage
 and will tell you if it is too thin to proceed.
 
+**Reddit tactic:** modern Reddit strips upvote/comment counts from crawlers. Extract the
+`old.reddit.com` version of a thread URL instead (swap the host); it preserves the post
+score, comment count, and per-comment scores. This is usually the only reliable way to
+recover Reddit engagement, which is the highest-signal source for most topics.
+
 Honesty rule that does NOT mean "skip the work": record a number ONLY if you actually read
 it from the extracted page or an API. If an extract genuinely does not show a count, leave
 that one null and, in the brief, describe it qualitatively ("one of the most-upvoted
