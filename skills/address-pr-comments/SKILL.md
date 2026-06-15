@@ -94,7 +94,7 @@ before you wait on feedback that will never arrive:
 ```bash
 gh pr view <N> --repo $R --json mergeable,mergeStateStatus,statusCheckRollup \
   --jq '{mergeable, state: .mergeStateStatus,
-         checks: [.statusCheckRollup[] | {name, status, conclusion}]}'
+         checks: [(.statusCheckRollup // [])[] | {name, status, conclusion}]}'
 ```
 
 - **Merge conflicts** (`mergeable: CONFLICTING`) block bot checks — resolve first
@@ -108,31 +108,56 @@ gh pr view <N> --repo $R --json mergeable,mergeStateStatus,statusCheckRollup \
 ### 3. Fetch comments from BOTH endpoints
 
 Review feedback lives at two different API levels. Miss one and you miss half the
-findings:
+findings. Fetch bot and human feedback separately so you never react on a human's behalf
+(step 10) and never declare "no actionable feedback" while a maintainer's top-level
+comment sits unread.
 
 ```bash
-# PR-level / issue comments (Claude Code Review and some Greptile/CodeRabbit verdicts)
+# --- BOT feedback ---
+
+# PR-level / issue comments from bots (Claude Code Review, some Greptile/CodeRabbit)
 gh api repos/$R/issues/<N>/comments --paginate \
-  --jq '.[] | select(.user.login | endswith("[bot]")) | {id, user: .user.login, body}'
+  --jq '.[] | select(.user.login | endswith("[bot]")) | {id, user: .user.login, created_at, body}'
 
-# Line-level / inline review comments (Cursor, Codex, Greptile inline)
+# Line-level / inline review comments from bots (Cursor, Codex, Greptile inline)
 gh api repos/$R/pulls/<N>/comments --paginate \
-  --jq '.[] | "\n=== \(.path):\(.line // .original_line) — \(.user.login) [id \(.id)] ===\n\(.body)"'
+  --jq '.[] | select(.user.login | endswith("[bot]"))
+            | "\n=== \(.path):\(.line // .original_line) — \(.user.login) [id \(.id)] ===\n\(.body)"'
 
-# Review summaries (Cursor/Codex headers, verdict bodies)
-gh api repos/$R/pulls/<N>/reviews \
-  --jq '.[] | select(.user.login | endswith("[bot]")) | "--- \(.user.login) [\(.state)] ---\n\(.body[0:600])"'
+# Bot review summaries (Cursor/Codex headers, verdict bodies). --paginate: the reviews
+# endpoint defaults to 30 per page and is chronological, so without it you can read the
+# OLDEST page on a busy PR and miss the latest verdict.
+gh api repos/$R/pulls/<N>/reviews --paginate \
+  --jq '[.[] | select(.user.login | endswith("[bot]"))]
+            | sort_by(.submitted_at) | reverse
+            | .[] | "--- \(.user.login) [\(.state)] \(.submitted_at) ---\n\(.body[0:600])"'
+
+# --- HUMAN feedback (surface separately; do NOT auto-react or auto-decline — step 10) ---
+
+# Human top-level PR conversation comments
+gh api repos/$R/issues/<N>/comments --paginate \
+  --jq '.[] | select((.user.login | endswith("[bot]")) | not) | "\(.user.login): \(.body[0:300])"'
+
+# Human inline + review-body feedback
+gh api repos/$R/pulls/<N>/comments --paginate \
+  --jq '.[] | select((.user.login | endswith("[bot]")) | not) | "\(.path):\(.line // .original_line) \(.user.login): \(.body[0:300])"'
+gh api repos/$R/pulls/<N>/reviews --paginate \
+  --jq '.[] | select((.user.login | endswith("[bot]")) | not) | select(.body != "") | "\(.user.login) [\(.state)]: \(.body[0:300])"'
 ```
 
 Notes:
 
 - **`claude-review` posts as a CHECK, not a comment** — its pass/fail shows in
   `gh pr checks <N>`, not in the comment endpoints. Read it there.
-- **Only address the most recent Claude/PR-level review.** Older ones reflect outdated
-  code.
+- **Only act on the most recent Claude/PR-level bot review.** Older ones reflect
+  outdated code — that is why the review-summary query sorts by `submitted_at` and
+  reverses, so the newest verdict is first; ignore superseded earlier ones.
 - Process any login ending in `[bot]` — don't hardcode an allowlist; new reviewers
   appear. Known set: `cursor[bot]`, `chatgpt-codex-connector[bot]`, `claude[bot]`,
   `greptile[bot]`, `coderabbitai[bot]`.
+- The human queries above are for triage/surfacing only. Reactions, replies, and
+  auto-decline (steps 6–7) apply to **bot** comments; human feedback goes to the user
+  per step 10.
 
 ### 4. Separate stale-anchored findings from live ones
 
@@ -143,9 +168,10 @@ current head:
 
 ```bash
 HEAD=$(gh pr view <N> --repo $R --json headRefOid --jq '.headRefOid')
-gh api repos/$R/pulls/<N>/comments --paginate --jq \
-  --arg h "$HEAD" 'map(select(.commit_id == $h or .original_commit_id == $h))
-                   | .[] | "\(.path):\(.line // .original_line) — \(.body[0:140])"'
+# gh's --jq does NOT forward jq's --arg; pipe to a real jq with --arg instead.
+gh api repos/$R/pulls/<N>/comments --paginate \
+  | jq -r --arg h "$HEAD" 'map(select(.commit_id == $h or .original_commit_id == $h))
+                           | .[] | "\(.path):\(.line // .original_line) — \(.body[0:140])"'
 ```
 
 Read each finding's _description_ against the current file state. If your fix already
