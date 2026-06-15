@@ -134,13 +134,15 @@ gh api repos/$R/pulls/<N>/comments --paginate \
   --jq '.[] | select(.user.login | endswith("[bot]"))
             | "\n=== \(.path):\(.line // .original_line) — \(.user.login) [id \(.id)] ===\n\(.body)"'
 
-# Bot review summaries (Cursor/Codex headers, verdict bodies). --paginate: the reviews
-# endpoint defaults to 30 per page and is chronological, so without it you can read the
-# OLDEST page on a busy PR and miss the latest verdict.
+# Bot review summaries (Cursor/Codex headers, verdict bodies). Use real jq with
+# --slurp (`-s`) so pagination is sorted globally, not page-by-page. Include review IDs
+# for traceability; review-body records do not use the inline/issue comment reaction
+# endpoints from step 6.
 gh api repos/$R/pulls/<N>/reviews --paginate \
-  --jq '[.[] | select(.user.login | endswith("[bot]"))]
+  | jq -sr 'add
+            | map(select(.user.login | endswith("[bot]")))
             | sort_by(.submitted_at) | reverse
-            | .[] | "--- \(.user.login) [\(.state)] \(.submitted_at) ---\n\(.body[0:600])"'
+            | .[] | "--- review_id \(.id) \(.user.login) [\(.state)] \(.submitted_at) ---\n\(.body[0:600])"'
 
 # --- HUMAN feedback (surface separately; do NOT auto-react or auto-decline — step 10) ---
 
@@ -160,8 +162,9 @@ Notes:
 - **`claude-review` posts as a CHECK, not a comment** — its pass/fail shows in
   `gh pr checks <N>`, not in the comment endpoints. Read it there.
 - **Only act on the most recent Claude/PR-level bot review.** Older ones reflect
-  outdated code — that is why the review-summary query sorts by `submitted_at` and
-  reverses, so the newest verdict is first; ignore superseded earlier ones.
+  outdated code — that is why the review-summary query slurps all paginated pages, sorts
+  globally by `submitted_at`, and reverses, so the newest verdict is first; ignore
+  superseded earlier ones.
 - Process any login ending in `[bot]` — don't hardcode an allowlist; new reviewers
   appear. Known set: `cursor[bot]`, `chatgpt-codex-connector[bot]`, `claude[bot]`,
   `greptile[bot]`, `coderabbitai[bot]`.
@@ -240,7 +243,9 @@ Every bot comment gets exactly one reaction. Reactions are training signals:
 - 🚀 `rocket` — critical security/production bug you fixed.
 - 👎 `-1` — incorrect/irrelevant/wrong analysis. "Less like this."
 
-**The endpoint depends on the comment level — mixing them 404s:**
+**The endpoint depends on the comment level — mixing them 404s. Review-body records
+(from the reviews endpoint) do not have a reactions endpoint; respond to their findings
+by posting a regular PR comment that references the `review_id`.**
 
 ```bash
 # Line-level (inline) comment — lives on the PULLS endpoint
@@ -248,6 +253,10 @@ gh api repos/$R/pulls/comments/<comment_id>/reactions -f content="rocket"
 
 # PR-level (issue) comment — lives on the ISSUES endpoint
 gh api repos/$R/issues/comments/<comment_id>/reactions -f content="+1"
+
+# Review-body verdict (from the reviews endpoint) — no reactions endpoint.
+# Acknowledge and/or reply with a PR-level comment citing review_id instead:
+gh pr comment <N> --repo $R --body "Addressed review_id <review_id>: <summary>"
 ```
 
 Valid contents: `+1`, `-1`, `heart`, `rocket`, `laugh`, `hooray`, `confused`, `eyes`.
