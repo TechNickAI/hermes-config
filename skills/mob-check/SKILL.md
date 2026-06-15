@@ -207,12 +207,14 @@ Input JSON shape:
 }
 ```
 
-For COMPARISON, send two subqueries so each side gets fair representation:
+For COMPARISON, send two subqueries, each carrying its own `query` text, so each side
+gets fair representation (the ranker re-ranks each stream by relevance to that side's
+query before fusing, so one entity cannot monopolize the pool):
 
 ```json
 "subqueries": [
-  {"label": "a", "weight": 1.0, "sources": null},
-  {"label": "b", "weight": 1.0, "sources": null}
+  {"label": "a", "query": "rivian r2", "weight": 1.0, "sources": null},
+  {"label": "b", "query": "tesla model y", "weight": 1.0, "sources": null}
 ]
 ```
 

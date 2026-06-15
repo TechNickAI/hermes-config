@@ -348,15 +348,31 @@ def weighted_rrf(items: list[dict], subqueries: list[dict]) -> list[dict]:
         label = sq.get("label", "primary")
         weight = float(sq.get("weight", 1.0))
         srcs = sq.get("sources")
+        sq_query = sq.get("query")
         stream = [it for it in items if (srcs is None or it.get("source") in srcs)]
-        stream.sort(key=lambda it: it.get("_rank_score", 0.0), reverse=True)
+        # A subquery may carry its own `query` text (used for COMPARISON, where each
+        # side gets a labeled subquery). When present, rank this stream by relevance
+        # to THAT subquery, not just the global rank score, so each side's most
+        # on-topic items earn the strong low-rank RRF contributions. Without this the
+        # labels are inert and a single side can monopolize the fused pool.
+        if sq_query:
+            sqq = str(sq_query)
+            stream.sort(
+                key=lambda it: 0.65 * local_relevance(sqq, it)
+                + 0.35 * (it.get("_rank_score", 0.0)),
+                reverse=True,
+            )
+        else:
+            stream.sort(key=lambda it: it.get("_rank_score", 0.0), reverse=True)
         for rank, it in enumerate(stream, start=1):
             key = candidate_key(it)
             contribution = weight / (RRF_K + rank)
             cand = candidates.get(key)
             if cand is None:
+                raw_url = it.get("url", "") or ""
                 candidates[key] = {
-                    "key": key, "title": it.get("title", ""), "url": it.get("url", ""),
+                    "key": key, "title": it.get("title", ""),
+                    "url": raw_url if _url_ok(raw_url) else "",
                     "source": it.get("source"), "author": it.get("author"),
                     "snippet": it.get("snippet", ""),
                     "local_relevance": it.get("_relevance", 0.0),
@@ -367,6 +383,12 @@ def weighted_rrf(items: list[dict], subqueries: list[dict]) -> list[dict]:
                 }
             else:
                 cand["rrf"] += contribution
+                # If the candidate was first seen with an unlinkable url, adopt a
+                # clean one from a later duplicate.
+                if not cand.get("url"):
+                    iu = it.get("url", "") or ""
+                    if _url_ok(iu):
+                        cand["url"] = iu
                 cand["local_relevance"] = max(cand["local_relevance"], it.get("_relevance", 0.0))
                 cand["freshness"] = max(cand["freshness"], it.get("_freshness", 0))
                 ie = it.get("_engagement")
@@ -614,8 +636,57 @@ def self_test() -> int:
     assert ec["coverage"]["low_engagement_coverage"] is True, \
         f"low engagement coverage not flagged: {ec['coverage']}"
 
+    # Placeholder/unlinkable URLs are stripped to "" so they never become broken
+    # inline citations downstream. A real url passes through unchanged.
+    uf = rank({"query": "acme mower", "now": now, "items": [
+        {"source": "web", "id": "p1", "title": "acme mower review",
+         "snippet": "acme mower long term review", "author": None,
+         "published_at": "2026-06-10T00:00:00Z",
+         "url": "https://example.com/placeholder", "engagement": {}},
+        {"source": "reddit", "id": "p2", "title": "acme mower real thread",
+         "snippet": "acme mower owners discuss real experience", "author": "u/x",
+         "published_at": "2026-06-10T00:00:00Z",
+         "url": "https://old.reddit.com/r/lawncare/comments/abc/acme/", "engagement": {"score": 200}},
+    ]}, top=25, mode_override=None)
+    by_title = {r["title"]: r for r in uf["ranked"]}
+    assert by_title["acme mower review"]["url"] == "", \
+        f"placeholder url not stripped: {by_title['acme mower review']['url']!r}"
+    assert by_title["acme mower real thread"]["url"].startswith("https://old.reddit.com"), \
+        f"valid url was dropped: {by_title['acme mower real thread']['url']!r}"
+
+    # Comparison balance: with labeled subqueries each carrying its own query, the
+    # smaller/lower-engagement side must still surface in the ranked output rather
+    # than being buried by the louder side. Side B has one weak item; without
+    # per-subquery relevance it would be swamped by side A's three strong items.
+    cmp_out = rank({
+        "query": "alpha vs beta",
+        "now": now,
+        "subqueries": [
+            {"label": "a", "query": "alpha", "weight": 1.0, "sources": None},
+            {"label": "b", "query": "beta", "weight": 1.0, "sources": None},
+        ],
+        "items": [
+            {"source": "reddit", "id": "a1", "title": "alpha is great",
+             "snippet": "alpha alpha alpha review", "author": "u/a1",
+             "published_at": "2026-06-12T00:00:00Z", "engagement": {"score": 5000}},
+            {"source": "reddit", "id": "a2", "title": "alpha deep dive",
+             "snippet": "alpha alpha analysis", "author": "u/a2",
+             "published_at": "2026-06-12T00:00:00Z", "engagement": {"score": 4000}},
+            {"source": "x", "id": "a3", "title": "alpha thread",
+             "snippet": "alpha alpha hot take", "author": "@a3",
+             "published_at": "2026-06-12T00:00:00Z", "engagement": {"likes": 3000}},
+            {"source": "web", "id": "b1", "title": "beta quiet review",
+             "snippet": "beta beta beta long term", "author": None,
+             "published_at": "2026-06-11T00:00:00Z", "engagement": {}},
+        ],
+    }, top=4, mode_override=None)
+    cmp_titles = [r["title"] for r in cmp_out["ranked"]]
+    assert any("beta" in t for t in cmp_titles), \
+        f"comparison buried the quiet side entirely: {cmp_titles}"
+
     print("self-test: PASS (golden ordering, author cap, thin-evidence, freshness mode, "
-          "source-quality tiebreak, undated floor, engagement coverage, url safety)")
+          "source-quality tiebreak, undated floor, engagement coverage, url safety, "
+          "placeholder-url strip, comparison balance)")
     return 0
 
 
