@@ -78,13 +78,23 @@ This repo's review checks run on GitHub. Drive everything through the `gh` CLI.
 
 ### 1. Detect the PR
 
-Use the number the user gave you, otherwise detect from the current branch:
+If the user gave a PR number, use it directly as `<N>` in every command below — do not
+re-derive it from the branch. Only fall back to branch detection when no number was
+given:
 
 ```bash
-gh pr view --json number,title,headRefName,baseRefName --jq '.number'
+# Explicit number wins:
+N=<pr-number-from-user>
+
+# Otherwise auto-detect from the current branch:
+N=$(gh pr view --json number --jq '.number')
 ```
 
-If no PR exists for the branch, say so and stop — don't guess.
+`gh pr view` with no argument resolves the PR for the _current branch_, so it only works
+when you're checked out on the PR's branch. If the user said "process PR #123" while you
+sit on `main`, using branch detection would target the wrong PR (or none). When you have
+a number, pass `gh pr view <N> --repo $R`. If neither a number nor a branch PR is
+available, say so and stop — don't guess.
 
 ### 2. Preflight: is the PR even runnable?
 
