@@ -276,7 +276,7 @@ def _url_ok(url: str) -> bool:
     if not u.startswith(("http://", "https://")):
         return False
     # Common placeholder/fabrication tells the synthesizer must not link.
-    bad = ("example", "placeholder", "...", "<", "your-", "xxx", "id=example",
+    bad = ("example.com", "placeholder", "...", "<", "your-", "xxx", "id=example",
            "v=example", "watch?v=abc", "/abc123", "todo")
     return not any(b in u for b in bad)
 
@@ -331,7 +331,7 @@ def prune_low_relevance(items: list[dict], minimum: float = 0.15) -> list[dict]:
         rel = it.get("_relevance", 0.0)
         if rel < minimum:
             return False
-        if it.get("source") in social and not it.get("_engagement"):
+        if it.get("source") in social and it.get("_engagement") is None:
             if rel < minimum * 1.5:
                 return False
         return True
@@ -368,6 +368,11 @@ def weighted_rrf(items: list[dict], subqueries: list[dict]) -> list[dict]:
             key = candidate_key(it)
             contribution = weight / (RRF_K + rank)
             cand = candidates.get(key)
+            # For COMPARISON subqueries, each side's items are ranked by their per-subquery
+            # relevance, but global _relevance (from the full query) may score them lower.
+            # Use the max of both so COMPARISON items survive diversify's threshold check
+            # and appear correctly in output local_relevance.
+            item_rel = max(it.get("_relevance", 0.0), local_relevance(sq_query, it) if sq_query else 0.0)
             if cand is None:
                 raw_url = it.get("url", "") or ""
                 candidates[key] = {
@@ -375,7 +380,7 @@ def weighted_rrf(items: list[dict], subqueries: list[dict]) -> list[dict]:
                     "url": raw_url if _url_ok(raw_url) else "",
                     "source": it.get("source"), "author": it.get("author"),
                     "snippet": it.get("snippet", ""),
-                    "local_relevance": it.get("_relevance", 0.0),
+                    "local_relevance": item_rel,
                     "freshness": it.get("_freshness", 0),
                     "engagement": it.get("_engagement"),
                     "quality": it.get("_quality", DEFAULT_SOURCE_QUALITY),
@@ -389,7 +394,7 @@ def weighted_rrf(items: list[dict], subqueries: list[dict]) -> list[dict]:
                     iu = it.get("url", "") or ""
                     if _url_ok(iu):
                         cand["url"] = iu
-                cand["local_relevance"] = max(cand["local_relevance"], it.get("_relevance", 0.0))
+                cand["local_relevance"] = max(cand["local_relevance"], item_rel)
                 cand["freshness"] = max(cand["freshness"], it.get("_freshness", 0))
                 ie = it.get("_engagement")
                 if ie is not None:
@@ -432,16 +437,15 @@ def diversify(pool: list[dict], limit: int) -> list[dict]:
             bucket.append(c)
         else:
             remainder.append(c)
-    result = [c for bucket in reserved.values() for c in bucket]
-    seen = {c["key"] for c in result}
-    for c in remainder:
-        if len(result) >= limit:
-            break
-        if c["key"] not in seen:
-            result.append(c)
-            seen.add(c["key"])
-    result.sort(key=lambda c: (-c["rrf"], -c["local_relevance"], -c["freshness"], c["source"], c["title"]))
-    return result[:limit]
+    sort_key = lambda c: (-c["rrf"], -c["local_relevance"], -c["freshness"], c["source"], c["title"])
+    guaranteed = [c for bucket in reserved.values() for c in bucket]
+    guaranteed_keys = {c["key"] for c in guaranteed}
+    # Fill remaining slots from remainder, preserving RRF order.
+    # Guaranteed items always survive the limit slice — they earned diversity slots.
+    fill = [c for c in remainder if c["key"] not in guaranteed_keys]
+    output = guaranteed + fill[:max(0, limit - len(guaranteed))]
+    output.sort(key=sort_key)
+    return output[:limit]
 
 
 def _why(c: dict) -> str:
