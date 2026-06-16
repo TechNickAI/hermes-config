@@ -71,11 +71,11 @@ Tailnet host: <machine>.<your-tailnet>.ts.net
 
 **Single sources of truth on this machine** (after install):
 
-| File                                         | What it controls                                           |
-| -------------------------------------------- | ---------------------------------------------------------- |
-| `~/mini-apps/ecosystem.config.js`            | PM2 process list + ALL env vars (incl. auth passwords)     |
-| `~/mini-apps/_registry/Caddyfile`            | Path → upstream routing                                    |
-| `~/mini-apps/_registry/tailscale-serve.json` | Public/tailnet exposure (huJSON; compiled by apply script) |
+| File                                      | What it controls                                           |
+| ----------------------------------------- | ---------------------------------------------------------- |
+| `~/mini-apps/ecosystem.config.js`         | PM2 process list + ALL env vars (incl. auth passwords)     |
+| `~/mini-apps/router/Caddyfile`            | Path → upstream routing                                    |
+| `~/mini-apps/router/tailscale-serve.json` | Public/tailnet exposure (huJSON; compiled by apply script) |
 
 Never run ad-hoc `tailscale serve …` commands. Edit the JSON, run the apply script.
 
@@ -99,16 +99,16 @@ is safe; `--force` overwrites existing files.
    - Set `AUTH_SECRET` to `openssl rand -hex 32` (one per machine)
    - Add `APP_PASSWORD_<SLUG>` / `APP_TITLE_<SLUG>` / `APP_DESC_<SLUG>` for any gated
      apps
-2. Edit `~/mini-apps/_registry/Caddyfile` to declare each app's route
-3. Edit `~/mini-apps/_registry/tailscale-serve.json` if you want a non-default serve
-   layout (default exposes Caddy on `:443`)
+2. Edit `~/mini-apps/router/Caddyfile` to declare each app's route
+3. Edit `~/mini-apps/router/tailscale-serve.json` if you want a non-default serve layout
+   (default exposes Caddy on `:443`)
 
 **Start everything under PM2:**
 
 ```bash
 pm2 start ~/mini-apps/ecosystem.config.js
 pm2 start /opt/homebrew/bin/caddy --name caddy --interpreter none -- \
-  run --config ~/mini-apps/_registry/Caddyfile --adapter caddyfile
+  run --config ~/mini-apps/router/Caddyfile --adapter caddyfile
 pm2 save
 pm2 startup    # paste the printed sudo command — needed for resurrect-on-reboot
 ```
@@ -116,7 +116,7 @@ pm2 startup    # paste the printed sudo command — needed for resurrect-on-rebo
 **Apply Tailscale Serve:**
 
 ```bash
-~/mini-apps/_registry/apply-tailscale-serve.sh
+~/mini-apps/router/apply-tailscale-serve.sh
 # macOS launchd that replays on login:
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.mini-app.router-serve.plist
 ```
@@ -187,7 +187,7 @@ handle /my-app/* {
 
 ```bash
 pm2 restart ecosystem.config.js
-caddy reload --config ~/mini-apps/_registry/Caddyfile --adapter caddyfile
+caddy reload --config ~/mini-apps/router/Caddyfile --adapter caddyfile
 ```
 
 You do **not** need to touch Tailscale when adding an app. Caddy is the path router;
@@ -208,14 +208,14 @@ pm2 delete my-app
 Then drop the Caddyfile `handle` block, the ecosystem entry, and any `APP_*_MY_APP` env
 vars from the auth-service block. Reload PM2 + Caddy.
 
-## Slug convention for Hermes dashboards (Nick's fleet)
+## Slug convention for Hermes dashboards
 
 Hermes agent dashboards use the slug `hermes-<agent>` (e.g. `hermes-<name>`). Two
 reasons:
 
 1. **Grouping** — every Hermes dashboard sorts together under one prefix.
-2. **Collision avoidance** — a non-Hermes app may already own the bare agent name. On
-   Mac if a product web app already owns `/<name>/`, the agent's dashboard must be
+2. **Collision avoidance** — a non-Hermes app may already own the bare agent name. If a
+   product web app already owns `/<name>/`, the agent's dashboard must be
    `/hermes-<name>/` (a separate slug + profile). Never mount a Hermes dashboard at a
    bare name that collides with an existing app slug.
 
@@ -288,11 +288,11 @@ find <home-dir> -maxdepth 4 -name ecosystem.config.js 2>/dev/null | grep -v node
 find <home-dir> -maxdepth 5 -name Caddyfile 2>/dev/null | grep -v node_modules
 ```
 
-The Caddyfile commonly lives at `<router-dir>/_registry/Caddyfile`, not directly in the
-router dir. Note also: under a Hermes tool environment, `$HOME` is rewritten to the
-profile home, so `~/mini-apps` and bare `ls`/`grep` may fail to see the real dir — use
-absolute `<home-dir>/...` paths, and the Read/Grep tools (which resolve absolute paths)
-rather than shell `ls`/`cat` when the shell is sandboxed.
+The Caddyfile commonly lives at `<router-dir>/Caddyfile`, not directly in the router
+dir. Note also: under a Hermes tool environment, `$HOME` is rewritten to the profile
+home, so `~/mini-apps` and bare `ls`/`grep` may fail to see the real dir — use absolute
+`<home-dir>/...` paths, and the Read/Grep tools (which resolve absolute paths) rather
+than shell `ls`/`cat` when the shell is sandboxed.
 
 ## Hermes dashboards behind the router
 
@@ -436,7 +436,7 @@ client-side after login.
 ## Public exposure via Tailscale Funnel
 
 Tailscale Serve is tailnet-only by default. To share an app publicly, add the
-funnel-enabled port to `~/mini-apps/_registry/tailscale-serve.json`:
+funnel-enabled port to `~/mini-apps/router/tailscale-serve.json`:
 
 ```jsonc
 "AllowFunnel": {
@@ -444,7 +444,7 @@ funnel-enabled port to `~/mini-apps/_registry/tailscale-serve.json`:
 }
 ```
 
-Then re-apply: `~/mini-apps/_registry/apply-tailscale-serve.sh`.
+Then re-apply: `~/mini-apps/router/apply-tailscale-serve.sh`.
 
 **Funnel-allowed ports are exactly `{443, 8443, 10000}`.** Anything else fails silently
 or is rejected by Tailscale.
@@ -466,7 +466,7 @@ reverse-proxy to the tailnet-IP backend, then funnel that loopback listener. Exa
 an LLM proxy bound to a tailnet IP:
 
 ```caddy
-# In ~/mini-apps/_registry/Caddyfile, ABOVE the main :8080 block:
+# In ~/mini-apps/router/Caddyfile, ABOVE the main :8080 block:
 :8090 {
     bind 127.0.0.1
     reverse_proxy 100.x.y.z:20128 {
@@ -592,7 +592,7 @@ most commonly the messaging gateway's Tailscale integration if it's enabled. Dia
 disappeared. Recovery is one command:
 
 ```bash
-~/mini-apps/_registry/apply-tailscale-serve.sh
+~/mini-apps/router/apply-tailscale-serve.sh
 ```
 
 The apply script is idempotent — safe to run any time.
@@ -649,7 +649,7 @@ pm2 list
 lsof -iTCP -sTCP:LISTEN -P -n | grep -E ":3000|:8080|<your-app-ports>"
 
 # 3. Caddy is on the latest config
-caddy reload --config ~/mini-apps/_registry/Caddyfile --adapter caddyfile
+caddy reload --config ~/mini-apps/router/Caddyfile --adapter caddyfile
 
 # 4. Routes return expected codes
 for path in "" "auth/login?app=my-app" "my-app/" "health"; do
@@ -782,14 +782,14 @@ pm2 save
 ## Index-page cards: match the page's own design system
 
 When adding a dashboard card to an existing index page, READ the file first and reuse
-its existing card markup/classes (e.g. this fleet's pages use `.card` + `.pill`, not the
-older `.card-lock` span). Two failure modes seen:
+its existing card markup/classes (for example, some pages use `.card` + `.pill` instead
+of an older `.card-lock` span). Two failure modes seen:
 
 1. **Orphaned card** — a naive "insert before `</body>`" lands the card OUTSIDE the
    styled `<main>`/`.grid` container, so it renders as unstyled floating text. Insert
    INSIDE the `.grid` (e.g. right after `<div class="grid">`).
-2. **Wrong markup** — copying the Mac Studio `.card-lock` pattern onto a page that only
-   defines `.pill` yields an unstyled card. Use the target page's own classes.
+2. **Wrong markup** — copying a `.card-lock` pattern onto a page that only defines
+   `.pill` yields an unstyled card. Use the target page's own classes.
 
 After editing, the served HTML is authoritative; a stale browser view is just cache
 (hard-refresh ⌘⇧R). Verify with `curl -sk "$BASE/" | grep -n hermes-<slug>` and confirm
@@ -805,7 +805,7 @@ leaving the host unable to recover from a reboot. Tailscale `serve --bg` config 
 across reboots natively, so only PM2 needs this.
 
 1. **Editing the Caddyfile in `/etc/...` or wherever you found Caddy on the system.**
-   The router uses `~/mini-apps/_registry/Caddyfile` and runs Caddy under PM2 with
+   The router uses `~/mini-apps/router/Caddyfile` and runs Caddy under PM2 with
    `--config` pointing at that file. Edit there, reload from there.
 
 2. **Forgetting `uri strip_prefix /<slug>` on a Hermes dashboard.** Hermes receives
@@ -888,10 +888,10 @@ across reboots natively, so only PM2 needs this.
     round-trip over the `https://` URL — an HTTP test gives a false negative.
 
 17. **Pasting generic card markup into a host's custom index page.** Index pages differ
-    per host: an inline Caddyfile `respond` block (Mac Studio) vs a file_server
-    `_registry/index.html` with a bespoke theme. READ the existing index first and reuse
-    ITS card/pill classes; insert the new card INSIDE the existing grid/container, never
-    after `</main>` (an orphan outside the styled wrapper renders as raw, unstyled
+    per host: some use an inline Caddyfile `respond` block; others use a file_server
+    `router/public/index.html` with a bespoke theme. READ the existing index first and
+    reuse ITS card/pill classes; insert the new card INSIDE the existing grid/container,
+    never after `</main>` (an orphan outside the styled wrapper renders as raw, unstyled
     floating text — a user-visible "looks funny" defect). Back up before editing; verify
     with a cache-busting browser reload.
 

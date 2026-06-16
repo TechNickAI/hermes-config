@@ -52,7 +52,7 @@ echo "[install] target: $DEST"
 
 mkdir -p "$DEST/router/logs" "$DEST/router/public"
 copy_if_absent "$SRC/auth-service" "$DEST/auth-service"
-copy_if_absent "$SRC/templates/ecosystem.config.js.example" "$DEST/ecosystem.config.js"
+render_if_absent "$SRC/templates/ecosystem.config.js.example" "$DEST/ecosystem.config.js"
 render_if_absent "$SRC/templates/Caddyfile.example" "$DEST/router/Caddyfile"
 copy_if_absent "$SRC/templates/index.html" "$DEST/router/public/index.html"
 copy_if_absent "$SRC/scripts/apply-tailscale-serve.sh" "$DEST/router/apply-tailscale-serve.sh"

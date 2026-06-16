@@ -302,10 +302,9 @@ gateway expects. Confirm with `pm2 env caddy | grep GATEWAY_HOOK_TOKEN` and comp
 **Webhooks return 405 on GET.** That's correct — the hooks endpoint only accepts POST. A
 405 from `/hooks/test` means the route is live.
 
-**Lost track of what should be where.** The current canonical layout for Nick's Mac
-Studio is documented inline at the top of `tailscale-serve.json`. The general rule: only
-password-gated upstreams on funnel'd ports, everything else on a separate tailnet-only
-port.
+**Lost track of what should be where.** Treat `tailscale-serve.json` as the canonical
+layout for the host. The general rule: only password-gated upstreams on funnel'd ports;
+put anything passwordless on a separate tailnet-only port.
 
 ## Fleet Notes
 
