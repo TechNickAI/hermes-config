@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes Mini-Apps</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      color-scheme: light;
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --soft: #f1f5f9;
+      --accent: #4f46e5;
+      --accent-soft: #eef2ff;
+      --shadow: 0 18px 50px rgba(15, 23, 42, 0.08);
+    }
+    body {
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(79, 70, 229, 0.12), transparent 28rem),
+        radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.10), transparent 24rem),
+        var(--bg);
+      color: var(--ink);
+      padding: 56px 20px;
+    }
+    .wrap { max-width: 620px; margin: 0 auto; }
+    .hero {
+      background: rgba(255,255,255,0.82);
+      border: 1px solid rgba(226,232,240,0.9);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      padding: 30px;
+      backdrop-filter: blur(10px);
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 13px;
+      margin-bottom: 18px;
+    }
+    h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.02; letter-spacing: -0.04em; margin-bottom: 12px; }
+    .subtitle { color: var(--muted); font-size: 16px; line-height: 1.55; max-width: 46rem; margin-bottom: 28px; }
+    .grid { display: grid; gap: 12px; }
+    .card {
+      display: block;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px 20px;
+      color: var(--ink);
+      text-decoration: none;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+    }
+    a.card:hover { transform: translateY(-1px); box-shadow: 0 12px 30px rgba(15, 23, 42, 0.10); border-color: #c7d2fe; }
+    .card-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 16px; font-weight: 700; margin-bottom: 5px; }
+    .card-desc { color: var(--muted); font-size: 14px; line-height: 1.45; }
+    .pill { flex: none; font-size: 12px; font-weight: 650; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 5px 9px; }
+    .muted-card { opacity: 0.78; }
+    .footer { color: #94a3b8; font-size: 12px; margin-top: 18px; text-align: center; }
+    @media (max-width: 520px) { body { padding: 28px 14px; } .hero { padding: 22px; border-radius: 22px; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <div class="eyebrow">🐾 Tailnet private app router</div>
+      <h1>Hermes Mini-Mini-App Router</h1>
+      <p class="subtitle">This host routes requests to private apps on your tailnet. Configure apps in <code>ecosystem.config.js</code> — they&rsquo;ll show up here as they come online.</p>
+      <div class="grid">
+        <a class="card" href="/health">
+          <div class="card-title">Router Health <span class="pill">Open</span></div>
+          <div class="card-desc">Quick liveness check for the local Caddy app router.</div>
+        </a>
+        <div class="card muted-card">
+          <div class="card-title">Your first app <span class="pill">Example</span></div>
+          <div class="card-desc">Replace this card with your own app. Set <code>APP_TITLE_&lt;SLUG&gt;</code> and <code>APP_DESC_&lt;SLUG&gt;</code> in <code>ecosystem.config.js</code>.</div>
+        </div>
+        <div class="card muted-card">
+          <div class="card-title">Your next app <span class="pill">Example</span></div>
+          <div class="card-desc">Each entry maps a URL path prefix to a local PM2 process. Add more by editing the Caddyfile and <code>ecosystem.config.js</code>.</div>
+        </div>
+      </div>
+    </section>
+    <p class="footer">Hermes Mini-Mini-App Router</p>
+  </main>
+</body>
+</html>
