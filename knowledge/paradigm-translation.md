@@ -107,18 +107,18 @@ migration, see the migration guide _(planned)_.
 
 ## DevOps
 
-| OpenClaw                                   | Hermes                                          | Action          | Notes                                                                                       |
-| ------------------------------------------ | ----------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------- |
-| `health-check.md` (workflow-runner-style)  | Hermes cron + a markdown skill                  | 🟡 Redesign     | Same spirit, native scheduling.                                                             |
-| Machine setup (mac/linux)                  | Stays useful, just orient toward `hermes setup` | 🟢 Port         | One-line installer + this doc is a good combo.                                              |
-| Machine security review                    | Same; lightly Hermes-aware                      | 🟢 Port         |                                                                                             |
-| Tailscale docs                             | Same                                            | 🟢 Port         |                                                                                             |
-| Notification routing                       | Hermes gateway handles routing natively         | 🟡 Redesign     | Doc shrinks; the routing logic is built in.                                                 |
-| Embeddings setup                           | Replace with `memory-deep-dive.md`              | 🟡 Redesign     | Different storage layer entirely.                                                           |
-| Cron fleet manifest                        | Hermes cron + small fleet plugin                | 🟡 Redesign     |                                                                                             |
-| App router (Caddyfile, auth-service, etc.) | —                                               | ⚪ Out of scope | Tailscale-served services; not agent infrastructure. Fork from `openclaw-config` if needed. |
-| Remote desktop setup                       | Same                                            | 🟢 Port         | Unchanged by Hermes.                                                                        |
-| `apt-packages.txt`, `Brewfile`             | Same; add Hermes deps                           | 🟢 Port         |                                                                                             |
+| OpenClaw                                   | Hermes                                          | Action      | Notes                                                                                                                                                           |
+| ------------------------------------------ | ----------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `health-check.md` (workflow-runner-style)  | Hermes cron + a markdown skill                  | 🟡 Redesign | Same spirit, native scheduling.                                                                                                                                 |
+| Machine setup (mac/linux)                  | Stays useful, just orient toward `hermes setup` | 🟢 Port     | One-line installer + this doc is a good combo.                                                                                                                  |
+| Machine security review                    | Same; lightly Hermes-aware                      | 🟢 Port     |                                                                                                                                                                 |
+| Tailscale docs                             | Same                                            | 🟢 Port     |                                                                                                                                                                 |
+| Notification routing                       | Hermes gateway handles routing natively         | 🟡 Redesign | Doc shrinks; the routing logic is built in.                                                                                                                     |
+| Embeddings setup                           | Replace with `memory-deep-dive.md`              | 🟡 Redesign | Different storage layer entirely.                                                                                                                               |
+| Cron fleet manifest                        | Hermes cron + small fleet plugin                | 🟡 Redesign |                                                                                                                                                                 |
+| App router (Caddyfile, auth-service, etc.) | —                                               | 🟢 Port     | Ships in `devops/app-router/` — exposes Hermes dashboards and other local web apps over Tailscale HTTPS with per-app password gating. See the `mini-app` skill. |
+| Remote desktop setup                       | Same                                            | 🟢 Port     | Unchanged by Hermes.                                                                                                                                            |
+| `apt-packages.txt`, `Brewfile`             | Same; add Hermes deps                           | 🟢 Port     |                                                                                                                                                                 |
 
 ## API keys & secrets
 

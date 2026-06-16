@@ -1,0 +1,350 @@
+# Hermes Mini-App Router
+
+A lightweight pattern for spinning up named web apps on any fleet machine and serving
+them at a clean URL — with optional per-app password protection. No cloud required.
+Works from a phone.
+
+## What It Does
+
+Every app gets a path like `/my-app/` on a single Tailscale HTTPS URL. A visitor who
+hits a password-protected app sees a clean login form asking for a password by the app's
+friendly name — not a technical slug. Entering the correct password sets a scoped cookie
+that grants access only to that app, not any other.
+
+Under the hood: PM2 keeps the Node processes alive. Caddy sits in front of them as a
+path router and handles the auth challenge via `forward_auth`. A small Express sidecar
+(`auth-service/`) issues and validates the session cookies. Tailscale Serve provides
+HTTPS with no certificate management.
+
+## Why Tailscale Serve Keeps Breaking (And The Permanent Fix)
+
+Tailscale's CLI has no native config file for per-node serve. Every `tailscale serve …`
+is imperative — it mutates running state. If two tools (or two install steps) run their
+own sequence of `serve` commands, the later one stomps the earlier one's routes. The
+worst offender is `tailscale serve reset`, which any integration can run on startup.
+
+**The fix:** treat one JSON file as the single source of truth and replay it whenever
+anything stomps the live config.
+
+- **Source of truth:** `~/mini-apps/router/tailscale-serve.json` — declarative ports,
+  paths, upstreams, and funnel toggles. Edit this and only this.
+- **Apply script:** `~/mini-apps/router/apply-tailscale-serve.sh` — does
+  `tailscale funnel reset` + `tailscale serve reset` to clear state, then compiles the
+  JSON into a sequence of `tailscale serve` / `tailscale funnel` commands and runs them.
+- **Boot agent:** `~/Library/LaunchAgents/com.hermes.mini-app-router-serve.plist` calls
+  the apply script at login, so the config survives reboots.
+- **Gateway guard:** if another local gateway has its own Tailscale integration that
+  calls `serve reset` on restart, disable that integration or it will keep fighting the
+  router.
+
+When `tailscale serve status` shows the wrong routes or a blank funnel, you don't have
+to remember what was supposed to be there. Just run the apply script:
+
+```
+~/mini-apps/router/apply-tailscale-serve.sh
+```
+
+That's the recovery procedure for any "serve got fucked again" moment.
+
+### Why Not Cloudflare Tunnel?
+
+Cloudflare Tunnel does have a real persistent config file (`config.yml`) and would solve
+the stomping problem the same way. It costs: a Cloudflare account, a domain on
+Cloudflare DNS, the `cloudflared` daemon, and an extra hop through Cloudflare for every
+request. Tailscale Serve is already running on every fleet machine, gives us HTTPS for
+free via MagicDNS, and Funnel lets us share specific paths publicly without exposing the
+whole machine. The declarative JSON + apply script gives us the only thing Tailscale was
+missing — a config file — without adding a new dependency.
+
+## Layout
+
+```
+devops/app-router/
+  auth-service/    Express auth sidecar (server.js + tests)
+  templates/       Caddyfile and ecosystem.config.js examples
+  scripts/         apply-tailscale-serve.sh + tailscale-serve.json (declarative)
+  launchd/         Plist that runs apply-tailscale-serve.sh on login
+```
+
+The deploy target on each machine is `~/mini-apps/`:
+
+```
+~/mini-apps/
+  ecosystem.config.js              copy of templates/ecosystem.config.js.example
+  auth-service/                    copy of devops/app-router/auth-service/
+  router/
+    Caddyfile                      copy of templates/Caddyfile.example
+    tailscale-serve.json           source of truth for Tailscale Serve + Funnel
+    apply-tailscale-serve.sh       compiles the JSON and applies it
+    logs/                          stdout/stderr for the launchd plist
+  <app-name>/                      one directory per app
+```
+
+## First-Time Setup on a New Machine
+
+Install Caddy via Homebrew and PM2 globally via npm:
+
+```
+brew install caddy
+npm install -g pm2
+```
+
+Run the install helper from the repo root — it copies the templates, installs
+auth-service deps, and stages the launchd plist with `<USER>` substituted:
+
+```
+bash devops/app-router/scripts/install.sh
+```
+
+Re-running is safe; existing files are skipped. Pass `--force` to overwrite.
+
+Edit `~/mini-apps/ecosystem.config.js` — set `AUTH_SECRET` (use `openssl rand -hex 32`),
+and fill in `APP_PASSWORD_<SLUG>`, `APP_TITLE_<SLUG>`, and `APP_DESC_<SLUG>` for any
+protected apps. Then edit `~/mini-apps/router/Caddyfile` to match.
+
+Start everything under PM2:
+
+```
+pm2 start ~/mini-apps/ecosystem.config.js
+pm2 start /opt/homebrew/bin/caddy --name caddy --interpreter none -- \
+  run --config ~/mini-apps/router/Caddyfile --adapter caddyfile
+pm2 save
+pm2 startup     # then run the printed sudo command
+```
+
+Point Tailscale Serve at Caddy. The router uses a **declarative Tailscale config**
+(`~/mini-apps/router/tailscale-serve.json`) instead of imperative `tailscale serve`
+commands. Edit that file to declare your routes (an example is included), then apply it:
+
+```
+~/mini-apps/router/apply-tailscale-serve.sh
+```
+
+The apply script does `tailscale serve reset` + `tailscale funnel reset` and then
+replays the JSON declaratively. This way, two adds never stomp each other and you can
+diff/version the file. Load the launchd agent so it runs on login:
+
+```
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hermes.mini-app-router-serve.plist
+```
+
+> **Important if you also run OpenClaw on the same host.** The messaging gateway has a
+> built-in Tailscale integration that will call `tailscale serve reset` on every restart
+> when enabled, clobbering this config. Disable it in `~/.openclaw/openclaw.json` under
+> `gateway`:
+>
+> ```json
+> "tailscale": { "mode": "off", "resetOnExit": false }
+> ```
+>
+> Both `mode` and `resetOnExit` are protected paths in the gateway config tool, so you
+> have to edit the file directly.
+
+Verify everything is working — replace `<host>` with your Tailscale hostname:
+
+```
+curl https://<host>/health     # → "ok"
+```
+
+## Adding an App
+
+Each app is a process (Node, Python, anything that binds to localhost) and a slot in two
+files: `ecosystem.config.js` and the Caddyfile.
+
+**In `ecosystem.config.js`**, append to the `apps` array with the process name, script
+path, working directory, and `env.PORT`. If the app is password-protected, also add
+`APP_PASSWORD_<SLUG>`, `APP_TITLE_<SLUG>`, and `APP_DESC_<SLUG>` to the auth-service
+`env` block. The slug is the app's URL segment uppercased with `-` replaced by `_`.
+
+**In the Caddyfile**, add a `handle` block for the new path. Open apps just strip the
+prefix and reverse-proxy. Password-protected apps add a `forward_auth` block pointing at
+`127.0.0.1:3000/auth/verify?app=<slug>` that redirects to `/auth/login?app=<slug>` on
+401, then strip the prefix and proxy.
+
+After editing both files:
+
+```
+pm2 restart ecosystem.config.js          # or just `pm2 restart auth-service` for password-only changes
+caddy reload --config ~/mini-apps/router/Caddyfile --adapter caddyfile
+```
+
+The app is immediately live at `https://<host>/<slug>/`.
+
+**You do not need to touch Tailscale when adding an app.** The router exposes a single
+upstream (Caddy on `:8080`) at `:443`; Caddy handles all per-app path routing. Only edit
+`~/mini-apps/router/tailscale-serve.json` when changing ports or funnel state.
+
+## Removing an App
+
+```
+pm2 delete <name>
+```
+
+Then drop its `handle` block from the Caddyfile, its entry from `ecosystem.config.js`,
+and its `APP_*_<SLUG>` env vars from the auth-service block. Reload PM2 and Caddy as
+above.
+
+## Auth Model
+
+Apps have three modes:
+
+- **Open** — no password. Omit the app from the auth-service env entirely and use a
+  plain `handle` block in the Caddyfile.
+- **Password-protected** — a single shared password. Set `APP_PASSWORD_<SLUG>`. Anyone
+  who knows it gets a 7-day cookie scoped to that app's path only. Knowing one app's
+  password grants no access to any other app.
+- **No-password configured** — if the Caddyfile has a `forward_auth` block but
+  `APP_PASSWORD_<SLUG>` is unset, the auth service treats the app as open. Useful during
+  development.
+
+The auth service signs cookies with `AUTH_SECRET`. If unset and `NODE_ENV=production`,
+the service refuses to start; pass `AUTH_ALLOW_RANDOM_SECRET=1` to opt into ephemeral
+sessions (a random secret is generated each boot, so every restart logs everyone out).
+Outside production, an unset `AUTH_SECRET` falls back to a random value with a warning.
+Each machine should have its own secret.
+
+The login POST endpoint is rate-limited to 30 attempts per IP per minute and rejects
+requests whose `Origin`/`Referer` doesn't match the request host (mitigates CSRF beyond
+SameSite=lax). 401s and CSRF rejections are logged to stdout with slug + IP, captured by
+PM2.
+
+Slugs are validated against `^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$` — lowercase
+alphanumerics and hyphens, max 32 chars. Anything outside that gets a 400 from
+`/auth/verify` and `/auth/login`.
+
+## Fronting Gateway Webhooks (optional)
+
+External callers such as webhook providers or mobile shortcuts don't always support
+custom `Authorization` headers. The messaging gateway hooks server
+(`127.0.0.1:<gateway-port>`) requires a bearer token on every request. Caddy can inject
+it transparently so callers don't need to send auth themselves.
+
+**Setup:**
+
+1. Set `GATEWAY_HOOK_TOKEN` in the Caddy process environment. The easiest way is via the
+   PM2 ecosystem env block in `ecosystem.config.js`:
+   ```js
+   env: {
+     GATEWAY_HOOK_TOKEN: "your-token-here";
+   }
+   ```
+2. Uncomment the `handle /hooks/* { ... }` block in the Caddyfile.
+3. Reload Caddy:
+   `caddy reload --config ~/mini-apps/router/Caddyfile --adapter caddyfile`
+
+Callers can then `POST https://<host>/hooks/<hook-name>` with no `Authorization` header
+— Caddy injects `Bearer <token>` before forwarding to the gateway. The `/hooks/` route
+is already declared in the default `tailscale-serve.json`.
+
+## Public Access
+
+Tailscale Serve is tailnet-only by default. To make apps accessible from outside the
+tailnet (sharing with people who aren't on Tailscale), enable Funnel on `:443` in
+`~/mini-apps/router/tailscale-serve.json` (the default template already does this):
+
+```json
+"AllowFunnel": {
+  "${HOST}:443": true
+}
+```
+
+Then re-apply with `~/mini-apps/router/apply-tailscale-serve.sh`. Funnel only works on
+ports 443, 8443, and 10000.
+
+> **Security rule (non-negotiable):** a port that is funnel'd is fully public. Only
+> password-gated or token-gated upstreams may live on a funnel'd port. If you need to
+> expose admin UIs (admin UI, etc.) that have no built-in auth, put them on a separate
+> **tailnet-only** port (e.g. `:8443`) by adding a `Web` entry _without_ a matching
+> `AllowFunnel` entry.
+
+## Troubleshooting
+
+**`tailscale serve status` shows the wrong routes, or apps return blank pages, or the
+funnel disappeared.** Something ran `tailscale serve reset` or stacked imperative
+commands on top of the declared config. Re-apply:
+
+```
+~/mini-apps/router/apply-tailscale-serve.sh
+tailscale serve status
+```
+
+The apply script is idempotent. Safe to run any time.
+
+**Apps return blank pages even though the serve routes look right.** Caddy may be down
+or pointing at the wrong file. Check:
+
+```
+pm2 list                          # caddy should be "online"
+pm2 logs caddy --lines 50         # look for parse errors
+curl -s http://127.0.0.1:8080/health   # → "ok"
+```
+
+**The public funnel works, but the app's own page is blank under the path.** Most likely
+the app emits HTML with absolute paths to `/static/...` that 404 once it lives under
+`/my-app/`. Either configure a base path in the app, or rewrite assets at the Caddy
+layer.
+
+**Tailscale config gets wiped on gateway restart.** The messaging gateway's Tailscale
+integration is enabled. Disable it in `~/.openclaw/openclaw.json`:
+
+```json
+"tailscale": { "mode": "off", "resetOnExit": false }
+```
+
+Both keys are protected paths in the gateway config tool, so edit the JSON directly and
+restart the gateway.
+
+**Webhooks return 401 from the public URL.** Either `GATEWAY_HOOK_TOKEN` isn't set in
+Caddy's env (so it's injecting an empty bearer) or the token doesn't match what the
+gateway expects. Confirm with `pm2 env caddy | grep GATEWAY_HOOK_TOKEN` and compare to
+`grep hookToken ~/.openclaw/openclaw.json`.
+
+**Webhooks return 405 on GET.** That's correct — the hooks endpoint only accepts POST. A
+405 from `/hooks/test` means the route is live.
+
+**Lost track of what should be where.** Treat `tailscale-serve.json` as the canonical
+layout for the host. The general rule: only password-gated upstreams on funnel'd ports;
+put anything passwordless on a separate tailnet-only port.
+
+## Fleet Notes
+
+Each machine runs its own independent app router. There is no central router. If an app
+needs data from a specific machine, it runs on that machine. The Tailscale hostname
+makes it obvious which machine you're hitting.
+
+The `AUTH_SECRET` should be different per machine. Either generate a fresh one with
+`openssl rand -hex 32` or omit it and accept that auth-service restarts invalidate
+sessions.
+
+## Port Conventions
+
+**Localhost (where PM2 binds processes):**
+
+- `3000` — auth service
+- `8080` — Caddy
+- `3001+` — apps
+
+Comment each app's port in `ecosystem.config.js` to avoid collisions when adding new
+apps.
+
+**Tailscale (public/private exposure):**
+
+Declared in `tailscale-serve.json`. Funnel-eligible ports are 443, 8443, 10000. The
+default template uses:
+
+- `:443` — public (Funnel on), routes to Caddy. Apps + `/hooks/`. Password-gated.
+- `:8443` — tailnet-only, routes to whatever you want to keep private (control UI etc.).
+
+Do not use ports outside `{443, 8443, 10000}` for public exposure — they won't be
+eligible for Funnel.
+
+## Tests
+
+The auth service has unit tests for the security-critical functions (slug validation,
+HTML escaping, open-redirect guard, timing-safe compare):
+
+```
+cd devops/app-router/auth-service
+npm install
+npm test
+```

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Applies the declarative Tailscale Serve config for the Hermes mini-app router
+    on user login.
+
+    The actual layout (ports, routes, funnel) is declared in:
+        ~/mini-apps/router/tailscale-serve.json
+
+    The apply script:
+        ~/mini-apps/router/apply-tailscale-serve.sh
+
+    Tailscale itself persists serve config across reboots and daemon restarts.
+    This LaunchAgent exists for two reasons:
+      1. Recover deterministically if the persistent state was clobbered
+         (e.g. by an external tool calling `tailscale serve reset`).
+      2. Give us one declarative file to edit when topology changes.
+
+    Install: rendered into ~/Library/LaunchAgents/ by
+    devops/app-router/scripts/install.sh, then:
+        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hermes.mini-app-router-serve.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hermes.mini-app-router-serve</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string><HOME_DIR>/mini-apps/router/apply-tailscale-serve.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string><HOME_DIR>/mini-apps/router/logs/tailscale-serve.log</string>
+    <key>StandardErrorPath</key>
+    <string><HOME_DIR>/mini-apps/router/logs/tailscale-serve-error.log</string>
+</dict>
+</plist>

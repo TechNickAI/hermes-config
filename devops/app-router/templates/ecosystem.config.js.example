@@ -1,0 +1,47 @@
+// Hermes Mini-App Router — PM2 ecosystem
+//
+// Each entry is a long-running process PM2 keeps alive. The auth-service block
+// also carries per-app secrets (passwords + friendly names) as env vars; that
+// way one config file holds everything PM2 needs to launch.
+//
+// Slug → env-var rule: APP_PASSWORD_<SLUG_UPPERCASE_WITH_UNDERSCORES>.
+// Example: slug "my-app" → APP_PASSWORD_MY_APP.
+//
+// After editing: `pm2 restart ecosystem.config.js && pm2 save`.
+
+module.exports = {
+  apps: [
+    {
+      name: "auth-service",
+      script: "./auth-service/server.js",
+      cwd: "<MINI_APPS_DIR>",
+      env: {
+        PORT: 3000,
+        // Generate once with: openssl rand -hex 32
+        // Keep it stable so cookies survive auth-service restarts.
+        AUTH_SECRET: "<REPLACE_WITH_RANDOM_HEX>",
+
+        // One pair per protected app:
+        APP_PASSWORD_MY_PRIVATE_APP: "<REPLACE_WITH_PASSWORD>",
+        APP_TITLE_MY_PRIVATE_APP: "My Private App",
+        APP_DESC_MY_PRIVATE_APP: "What this app is for, in one line.",
+      },
+    },
+
+    // ── Open app on port 3001 ─────────────────────────────────────────────
+    {
+      name: "my-open-app",
+      script: "./my-open-app/server.js",
+      cwd: "<MINI_APPS_DIR>",
+      env: { PORT: 3001 },
+    },
+
+    // ── Password-protected app on port 3002 ───────────────────────────────
+    {
+      name: "my-private-app",
+      script: "./my-private-app/server.js",
+      cwd: "<MINI_APPS_DIR>",
+      env: { PORT: 3002 },
+    },
+  ],
+};
