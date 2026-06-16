@@ -221,6 +221,24 @@ test("login POST with correct password issues a path-scoped, httpOnly, Secure co
   }
 });
 
+
+
+test("logout clears the path-scoped Secure cookie", async () => {
+  const { server, base } = await startServer();
+  try {
+    const r = await fetchManual(`${base}/auth/logout?app=dash`);
+    assert.equal(r.status, 200);
+    const setCookie = r.headers.get("set-cookie") || "";
+    assert.match(setCookie, /oc_auth_dash=/);
+    assert.match(setCookie, /Path=\/dash\//);
+    assert.match(setCookie, /Secure/i);
+    assert.match(setCookie, /SameSite=Lax/i);
+    assert.match(setCookie, /Expires=Thu, 01 Jan 1970/i);
+  } finally {
+    server.close();
+  }
+});
+
 test("login POST with wrong password redirects with error and sets no cookie", async () => {
   const { server, base } = await startServer();
   try {

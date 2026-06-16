@@ -27,13 +27,13 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string><home-dir>/mini-apps/router/apply-tailscale-serve.sh</string>
+        <string><HOME_DIR>/mini-apps/router/apply-tailscale-serve.sh</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string><home-dir>/mini-apps/router/logs/tailscale-serve.log</string>
+    <string><HOME_DIR>/mini-apps/router/logs/tailscale-serve.log</string>
     <key>StandardErrorPath</key>
-    <string><home-dir>/mini-apps/router/logs/tailscale-serve-error.log</string>
+    <string><HOME_DIR>/mini-apps/router/logs/tailscale-serve-error.log</string>
 </dict>
 </plist>

@@ -14,7 +14,7 @@ module.exports = {
     {
       name: "auth-service",
       script: "./auth-service/server.js",
-      cwd: "$HOME/mini-apps",
+      cwd: "<MINI_APPS_DIR>",
       env: {
         PORT: 3000,
         // Generate once with: openssl rand -hex 32
@@ -32,7 +32,7 @@ module.exports = {
     {
       name: "my-open-app",
       script: "./my-open-app/server.js",
-      cwd: "$HOME/mini-apps",
+      cwd: "<MINI_APPS_DIR>",
       env: { PORT: 3001 },
     },
 
@@ -40,7 +40,7 @@ module.exports = {
     {
       name: "my-private-app",
       script: "./my-private-app/server.js",
-      cwd: "$HOME/mini-apps",
+      cwd: "<MINI_APPS_DIR>",
       env: { PORT: 3002 },
     },
   ],

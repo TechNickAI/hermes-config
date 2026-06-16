@@ -77,7 +77,8 @@ if [ -d "$LAUNCH_AGENT_DIR" ]; then
         echo "  skip (exists): $PLIST_DST"
     else
         mkdir -p "$LAUNCH_AGENT_DIR"
-        sed "s|&lt;USER&gt;|$USER|g" "$SRC/launchd/$PLIST_NAME" > "$PLIST_DST"
+        escaped_home="$(printf '%s' "$HOME" | sed 's/[&\\|]/\\&/g')"
+        sed "s|<HOME_DIR>|${escaped_home}|g" "$SRC/launchd/$PLIST_NAME" > "$PLIST_DST"
         echo "  wrote: $PLIST_DST"
         echo "  load with: launchctl bootstrap gui/\$(id -u) $PLIST_DST"
     fi
@@ -97,8 +98,6 @@ Next steps:
   5. Edit $DEST/router/tailscale-serve.json to declare your serve layout,
      then apply it:
          $DEST/router/apply-tailscale-serve.sh
-     IMPORTANT: if you also run OpenClaw, set the following in
-     ~/.openclaw/openclaw.json under \"gateway\" to prevent OpenClaw from
-     wiping the serve config on every restart:
-         \"tailscale\": { \"mode\": \"off\", \"resetOnExit\": false }
+     IMPORTANT: if another gateway on this host manages Tailscale Serve,
+     disable that integration before it restarts, or it may reset this config.
 EOF

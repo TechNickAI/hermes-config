@@ -23,7 +23,7 @@
         respond "ok" 200
     }
 
-    # ── OpenClaw webhook routing (optional) ───────────────────────────────
+    # ── Gateway webhook routing (optional) ────────────────────────────────
     # Front the messaging gateway hooks server with bearer injection so
     # external callers (AgentMail Svix, iOS Shortcuts, etc.) can POST
     # without sending Authorization headers. Set GATEWAY_HOOK_TOKEN in

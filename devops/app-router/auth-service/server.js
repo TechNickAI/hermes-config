@@ -320,7 +320,11 @@ const buildApp = () => {
 
   app.get("/auth/logout", (req, res) => {
     const slug = req.query.app;
-    if (isValidSlug(slug)) res.clearCookie(cookieName(slug), { path: `/${slug}/` });
+    if (isValidSlug(slug)) res.clearCookie(cookieName(slug), {
+      path: `/${slug}/`,
+      secure: true,
+      sameSite: "lax",
+    });
     res.status(200).type("html").send('Logged out. <a href="/">Home</a>');
   });
 

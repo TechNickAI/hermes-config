@@ -33,9 +33,9 @@ anything stomps the live config.
   JSON into a sequence of `tailscale serve` / `tailscale funnel` commands and runs them.
 - **Boot agent:** `~/Library/LaunchAgents/com.hermes.mini-app-router-serve.plist` calls
   the apply script at login, so the config survives reboots.
-- **OpenClaw guard:** the gateway has its own Tailscale integration that calls
-  `serve reset` on restart. It must be disabled per the snippet below or it will keep
-  fighting you.
+- **Gateway guard:** if another local gateway has its own Tailscale integration that
+  calls `serve reset` on restart, disable that integration or it will keep fighting the
+  router.
 
 When `tailscale serve status` shows the wrong routes or a blank funnel, you don't have
 to remember what was supposed to be there. Just run the apply script:
