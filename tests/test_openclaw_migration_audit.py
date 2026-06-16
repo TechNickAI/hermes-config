@@ -47,7 +47,8 @@ def test_workflow_detector_warns_when_source_workflow_missing_from_hermes(tmp_pa
     assert [finding.kind for finding in findings] == ["openclaw-workflows"]
     assert findings[0].severity == audit_mod.WARNING
     assert findings[0].details["missing_from_hermes"] == ["daily-brief"]
-    assert findings[0].details["ported_to_hermes"] == []
+    assert findings[0].details["ported_as_workflow"] == []
+    assert findings[0].details["ported_as_skill"] == []
 
 
 def test_workflow_detector_warns_when_workflow_was_lifted_to_hermes(tmp_path: Path) -> None:
@@ -61,7 +62,64 @@ def test_workflow_detector_warns_when_workflow_was_lifted_to_hermes(tmp_path: Pa
     assert [finding.kind for finding in findings] == ["openclaw-workflows"]
     assert findings[0].severity == audit_mod.WARNING
     assert findings[0].details["missing_from_hermes"] == []
-    assert findings[0].details["ported_to_hermes"] == ["daily-brief"]
+    assert findings[0].details["ported_as_workflow"] == ["daily-brief"]
+    assert findings[0].details["ported_as_skill"] == []
+
+
+def test_workflow_rewritten_as_skill_is_not_flagged_missing(tmp_path: Path) -> None:
+    openclaw = tmp_path / ".openclaw"
+    hermes = tmp_path / ".hermes"
+    (openclaw / "workspace" / "workflows" / "daily-brief").mkdir(parents=True)
+    # Documented migration path: rewrite the workflow as a Hermes skill.
+    (hermes / "skills" / "daily-brief").mkdir(parents=True)
+
+    findings = audit_mod.audit(openclaw, hermes)
+
+    assert [finding.kind for finding in findings] == ["openclaw-workflows"]
+    assert findings[0].severity == audit_mod.WARNING
+    assert findings[0].details["missing_from_hermes"] == []
+    assert findings[0].details["ported_as_workflow"] == []
+    assert findings[0].details["ported_as_skill"] == ["daily-brief"]
+
+
+def test_workflow_rewritten_as_workspace_skill_is_not_flagged_missing(tmp_path: Path) -> None:
+    openclaw = tmp_path / ".openclaw"
+    hermes = tmp_path / ".hermes"
+    (openclaw / "workspace" / "workflows" / "daily-brief").mkdir(parents=True)
+    (hermes / "workspace" / "skills" / "daily-brief").mkdir(parents=True)
+
+    findings = audit_mod.audit(openclaw, hermes)
+
+    assert findings[0].details["missing_from_hermes"] == []
+    assert findings[0].details["ported_as_skill"] == ["daily-brief"]
+
+
+def test_env_file_with_openclaw_default_is_cleanup_blocker(tmp_path: Path) -> None:
+    openclaw = tmp_path / ".openclaw"
+    hermes = tmp_path / ".hermes"
+    env = hermes / "workspace" / "workflows" / "brief" / ".env"
+    env.parent.mkdir(parents=True)
+    env.write_text("STATE_PATH=~/.openclaw/workspace/workflows/brief/state.json\n", encoding="utf-8")
+
+    findings = audit_mod.audit(openclaw, hermes)
+
+    assert len(findings) == 1
+    assert findings[0].severity == audit_mod.BLOCKER
+    assert findings[0].kind == "live-workspace-openclaw-path"
+    assert findings[0].path.endswith(".env")
+    assert "~/.openclaw/workspace/workflows/brief/state.json" in findings[0].details["matches"]
+
+
+def test_dotfile_noise_is_still_ignored(tmp_path: Path) -> None:
+    openclaw = tmp_path / ".openclaw"
+    hermes = tmp_path / ".hermes"
+    noise = hermes / "workspace" / "workflows" / "brief" / ".gitignore"
+    noise.parent.mkdir(parents=True)
+    noise.write_text("~/.openclaw/should-not-be-scanned\n", encoding="utf-8")
+
+    findings = audit_mod.audit(openclaw, hermes)
+
+    assert findings == []
 
 
 def test_live_workspace_prompt_openclaw_path_is_cleanup_blocker(tmp_path: Path) -> None:

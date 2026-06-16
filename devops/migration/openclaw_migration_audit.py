@@ -115,9 +115,21 @@ def audit_cron_scanner(openclaw_root: Path, hermes_root: Path) -> list[Finding]:
     return findings
 
 
+def _workflow_destination(name: str, hermes_root: Path) -> str | None:
+    """Return where a workflow landed in Hermes, or None if it cannot be confirmed.
+
+    Both documented migration paths count as "ported": a lift-and-shift copy under
+    workspace/workflows/, or a rewrite as a Hermes skill under either skills/ location.
+    """
+    if (hermes_root / "workspace" / "workflows" / name).exists():
+        return "workflow"
+    if (hermes_root / "skills" / name).exists() or (hermes_root / "workspace" / "skills" / name).exists():
+        return "skill"
+    return None
+
+
 def audit_unmigrated_workflows(openclaw_root: Path, hermes_root: Path) -> list[Finding]:
     workflows_dir = openclaw_root / "workspace" / "workflows"
-    hermes_workflows_dir = hermes_root / "workspace" / "workflows"
     if not workflows_dir.is_dir():
         return []
     source_names = sorted(
@@ -125,8 +137,17 @@ def audit_unmigrated_workflows(openclaw_root: Path, hermes_root: Path) -> list[F
     )
     if not source_names:
         return []
-    missing = [name for name in source_names if not (hermes_workflows_dir / name).exists()]
-    ported = [name for name in source_names if (hermes_workflows_dir / name).exists()]
+    ported_as_workflow = []
+    ported_as_skill = []
+    missing = []
+    for name in source_names:
+        destination = _workflow_destination(name, hermes_root)
+        if destination == "workflow":
+            ported_as_workflow.append(name)
+        elif destination == "skill":
+            ported_as_skill.append(name)
+        else:
+            missing.append(name)
     return [
         Finding(
             severity=WARNING,
@@ -135,12 +156,14 @@ def audit_unmigrated_workflows(openclaw_root: Path, hermes_root: Path) -> list[F
             message=(
                 "OpenClaw workflows are not migrated by Hermes itself. Review any "
                 "workflows that still matter: port them into ~/.hermes/workspace, rewrite "
-                "them as skills, or explicitly drop them. This is a cleanup blocker only "
-                "when a live Hermes cron/workspace file still references the old tree."
+                "them as skills, or explicitly drop them. A workflow that now exists as a "
+                "Hermes skill is already migrated. This is a cleanup blocker only when a "
+                "live Hermes cron/workspace file still references the old tree."
             ),
             details={
                 "source_count": len(source_names),
-                "ported_to_hermes": ported,
+                "ported_as_workflow": ported_as_workflow,
+                "ported_as_skill": ported_as_skill,
                 "missing_from_hermes": missing,
             },
         )
@@ -150,11 +173,15 @@ def audit_unmigrated_workflows(openclaw_root: Path, hermes_root: Path) -> list[F
 def _is_ignored_workspace_path(path: Path) -> bool:
     parts = set(path.parts)
     name = path.name
+    # .env files are NOT noise: a lifted-and-shifted .env often still carries
+    # ~/.openclaw/... defaults that silently repoint a ported job at the old tree, so
+    # they must be scanned even though they start with a dot.
+    if name == ".env" or name.startswith(".env."):
+        return False
+    # Dot-prefixed VCS/OS cruft (.git, .DS_Store, .gitignore, ...) is noise.
     if name.startswith("."):
         return True
     if ".bak" in name or name.endswith("~"):
-        return True
-    if ".bak-bosun" in name:
         return True
     if "__pycache__" in parts:
         return True
