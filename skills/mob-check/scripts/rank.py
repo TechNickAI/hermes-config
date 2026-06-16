@@ -276,7 +276,7 @@ def _url_ok(url: str) -> bool:
     if not u.startswith(("http://", "https://")):
         return False
     # Common placeholder/fabrication tells the synthesizer must not link.
-    bad = ("example.com", "placeholder", "...", "<", "your-", "xxx", "id=example",
+    bad = ("//example.", "placeholder", "...", "<", "your-", "xxx", "id=example",
            "v=example", "watch?v=abc", "/abc123", "todo")
     return not any(b in u for b in bad)
 
