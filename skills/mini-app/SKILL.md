@@ -219,9 +219,9 @@ reasons:
    `/hermes-<name>/` (a separate slug + profile). Never mount a Hermes dashboard at a
    bare name that collides with an existing app slug.
 
-Port convention for the dashboards: reserve a clear local range and increment per agent
-and increment per agent. The env slug-to-password rule still applies: `hermes-<name>` ⇒
-`APP_PASSWORD_HERMES_BOSUN`.
+Port convention for the dashboards: reserve a clear local range and increment per agent.
+The env slug-to-password rule still applies: `hermes-<name>` ⇒
+`APP_PASSWORD_HERMES_<NAME>` (e.g. `hermes-ops` ⇒ `APP_PASSWORD_HERMES_OPS`).
 
 ## Front-door outage: Caddy died (the #1 silent failure)
 
@@ -909,11 +909,9 @@ across reboots natively, so only PM2 needs this.
 
 ## Reference
 
-- Source of truth for the stack: `~/src/openclaw-config/devops/app-router/`
-  (`README.md`, `templates/`, `scripts/`, `auth-service/`)
-- `references/fleet-hermes-dashboards.md` — per-machine map of every fleet member's
-  Hermes dashboard (slug, port, root-vs-profile DB, door type, index-page markup style).
-  Read this before adding/rolling out a dashboard on a fleet host.
+- Source of truth for the stack: `hermes-config/devops/app-router/` (`README.md`,
+  `templates/`, `scripts/`, `auth-service/`) — the same repo this skill ships in. Re-run
+  `scripts/install.sh` to update an installed router.
 - Tailscale Funnel docs: https://tailscale.com/kb/1223/funnel
 - Caddy `forward_auth` docs:
   https://caddyserver.com/docs/caddyfile/directives/forward_auth
