@@ -183,7 +183,11 @@ def _is_ignored_workspace_path(path: Path) -> bool:
         return True
     if ".bak" in name or name.endswith("~"):
         return True
-    if "__pycache__" in parts:
+    # Hidden VCS/cache directories anywhere in the path are noise. Git internals in
+    # particular (reflogs, packed refs) can carry historical ~/.openclaw/... strings that
+    # would otherwise trip a false live-path blocker on a file whose own name is clean.
+    noise_dirs = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
+    if parts & noise_dirs:
         return True
     # The compatibility shim is intentionally named openclaw and documents the
     # command it translates. It is not a dependency on the OpenClaw tree.

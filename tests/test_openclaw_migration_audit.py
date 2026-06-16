@@ -165,3 +165,17 @@ def test_backup_files_are_ignored(tmp_path: Path) -> None:
     findings = audit_mod.audit(openclaw, hermes)
 
     assert findings == []
+
+
+def test_git_internals_are_ignored(tmp_path: Path) -> None:
+    openclaw = tmp_path / ".openclaw"
+    hermes = tmp_path / ".hermes"
+    # Git reflogs/refs can carry historical ~/.openclaw/... strings even though the file
+    # name itself (e.g. HEAD) is clean — they must not trip a false live-path blocker.
+    reflog = hermes / "workspace" / "workflows" / "demo" / ".git" / "logs" / "HEAD"
+    reflog.parent.mkdir(parents=True)
+    reflog.write_text("0000 1111 user <e> 0 +0000\tclone: from ~/.openclaw/workspace\n", encoding="utf-8")
+
+    findings = audit_mod.audit(openclaw, hermes)
+
+    assert findings == []
