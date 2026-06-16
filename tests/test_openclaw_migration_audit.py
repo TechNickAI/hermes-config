@@ -158,7 +158,7 @@ def test_nonpath_reference_and_shim_are_not_cleanup_blockers(tmp_path: Path) -> 
 def test_backup_files_are_ignored(tmp_path: Path) -> None:
     openclaw = tmp_path / ".openclaw"
     hermes = tmp_path / ".hermes"
-    backup = hermes / "workspace" / "workflows" / "demo" / "run.py.bak-bosun-20260101"
+    backup = hermes / "workspace" / "workflows" / "demo" / "run.py.bak-20260101"
     backup.parent.mkdir(parents=True)
     backup.write_text("STATE = '~/.openclaw/workspace/workflows/demo/state.json'\n", encoding="utf-8")
 

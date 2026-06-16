@@ -556,7 +556,7 @@ structure:
 The category list above is a **seed**, not a whitelist. The Cortex store imposes no
 category restrictions: the indexer walks every `*.md` file under the root and treats the
 top-level directory as the category, auto-creating new ones on first write. Make up
-whatever subdirs make sense (`engineering/`, `finance/`, `bosun-inbox/`, etc.). Hidden
+whatever subdirs make sense (`engineering/`, `finance/`, `ops-inbox/`, etc.). Hidden
 dirs (`.git/`, `node_modules/`, `__pycache__/`) are skipped.
 
 **Pitfall:** the daily directory is `daily/`, not `dailys/`. Don't rename it during
