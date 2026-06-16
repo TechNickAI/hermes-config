@@ -275,14 +275,16 @@ on rebuilding each one via `hermes cron` after migration.
 ### Cron scanner preflight
 
 Hermes cron has a runtime prompt scanner (`_CRON_THREAT_PATTERNS` in
-`tools/cronjob_tools.py`) that can block a job prompt before it runs. This matters
-during OpenClaw migration because the migrator only archives cron definitions; the
-operator then recreates each job by hand. If an archived prompt contains defensive prose
-for untrusted input (for example, an email summarizer that tells the agent not to follow
-embedded instruction text), that prose can match the scanner's injection patterns and
-the recreated job will be blocked on every tick.
+`tools/cronjob_tools.py`) that can block a job prompt before it runs. This matters during
+OpenClaw migration because cron jobs end up recreated by hand after migration. Do not
+assume the built-in migrator preflights prompts against this scanner or writes warnings
+about it — verify that yourself rather than trusting it happens for you. If an archived
+prompt contains defensive prose for untrusted input (for example, an email summarizer
+that tells the agent not to follow embedded instruction text), that prose can match the
+scanner's injection patterns and the recreated job will be blocked on every tick.
 
-The our-side hardening path is a **warning-only audit**, not automatic cron creation:
+The our-side hardening path is a **warning-only audit** you run manually, not automatic
+cron creation:
 
 - Run `devops/migration/openclaw_migration_audit.py` after the built-in migrator
   archives cron state and before `hermes claw cleanup`.

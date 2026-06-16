@@ -405,9 +405,10 @@ hermes cron create "5 * * * *" "Run the <name> skill. <task-specific instruction
 > # then read ~/.hermes/cron/output/<job_id>/<latest>.md to confirm a real run
 > ```
 >
-> This repo's audit helper (`devops/migration/openclaw_migration_audit.py`) preflights
-> archived/live cron prompts for this class. Run it before cleanup even if the built-in
-> migrator completed successfully.
+> Don't assume the built-in migrator catches this for you — treat it as a manual check
+> you run yourself. This repo's audit helper
+> (`devops/migration/openclaw_migration_audit.py`) scans archived/live cron prompts for
+> this class so you don't have to eyeball every job. Run it before cleanup.
 
 ### 5c. Workflows that may not apply to this host
 
@@ -457,7 +458,10 @@ The three things that keep a workflow script bound to OpenClaw:
 Porting steps:
 
 ```bash
-# 1. Copy the workflow (and any sibling assets it cd's into, like a parent .env)
+# 1. Copy the workflow (and any sibling assets it cd's into, like a parent .env).
+#    Create the destination tree first — rsync won't make missing parent dirs, so on a
+#    fresh Hermes install ~/.hermes/workspace/workflows/ may not exist yet.
+mkdir -p ~/.hermes/workspace/workflows/<name>
 rsync -a --exclude=__pycache__ --exclude='*.log' --exclude=logs \
   $WORKSPACE/workflows/<name>/ ~/.hermes/workspace/workflows/<name>/
 
