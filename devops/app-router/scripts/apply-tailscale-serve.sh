@@ -124,11 +124,27 @@ PY
 echo "$(date): compiled commands:"
 sed 's/^/  /' "$CMDS_FILE"
 
-# Reset, then replay.
+# Preflight replay before reset. This catches syntax errors, unresolved placeholders,
+# unsupported ports, and other command failures while the old serve config is still
+# present. The preflight mutates matching routes if it succeeds, but it avoids the
+# dangerous pattern of wiping everything before discovering the declared config is bad.
+if ! bash -e "$CMDS_FILE" > /dev/null; then
+    echo "$(date): ERROR preflighting serve commands — live config was not reset." >&2
+    "$TS" serve status >&2 || true
+    exit 1
+fi
+
+# Reset, then replay from the known-good command list so removed routes disappear and
+# the live state exactly matches tailscale-serve.json.
 "$TS" funnel reset >/dev/null 2>&1 || true
 "$TS" serve  reset >/dev/null 2>&1 || true
 
-bash -e "$CMDS_FILE" > /dev/null
+if ! bash -e "$CMDS_FILE" > /dev/null; then
+    echo "$(date): ERROR replaying serve commands after reset — live config may be partial." >&2
+    echo "Re-run this script to restore: $0" >&2
+    "$TS" serve status >&2 || true
+    exit 1
+fi
 
 echo "$(date): tailscale serve config applied"
 "$TS" serve status

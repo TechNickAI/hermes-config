@@ -15,8 +15,7 @@
 // ${HOST} is substituted with the node's MagicDNS name at apply time.
 {
   "TCP": {
-    "443": { "HTTPS": true },
-    "8443": { "HTTPS": true }
+    "443": { "HTTPS": true }
   },
   "Web": {
     // Public front door: Caddy serves all apps + /hooks/. Apps are
@@ -26,13 +25,13 @@
         "/": { "Proxy": "http://127.0.0.1:8080" },
         "/hooks/": { "Proxy": "http://127.0.0.1:8080/hooks/" }
       }
-    },
-    // Tailnet-only: admin UI (passwordless admin). Do NOT funnel.
-    "${HOST}:8443": {
-      "Handlers": {
-        "/": { "Proxy": "http://127.0.0.1:<admin-ui-port>" }
-      }
     }
+    // Optional tailnet-only door for a passwordless admin UI. A port WITHOUT a
+    // matching AllowFunnel entry stays tailnet-only. Add a "443"-style TCP entry
+    // for 8443 and a Web handler pointing at the loopback admin port, e.g.:
+    //   "TCP": { "8443": { "HTTPS": true } }
+    //   "${HOST}:8443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:<admin-port>" } } }
+    // Never list a passwordless port under AllowFunnel.
   },
   "AllowFunnel": {
     "${HOST}:443": true
