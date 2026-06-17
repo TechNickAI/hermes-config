@@ -90,7 +90,7 @@ npm install -g pm2
 ```
 
 Run the install helper from the repo root — it copies the templates, installs
-auth-service deps, and stages the launchd plist with `<USER>` substituted:
+auth-service deps, and stages the launchd plist with `<HOME_DIR>` substituted:
 
 ```
 bash devops/app-router/scripts/install.sh

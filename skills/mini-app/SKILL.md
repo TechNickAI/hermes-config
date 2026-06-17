@@ -716,7 +716,7 @@ Note: a box hitting its OWN tailnet hostname from inside an SSH session can hang
 If the target machine's messaging gateway already owns the public `:443` funnel (check
 `tailscale serve status` → `:443 … proxy http://127.0.0.1:<gateway-port>` and
 `~/.openclaw/openclaw.json` gateway.tailscale.mode), do NOT seize `:443` for Caddy
-without asking — it disrupts her gateway. Default to a **tailnet-only HTTPS `:8443`
+without asking — it disrupts their gateway. Default to a **tailnet-only HTTPS `:8443`
 door** (works on any device signed into the tailnet, not public). Add a public funnel
 later only on explicit request. This is the safe, reversible resting state.
 
