@@ -48,3 +48,38 @@ def test_dumps_response_converts_frontmatter_dates_to_iso_strings(tmp_path: Path
         assert payload["body"] == "Body text\n"
     finally:
         store.close()
+
+
+def test_dumps_response_handles_time_and_tzaware_datetime() -> None:
+    from datetime import datetime, time, timezone
+
+    # time has no date-level isoformat; tz-aware datetime must keep its offset.
+    payload = {
+        "reminder": time(9, 30, 0),
+        "stamp": datetime(2026, 5, 10, 12, 34, 56, tzinfo=timezone.utc),
+    }
+    out = json.loads(dumps_response(payload))
+    assert out["reminder"] == "09:30:00"
+    assert out["stamp"] == "2026-05-10T12:34:56+00:00"
+
+
+def test_dumps_response_passes_through_non_date_payloads_unchanged() -> None:
+    # The docstring promises structure is preserved for ordinary payloads; this
+    # guards against a future "improvement" to the encoder silently altering shape.
+    payload = {
+        "s": "x",
+        "n": 3,
+        "f": 1.5,
+        "b": True,
+        "none": None,
+        "list": [1, 2, {"k": "v"}],
+        "nested": {"a": {"b": [True, "y"]}},
+    }
+    assert json.loads(dumps_response(payload)) == payload
+
+
+def test_dumps_response_serializes_sets_as_sorted_lists() -> None:
+    # A YAML !!set tag in frontmatter resolves to a Python set; emit a deterministic
+    # sorted list rather than crashing the read path with a TypeError.
+    out = json.loads(dumps_response({"tags": {"gamma", "alpha", "beta"}}))
+    assert out["tags"] == ["alpha", "beta", "gamma"]

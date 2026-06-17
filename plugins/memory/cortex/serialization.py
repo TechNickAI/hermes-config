@@ -15,19 +15,24 @@ is JSON serializable.
 
 from __future__ import annotations
 
-import datetime as _dt
 import json
+from datetime import date, datetime, time
 from typing import Any
 
 
 class _DateAwareEncoder(json.JSONEncoder):
     """JSON encoder that renders date/datetime/time values as ISO strings."""
 
-    def default(self, o: Any) -> Any:  # noqa: D401 - json hook
+    def default(self, o: Any) -> Any:
         # datetime is a subclass of date, so order does not matter here:
         # isoformat() yields the richest stable representation for each type.
-        if isinstance(o, (_dt.date, _dt.datetime, _dt.time)):
+        if isinstance(o, (date, datetime, time)):
             return o.isoformat()
+        # A YAML !!set tag in frontmatter resolves to a Python set, which the JSON
+        # encoder cannot serialize. Emit a deterministic sorted list (keyed by str so
+        # mixed-type sets never raise) so the read path can't crash on exotic frontmatter.
+        if isinstance(o, (set, frozenset)):
+            return sorted(o, key=str)
         return super().default(o)
 
 
@@ -35,8 +40,10 @@ def dumps_response(payload: Any) -> str:
     """Serialize a cortex tool response payload to a JSON string, safely.
 
     Converts ``datetime.date`` / ``datetime.datetime`` / ``datetime.time``
-    values (e.g. parsed frontmatter fields) to ISO-8601 strings rather than
-    raising ``TypeError``. The payload's structure is otherwise preserved.
+    values (e.g. parsed frontmatter fields) to ISO-8601 strings, and ``set`` /
+    ``frozenset`` values (e.g. a YAML ``!!set`` tag) to deterministic sorted
+    lists, rather than raising ``TypeError``. The payload's structure is
+    otherwise preserved.
     """
 
     return json.dumps(payload, cls=_DateAwareEncoder)
