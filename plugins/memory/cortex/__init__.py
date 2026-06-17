@@ -23,7 +23,6 @@ Config in $HERMES_HOME/config.yaml:
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +37,7 @@ from .retrieval import CortexRetriever
 from .embeddings import OpenAIEmbeddingClient
 from .reranker import CortexReranker
 from .handoff import build_handoff, handoff_slug
+from .serialization import dumps_response
 
 # Category (subdirectory) the pre-compress handoff digests are written under.
 HANDOFF_CATEGORY = "handoff"
@@ -464,7 +464,7 @@ class CortexMemoryProvider(MemoryProvider):
                     return tool_error("search requires 'query'")
                 limit = int(args.get("limit", 5))
                 results = self._retriever.search(q, limit=limit, category=args.get("category"))
-                return json.dumps({"results": results, "count": len(results)})
+                return dumps_response({"results": results, "count": len(results)})
             elif action == "read":
                 rel = args.get("rel_path", "")
                 if not rel:
@@ -472,7 +472,7 @@ class CortexMemoryProvider(MemoryProvider):
                 page = self._store.get_page(rel)
                 if page is None:
                     return tool_error(f"Page not found: {rel}")
-                return json.dumps(page)
+                return dumps_response(page)
             elif action == "write":
                 category = args.get("category", "topics")
                 title = args.get("title", "")
@@ -488,18 +488,18 @@ class CortexMemoryProvider(MemoryProvider):
                     tags=tags,
                     title=title or None,
                 )
-                return json.dumps({"rel_path": rel, "status": "written"})
+                return dumps_response({"rel_path": rel, "status": "written"})
             elif action == "list":
                 category = args.get("category")
                 limit = int(args.get("limit", 20))
                 pages = self._store.list_pages(category=category, limit=limit)
-                return json.dumps({"pages": pages, "count": len(pages)})
+                return dumps_response({"pages": pages, "count": len(pages)})
             elif action == "daily":
                 body = args.get("body", "")
                 if not body:
                     return tool_error("daily requires 'body'")
                 rel = self._store.append_daily(body)
-                return json.dumps({"rel_path": rel, "status": "appended"})
+                return dumps_response({"rel_path": rel, "status": "appended"})
             else:
                 return tool_error(f"Unknown action: {action}")
         except KeyError as e:
