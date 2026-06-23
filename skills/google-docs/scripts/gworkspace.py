@@ -190,7 +190,7 @@ def cmd_upload(args):
 def cmd_export(args):
     token = access_token(args)
     url = (f"https://www.googleapis.com/drive/v3/files/{args.file_id}/export"
-           f"?mimeType={urllib.parse.quote(args.mime)}")
+           f"?mimeType={urllib.parse.quote(args.mime)}&supportsAllDrives=true")
     data = _api(token, "GET", url, raw=True)
     if args.out:
         with open(args.out, "wb") as fh:
@@ -205,7 +205,7 @@ def cmd_mkdir(args):
     meta = {"name": args.name, "mimeType": "application/vnd.google-apps.folder"}
     if args.parent:
         meta["parents"] = [args.parent]
-    res = _api(token, "POST", "https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink",
+    res = _api(token, "POST", "https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink&supportsAllDrives=true",
                body=json.dumps(meta).encode(), headers={"Content-Type": "application/json"})
     print(json.dumps(res, indent=2))
 
@@ -214,7 +214,7 @@ def cmd_share(args):
     token = access_token(args)
     body = {"role": args.role, "type": "user", "emailAddress": args.email}
     url = (f"https://www.googleapis.com/drive/v3/files/{args.file_id}/permissions"
-           f"?fields=id,role,type&sendNotificationEmail={'true' if args.notify else 'false'}")
+           f"?fields=id,role,type&sendNotificationEmail={'true' if args.notify else 'false'}&supportsAllDrives=true")
     res = _api(token, "POST", url, body=json.dumps(body).encode(),
                headers={"Content-Type": "application/json"})
     print(json.dumps(res, indent=2))
