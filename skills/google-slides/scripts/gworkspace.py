@@ -6,9 +6,14 @@ so no extra Python packages and no second OAuth dance. Works regardless of gog
 version, because it talks to the Google REST APIs directly.
 
 Token source resolution (first hit wins):
-  1. --refresh-token-file / --client-secret-file flags
+  1. --refresh-token-file / --client-secret-file flags (accepted before or after subcommand)
   2. env GOOGLE_REFRESH_TOKEN + GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET
   3. gog: exports a temporary refresh-token JSON with `gog auth tokens export` + gog credentials.json
+
+Optional gog selectors:
+  --gog-client / GOG_CLIENT     named OAuth client (credentials-<client>.json)
+  --gog-home / GOG_HOME         gog config root override
+  --gog-account / GOG_ACCOUNT   account email override
 
 Commands:
   token                                  print a fresh access token
@@ -50,16 +55,30 @@ def _gog_bin():
     return shutil.which("gog")
 
 
-def _gog_account():
-    return os.environ.get("GOG_ACCOUNT") or _default_gog_account()
+def _gog_client(args):
+    return getattr(args, "gog_client", None) or os.environ.get("GOG_CLIENT") or ""
 
 
-def _default_gog_account():
+def _gog_home(args):
+    home = getattr(args, "gog_home", None) or os.environ.get("GOG_HOME")
+    return os.path.expanduser(home) if home else None
+
+
+def _gog_global_args(args):
+    client = _gog_client(args)
+    return ["--client", client] if client else []
+
+
+def _gog_account(args):
+    return getattr(args, "gog_account", None) or os.environ.get("GOG_ACCOUNT") or _default_gog_account(args)
+
+
+def _default_gog_account(args):
     gog = _gog_bin()
     if not gog:
         return None
     try:
-        out = subprocess.run([gog, "auth", "list", "--plain"],
+        out = subprocess.run([gog, *_gog_global_args(args), "auth", "list", "--plain"],
                              capture_output=True, text=True, timeout=20)
         line = out.stdout.strip().splitlines()[0]
         return line.split("\t")[0]
@@ -70,7 +89,11 @@ def _default_gog_account():
 def _read_secret_json(path):
     """Read a JSON secret file, refusing world/group-readable or other-owned files."""
     real = os.path.realpath(os.path.expanduser(path))
-    st = os.stat(real)
+    try:
+        st = os.stat(real)
+    except OSError as e:
+        sys.exit(json.dumps({"error": "credential_file_unreadable",
+                             "detail": f"{path}: {e.strerror}"}))
     if st.st_uid != os.getuid():
         sys.exit(json.dumps({"error": "insecure_credential_file",
                              "detail": f"{path} is not owned by the current user"}))
@@ -79,8 +102,11 @@ def _read_secret_json(path):
                              "detail": f"{path} is group/world accessible; chmod 600 it"}))
     if st.st_size > 1_000_000:
         sys.exit(json.dumps({"error": "credential_file_too_large", "detail": path}))
-    with open(real) as fh:
-        return json.load(fh)
+    try:
+        with open(real) as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        sys.exit(json.dumps({"error": "credential_file_invalid", "detail": f"{path}: {e}"}))
 
 
 def _load_creds(args):
@@ -99,7 +125,7 @@ def _load_creds(args):
     # 3. gog
     if not rt:
         gog = _gog_bin()
-        acct = _gog_account() if gog else None
+        acct = _gog_account(args) if gog else None
         if gog and acct:
             import tempfile
             fd, tmp_path = tempfile.mkstemp(suffix=".json")
@@ -109,7 +135,7 @@ def _load_creds(args):
             except OSError:
                 pass
             try:
-                r = subprocess.run([gog, "auth", "tokens", "export", acct, "--output", tmp_path, "--force"],
+                r = subprocess.run([gog, *_gog_global_args(args), "auth", "tokens", "export", acct, "--output", tmp_path, "--force"],
                                    capture_output=True, text=True, timeout=30)
                 if r.returncode == 0 and os.path.exists(tmp_path):
                     with open(tmp_path) as fh:
@@ -122,11 +148,24 @@ def _load_creds(args):
                 except OSError:
                     pass
     if not (cid and csec):
-        # gog credentials.json default locations (macOS + linux)
-        for p in [
-            os.path.expanduser("~/Library/Application Support/gogcli/credentials.json"),
-            os.path.expanduser("~/.config/gogcli/credentials.json"),
-        ]:
+        # gog OAuth client credentials. Honor GOG_HOME/--gog-home root overrides and
+        # named clients (GOG_CLIENT/--gog-client -> credentials-<client>.json), then
+        # fall back to the default credentials.json in the standard config dirs.
+        client = _gog_client(args)
+        names = []
+        if client:
+            names.append(f"credentials-{client}.json")
+        names.append("credentials.json")
+        roots = []
+        gog_home = _gog_home(args)
+        if gog_home:
+            roots.append(gog_home)
+        roots += [
+            os.path.expanduser("~/Library/Application Support/gogcli"),
+            os.path.expanduser("~/.config/gogcli"),
+        ]
+        candidates = [os.path.join(root, name) for name in names for root in roots]
+        for p in candidates:
             if not os.path.exists(p):
                 continue
             try:
@@ -241,18 +280,31 @@ def cmd_meta(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description="stdlib-only Google Workspace helper (reuses gog auth)")
-    p.add_argument("--refresh-token-file"); p.add_argument("--client-secret-file")
+    # Credential flags are shared via a parent parser so they are accepted BOTH
+    # before the subcommand (gworkspace.py --refresh-token-file F upload ...) and
+    # after it (gworkspace.py upload ... --refresh-token-file F). argparse only
+    # recognizes options on the parser that is actively parsing at each position,
+    # so the flags must exist on the root parser and every subparser.
+    creds = argparse.ArgumentParser(add_help=False)
+    creds.add_argument("--refresh-token-file")
+    creds.add_argument("--client-secret-file")
+    creds.add_argument("--gog-client", help="gog named OAuth client (or set GOG_CLIENT)")
+    creds.add_argument("--gog-home", help="gog config root override (or set GOG_HOME)")
+    creds.add_argument("--gog-account", help="gog account email (or set GOG_ACCOUNT)")
+
+    p = argparse.ArgumentParser(
+        description="stdlib-only Google Workspace helper (reuses gog auth)",
+        parents=[creds])
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("token")
-    up = sub.add_parser("upload"); up.add_argument("path")
+    sub.add_parser("token", parents=[creds])
+    up = sub.add_parser("upload", parents=[creds]); up.add_argument("path")
     up.add_argument("--as", dest="as_", required=True, choices=["doc", "sheet", "slide", "raw"])
     up.add_argument("--name"); up.add_argument("--parent")
-    ex = sub.add_parser("export"); ex.add_argument("file_id"); ex.add_argument("--mime", required=True); ex.add_argument("--out")
-    mk = sub.add_parser("mkdir"); mk.add_argument("name"); mk.add_argument("--parent")
-    sh = sub.add_parser("share"); sh.add_argument("file_id"); sh.add_argument("--email", required=True)
+    ex = sub.add_parser("export", parents=[creds]); ex.add_argument("file_id"); ex.add_argument("--mime", required=True); ex.add_argument("--out")
+    mk = sub.add_parser("mkdir", parents=[creds]); mk.add_argument("name"); mk.add_argument("--parent")
+    sh = sub.add_parser("share", parents=[creds]); sh.add_argument("file_id"); sh.add_argument("--email", required=True)
     sh.add_argument("--role", default="reader", choices=["reader", "writer", "commenter"]); sh.add_argument("--notify", action="store_true")
-    mt = sub.add_parser("meta"); mt.add_argument("file_id")
+    mt = sub.add_parser("meta", parents=[creds]); mt.add_argument("file_id")
     args = p.parse_args()
     {"token": cmd_token, "upload": cmd_upload, "export": cmd_export,
      "mkdir": cmd_mkdir, "share": cmd_share, "meta": cmd_meta}[args.cmd](args)

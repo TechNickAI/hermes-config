@@ -181,7 +181,9 @@ format.
    helper with
    `--refresh-token-file /tmp/tok.json --client-secret-file <gog credentials.json>`. The
    helper refuses explicit credential files that are group/world-readable or not owned
-   by you — `chmod 600` them.
+   by you — `chmod 600` them. These flags work before or after the subcommand. For a gog
+   named client or a non-default gog home, use `--gog-client <name>` /
+   `--gog-home <dir>` (or the `GOG_CLIENT` / `GOG_HOME` env vars).
 
 8. **Sharing is irreversible.**
    `scripts/gworkspace.py share SHEET_ID --email ... --role ...` grants real Drive
