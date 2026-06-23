@@ -253,7 +253,9 @@ and call the REST endpoint directly.
    helper with
    `--refresh-token-file /tmp/tok.json --client-secret-file <gog credentials.json>`. The
    helper refuses credential files that are group/world-readable or not owned by you —
-   `chmod 600` them.
+   `chmod 600` them. These flags work before or after the subcommand. For a gog named
+   client or a non-default gog home, use `--gog-client <name>` / `--gog-home <dir>` (or
+   the `GOG_CLIENT` / `GOG_HOME` env vars).
 
 7. **`export` returns 403.** Drive's export endpoint only works on Google-native files.
    If you accidentally uploaded a raw file (used `--as raw`), `meta` will show a
