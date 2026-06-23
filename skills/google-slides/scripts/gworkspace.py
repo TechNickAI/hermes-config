@@ -40,12 +40,14 @@ SRC_MIME = {
 
 
 def _gog_bin():
-    """Resolve the gog binary via PATH; never trust a bare relative name."""
-    found = shutil.which("gog")
-    if not found:
-        sys.exit(json.dumps({"error": "gog_not_found",
-                             "hint": "Install gog (steipete/gogcli) and ensure it is on PATH."}))
-    return found
+    """Resolve the gog binary via PATH; never trust a bare relative name.
+
+    Returns None when gog is not installed. gog is only ever a credential
+    *fallback* here (explicit files and env vars take precedence), so a missing
+    gog must not abort — it should let credential resolution fall through to a
+    clean missing_credentials error.
+    """
+    return shutil.which("gog")
 
 
 def _gog_account():
@@ -53,8 +55,11 @@ def _gog_account():
 
 
 def _default_gog_account():
+    gog = _gog_bin()
+    if not gog:
+        return None
     try:
-        out = subprocess.run([_gog_bin(), "auth", "list", "--plain"],
+        out = subprocess.run([gog, "auth", "list", "--plain"],
                              capture_output=True, text=True, timeout=20)
         line = out.stdout.strip().splitlines()[0]
         return line.split("\t")[0]
@@ -93,8 +98,9 @@ def _load_creds(args):
     csec = csec or os.environ.get("GOOGLE_CLIENT_SECRET")
     # 3. gog
     if not rt:
-        acct = _gog_account()
-        if acct:
+        gog = _gog_bin()
+        acct = _gog_account() if gog else None
+        if gog and acct:
             import tempfile
             fd, tmp_path = tempfile.mkstemp(suffix=".json")
             os.close(fd)
@@ -103,7 +109,7 @@ def _load_creds(args):
             except OSError:
                 pass
             try:
-                r = subprocess.run([_gog_bin(), "auth", "tokens", "export", acct, "--output", tmp_path, "--force"],
+                r = subprocess.run([gog, "auth", "tokens", "export", acct, "--output", tmp_path, "--force"],
                                    capture_output=True, text=True, timeout=30)
                 if r.returncode == 0 and os.path.exists(tmp_path):
                     with open(tmp_path) as fh:
