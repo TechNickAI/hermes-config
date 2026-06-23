@@ -65,8 +65,20 @@ def _gog_home(args):
 
 
 def _gog_global_args(args):
+    """gog global flags that are stable across versions (only --client)."""
     client = _gog_client(args)
     return ["--client", client] if client else []
+
+
+def _gog_env(args):
+    """Subprocess env for gog. Pass the home override via GOG_HOME rather than a
+    --home flag: older gog (e.g. v0.9.0) does not accept --home, but GOG_HOME is
+    honored across versions."""
+    env = os.environ.copy()
+    home = _gog_home(args)
+    if home:
+        env["GOG_HOME"] = home
+    return env
 
 
 def _gog_account(args):
@@ -79,7 +91,7 @@ def _default_gog_account(args):
         return None
     try:
         out = subprocess.run([gog, *_gog_global_args(args), "auth", "list", "--plain"],
-                             capture_output=True, text=True, timeout=20)
+                             capture_output=True, text=True, timeout=20, env=_gog_env(args))
         line = out.stdout.strip().splitlines()[0]
         return line.split("\t")[0]
     except Exception:
@@ -112,11 +124,13 @@ def _read_secret_json(path):
 def _load_creds(args):
     # 1. explicit files
     rt = cid = csec = None
-    if args.refresh_token_file:
-        d = _read_secret_json(args.refresh_token_file)
+    refresh_token_file = getattr(args, "refresh_token_file", None)
+    client_secret_file = getattr(args, "client_secret_file", None)
+    if refresh_token_file:
+        d = _read_secret_json(refresh_token_file)
         rt = d.get("refresh_token", d.get("refreshToken"))
-    if args.client_secret_file:
-        d = _read_secret_json(args.client_secret_file)
+    if client_secret_file:
+        d = _read_secret_json(client_secret_file)
         d = d.get("installed", d.get("web", d)); cid = d["client_id"]; csec = d["client_secret"]
     # 2. env
     rt = rt or os.environ.get("GOOGLE_REFRESH_TOKEN")
@@ -136,7 +150,7 @@ def _load_creds(args):
                 pass
             try:
                 r = subprocess.run([gog, *_gog_global_args(args), "auth", "tokens", "export", acct, "--output", tmp_path, "--force"],
-                                   capture_output=True, text=True, timeout=30)
+                                   capture_output=True, text=True, timeout=30, env=_gog_env(args))
                 if r.returncode == 0 and os.path.exists(tmp_path):
                     with open(tmp_path) as fh:
                         rt = json.load(fh).get("refresh_token")
@@ -159,7 +173,15 @@ def _load_creds(args):
         roots = []
         gog_home = _gog_home(args)
         if gog_home:
-            roots.append(gog_home)
+            # gog resolves a home override into home/{config,data,...}; OAuth client
+            # files live under data. Search those plus the home root for robustness.
+            roots += [
+                os.path.join(gog_home, "data", "gogcli"),
+                os.path.join(gog_home, "data"),
+                os.path.join(gog_home, "config", "gogcli"),
+                os.path.join(gog_home, "config"),
+                gog_home,
+            ]
         roots += [
             os.path.expanduser("~/Library/Application Support/gogcli"),
             os.path.expanduser("~/.config/gogcli"),
@@ -282,15 +304,16 @@ def cmd_meta(args):
 def main():
     # Credential flags are shared via a parent parser so they are accepted BOTH
     # before the subcommand (gworkspace.py --refresh-token-file F upload ...) and
-    # after it (gworkspace.py upload ... --refresh-token-file F). argparse only
-    # recognizes options on the parser that is actively parsing at each position,
-    # so the flags must exist on the root parser and every subparser.
+    # after it (gworkspace.py upload ... --refresh-token-file F). Defaults are
+    # argparse.SUPPRESS so the attribute is set ONLY when the flag is actually
+    # given — otherwise the subparser's parse would overwrite a root-set value
+    # with None. Helpers read these with getattr(args, name, None).
     creds = argparse.ArgumentParser(add_help=False)
-    creds.add_argument("--refresh-token-file")
-    creds.add_argument("--client-secret-file")
-    creds.add_argument("--gog-client", help="gog named OAuth client (or set GOG_CLIENT)")
-    creds.add_argument("--gog-home", help="gog config root override (or set GOG_HOME)")
-    creds.add_argument("--gog-account", help="gog account email (or set GOG_ACCOUNT)")
+    creds.add_argument("--refresh-token-file", default=argparse.SUPPRESS)
+    creds.add_argument("--client-secret-file", default=argparse.SUPPRESS)
+    creds.add_argument("--gog-client", default=argparse.SUPPRESS, help="gog named OAuth client (or set GOG_CLIENT)")
+    creds.add_argument("--gog-home", default=argparse.SUPPRESS, help="gog config root override (or set GOG_HOME)")
+    creds.add_argument("--gog-account", default=argparse.SUPPRESS, help="gog account email (or set GOG_ACCOUNT)")
 
     p = argparse.ArgumentParser(
         description="stdlib-only Google Workspace helper (reuses gog auth)",
