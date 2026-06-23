@@ -127,11 +127,18 @@ def _load_creds(args):
             os.path.expanduser("~/Library/Application Support/gogcli/credentials.json"),
             os.path.expanduser("~/.config/gogcli/credentials.json"),
         ]:
-            if os.path.exists(p):
+            if not os.path.exists(p):
+                continue
+            try:
                 with open(p) as fh:
                     d = json.load(fh)
-                d = d.get("installed", d.get("web", d))
-                cid = cid or d.get("client_id"); csec = csec or d.get("client_secret"); break
+            except (OSError, json.JSONDecodeError):
+                continue
+            d = d.get("installed", d.get("web", d))
+            cid = cid or d.get("client_id")
+            csec = csec or d.get("client_secret")
+            if cid and csec:
+                break
     if not (rt and cid and csec):
         sys.exit(json.dumps({"error": "missing_credentials",
                              "have": {"refresh_token": bool(rt), "client_id": bool(cid), "client_secret": bool(csec)}}))
