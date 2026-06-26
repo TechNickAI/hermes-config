@@ -66,9 +66,11 @@ everything moves rather than disappears.
 
 ## How to use it
 
-Load the skill and point it at the memory files. It will read them, classify every entry,
-write dry-run artifacts to a scratch directory outside the live memory folder, and report a
-before/after with the full set of moves. Review, approve, then apply.
+Load the skill and point it at the memory files. Optionally pass a cleanup target, for example
+`50%` or `5000 chars`, to set how aggressive the diet should be (no target defaults to the
+recommended cap). The skill reads the files, classifies every entry, writes dry-run artifacts to
+a scratch directory outside the live memory folder, and reports a before/after with the full set
+of moves. Review, approve, then apply.
 
 See `SKILL.md` for the full procedure, the classification ladder, the output contract, and
 the review checklist.

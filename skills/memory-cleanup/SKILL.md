@@ -40,6 +40,41 @@ home:
 Default mode is **dry run**. The agent running this skill must not edit live memory until the
 proposed diff has been reviewed and approved.
 
+## Target Parameter
+
+This skill accepts an optional cleanup target that sets how aggressive the diet should be.
+Accept it in whatever form the user gives it and normalize to an absolute character goal for
+`MEMORY.md`:
+
+- A percentage, for example `50%`, means cut `MEMORY.md` to half its current size.
+- An absolute size, for example `5000` or `5000 chars`, means get `MEMORY.md` at or under
+  that many characters.
+- A word like `aggressive`, `moderate`, or `light` maps to roughly 60, 40, and 20 percent
+  reduction.
+- No target given means default to the recommended cap (about 2,200 chars for `MEMORY.md`),
+  or a 40 to 60 percent reduction if the file is already near the cap.
+
+Normalize at the start of the run:
+
+```text
+current = chars(MEMORY.md)
+goal_chars =
+  if target is "<n>%":        round(current * (1 - n/100))
+  if target is "<n>" or "<n> chars": n
+  if target is a word:        current * (1 - {aggressive:0.6, moderate:0.4, light:0.2})
+  if no target:               min(2200, round(current * 0.5))
+```
+
+State the resolved goal explicitly in the output, for example
+`target: 50% (MEMORY.md 4800 -> goal 2400 chars)`. Apply the target to `MEMORY.md`. Treat
+`USER.md` as cleanup-by-correctness, not by quota: move and compress what belongs, but do not
+force it under an arbitrary size if every line is a live preference.
+
+If the target cannot be met without dropping load-bearing content, stop at the safe minimum,
+report the gap, and recommend an offload-to-provider or skill conversion to close it. Never hit
+a character goal by deleting something important. The size target is a goal, the no-data-loss
+rule is a hard constraint, and the constraint always wins.
+
 ## When to Use
 
 Use this skill when:
@@ -154,6 +189,12 @@ Keep a compact pointer in core memory only when future use depends on rememberin
 offloaded knowledge exists. If the detail is discoverable through a normal workflow (a search,
 an index, a status command), do not keep a pointer at all.
 
+A pointer is valid only if it names a real destination. Before replacing concrete detail with
+a pointer, verify the destination exists and contains the detail. Bad pointer: "look in the
+relevant skill." Good pointer: "Load skill `<exact-skill-name>`; it contains the commands and
+rollback notes for this procedure." If no destination exists yet, create it first or keep the
+critical detail in core memory.
+
 ### 6. Convert to a skill
 
 Use a skill when the entry is a procedure: it says how to do a recurring task, or contains
@@ -241,6 +282,10 @@ behavior.
 A memory-cleanup dry run must produce:
 
 ```text
+Target:
+- Requested: <raw target, e.g. 50% or 5000 chars>
+- Resolved MEMORY.md goal: <chars>
+
 Before:
 - MEMORY.md: <chars>
 - USER.md: <chars>
@@ -298,6 +343,10 @@ Before applying, reviewers should verify:
 - [ ] No safety-critical instruction was dropped.
 - [ ] Procedures became skills that keep the original commands, steps, and verification gates,
       not vague reminders.
+- [ ] Every pointer names a destination that exists and contains the detail (no "see the
+      relevant skill" with no skill).
+- [ ] Negative constraints ("do not modify X", "never touch Y") and concrete recipes (exact
+      commands, known-good values) were preserved verbatim somewhere, not summarized away.
 - [ ] Project-specific rules moved to the correct project file, not global memory.
 - [ ] Provider offloads have a verified retrieval path, and a pointer only when needed.
 - [ ] Relocated content was read back and confirmed equivalent before the original was removed.
@@ -321,6 +370,12 @@ Before applying, reviewers should verify:
    always-on block refreshes next session; reset after applying.
 7. **Committing private memory to a public repo.** The skill and examples must be generic. Real
    memory dry runs stay outside any shared repo.
+8. **Pointing at a destination that does not exist.** Replacing a concrete recipe with "load the
+   relevant skill" when no such skill exists loses the recipe. Create the destination first, or
+   keep the detail. A pointer is only as good as its address.
+9. **Hitting the size target by dropping load-bearing content.** The character goal is a target,
+   not a license to delete. If you cannot reach it without losing important data, stop short and
+   recommend an offload or skill conversion.
 
 ## Verification Checklist
 
