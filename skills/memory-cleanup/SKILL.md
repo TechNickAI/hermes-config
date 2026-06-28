@@ -417,7 +417,7 @@ Before applying, reviewers should verify:
 
 - [ ] Dry-run artifacts written to a scratch dir outside the live memory directory.
 - [ ] Every original entry accounted for (destination or explicit drop reason).
-- [ ] Before/after byte counts reported; target reduction met.
+- [ ] Before/after char counts reported; target reduction met.
 - [ ] Relocations read back and confirmed before originals removed.
 - [ ] Provider offloads verified retrievable.
 - [ ] Skill conversions preserve commands and verification gates.
