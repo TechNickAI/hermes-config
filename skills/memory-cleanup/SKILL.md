@@ -362,7 +362,7 @@ Preferred apply path:
    a pointer.
 5. Update `MEMORY.md` and `USER.md`, using one atomic memory-tool batch when possible
    (remove/replace/add together).
-6. Re-read byte counts to confirm the new sizes.
+6. Re-read char counts to confirm the new sizes.
 7. The always-on memory block in the system prompt is a snapshot taken at session start,
    so it refreshes on the next session even though tool responses show the live file
    immediately. Start a fresh session or reset to load the new snapshot.
