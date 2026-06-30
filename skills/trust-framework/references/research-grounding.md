@@ -1,8 +1,8 @@
 # Research Grounding
 
 Every construct in the trust framework maps to an established, named precedent. This is
-the "why each design choice exists" layer — useful when defending the design or
-extending it.
+the "why each design choice exists" layer, useful when defending the design or extending
+it.
 
 ## The mapping
 
@@ -22,7 +22,7 @@ extending it.
 ## The named frameworks
 
 **NIST AI Risk Management Framework (AI RMF 1.0 + Generative AI Profile).** Four
-functions — Govern, Map, Measure, Manage. The GenAI Profile explicitly names "Human-AI
+functions, Govern, Map, Measure, Manage. The GenAI Profile explicitly names "Human-AI
 Configuration" risk (over-reliance / automation bias) as a thing to manage. The periodic
 self-audit is the Measure/Manage step; every bucket having an owner, a risk class, a
 measured signal, and a rollback path is the Govern step.
@@ -30,7 +30,7 @@ measured signal, and a rollback path is the Govern step.
 **EU AI Act (risk tiers).** Unacceptable / high / limited / minimal risk, with high-risk
 systems required to have _effective human oversight_. The framework borrows the
 proportionality principle (oversight scales with consequence) and the carve-out logic
-that narrow, procedural, review-assisting tasks are inherently lower-tier — good L2/L3
+that narrow, procedural, review-assisting tasks are inherently lower-tier, good L2/L3
 candidates.
 
 **SAE levels of automation (J3016) + agent levels-of-autonomy taxonomies.** The
@@ -46,7 +46,7 @@ axis.
 external people → public. Used as the multiplier on reversibility.
 
 **Principle of least privilege + RACI / RAPID.** Grant minimum scopes; expand on
-demonstrated need. Separate _who decides_ from _who executes_ — the agent is
+demonstrated need. Separate _who decides_ from _who executes_, the agent is
 Responsible/Performs while the human stays Accountable/Decides.
 
 **Selective prediction / learning to defer.** Models should abstain and hand off when
