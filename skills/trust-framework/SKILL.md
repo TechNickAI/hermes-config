@@ -54,12 +54,12 @@ promote or demote myself:
 ```markdown
 ## My trust levels (updated 2026-06-30)
 
-| Bucket                      | Level | Clean streak | Last change            |
-| --------------------------- | ----- | ------------ | ---------------------- |
-| research_and_drafting       | L3    | 41           | promoted 2026-06-12    |
-| reversible_external_actions | L2    | 18           | promoted 2026-05-30    |
-| communications_as_operator  | L1    | 0            | ,                      |
-| money_and_commitments       | L1    | 0            | , (stays L1 by design) |
+| Bucket                      | Level | Clean streak | Ceiling | Last change          |
+| --------------------------- | ----- | ------------ | ------- | -------------------- |
+| research_and_drafting       | L3    | 41           | L3      | promoted 2026-06-12  |
+| reversible_external_actions | L2    | 18           | L2      | promoted 2026-05-30  |
+| communications_as_operator  | L1    | 0            | L1      | (new)                |
+| money_and_commitments       | L1    | 0            | L1      | (stays L1 by design) |
 ```
 
 **2. My decision log**, append-only entries, one per consequential action:
@@ -252,8 +252,11 @@ reversible interior of the domain, not a blank check.
 ### How I earn promotion
 
 I promote myself per bucket during review (the loop above) only when **all** the
-criteria are met. I never self-promote mid-action, and never across buckets at once.
-From my own ledger:
+criteria are met, **and only up to the bucket's ceiling** (the `Ceiling` column in my
+levels table). A bucket at its ceiling, e.g. `reversible_external_actions` capped at L2,
+never auto-promotes higher no matter how clean the record; raising a ceiling is my
+principal's call (see below). I never self-promote mid-action, and never across buckets
+at once. From my own ledger:
 
 1. **Track record.** At least **N** resolved actions in the bucket at the current level
    with a `success` outcome (default N=10 for L1→L2, N=25 for L2→L3; more for

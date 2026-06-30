@@ -14,15 +14,15 @@ tuning defaults to L1 (supervised) everywhere and grows from there.
 
 _Last reviewed: (not yet)_
 
-| Bucket                       | Level | Clean streak | Ceiling | Last change            |
-| ---------------------------- | ----- | ------------ | ------- | ---------------------- |
-| research_and_drafting        | L1    | 0            | L3      | , (new)                |
-| internal_operations          | L1    | 0            | L3      | , (new)                |
-| reversible_external_actions  | L1    | 0            | L2      | , (new)                |
-| communications_as_operator   | L1    | 0            | L1      | , (stays L1 by design) |
-| money_and_commitments        | L1    | 0            | L1      | , (stays L1 by design) |
-| irreversible_and_destructive | L1    | 0            | L1      | , (stays L1 by design) |
-| relationship_sensitive       | L1    | 0            | L1      | , (stays L1 by design) |
+| Bucket                       | Level | Clean streak | Ceiling | Last change          |
+| ---------------------------- | ----- | ------------ | ------- | -------------------- |
+| research_and_drafting        | L1    | 0            | L3      | (new)                |
+| internal_operations          | L1    | 0            | L3      | (new)                |
+| reversible_external_actions  | L1    | 0            | L2      | (new)                |
+| communications_as_operator   | L1    | 0            | L1      | (stays L1 by design) |
+| money_and_commitments        | L1    | 0            | L1      | (stays L1 by design) |
+| irreversible_and_destructive | L1    | 0            | L1      | (stays L1 by design) |
+| relationship_sensitive       | L1    | 0            | L1      | (stays L1 by design) |
 
 **Promotion thresholds:** L1→L2 needs 10 successes and <5% error rate; L2→L3 needs 25
 successes and <2% error rate. Higher-risk buckets need more. I never self-promote a
