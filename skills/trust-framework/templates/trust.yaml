@@ -1,0 +1,137 @@
+# Trust Framework — per-agent config (seed)
+#
+# Copy into the agent's profile dir and tune. This is the human-owned surface:
+# you (the operator) edit buckets, levels, and caps. The agent may only change
+# `level` via the review job's auto-demotions and human-approved promotions.
+#
+# A new or untuned agent with no trust.yaml defaults to L1 (supervised) everywhere.
+
+version: 1
+
+# Rolling window the review job scores against, and the promotion thresholds.
+policy:
+  rolling_window_days: 30
+  promote_L1_to_L2: { min_successes: 10, max_error_rate: 0.05 }
+  promote_L2_to_L3: { min_successes: 25, max_error_rate: 0.02 }
+  # A bucket idle longer than its idle_revert_days drifts back toward L1.
+
+buckets:
+  research_and_drafting:
+    belongs_here:
+      "Reading, searching, summarizing, drafting text a human will send/use. No external
+      side effects."
+    risk_level: low
+    good_looks_like:
+      "Accurate, sourced, concise, matches the principal's voice and intent."
+    done_looks_like:
+      "Deliverable produced AND self-checked against the request; sources cited;
+      uncertainties flagged."
+    level: 2
+    caps:
+      quantity: { max_actions_per_run: 50, max_records_modified: 0 }
+      scope: { allowed_targets: [drafts, internal_notes] }
+      forbidden: [external_send, money, deletes_without_backup]
+      value: { max_dollars: 0 }
+    idle_revert_days: 60
+    on_cap_exceeded: escalate_to_L1
+
+  internal_operations:
+    belongs_here:
+      "Edit own files, manage own state/todos, run read-only commands, organize data."
+    risk_level: low
+    good_looks_like:
+      "Clean, reversible, well-organized; no surprises in the principal's systems."
+    done_looks_like: "Change made AND verified; nothing external touched."
+    level: 2
+    caps:
+      quantity: { max_actions_per_run: 50, max_records_modified: 100 }
+      scope: { allowed_targets: [own_profile, own_state, internal_files] }
+      forbidden: [external_send, money, deletes_without_backup, credential_changes]
+      value: { max_dollars: 0 }
+    idle_revert_days: 60
+    on_cap_exceeded: escalate_to_L1
+
+  reversible_external_actions:
+    belongs_here:
+      "Calendar events, internal task/CRM updates, non-destructive API writes with an
+      undo."
+    risk_level: medium
+    good_looks_like:
+      "Correct target, reversible, low blast radius, matches an established pattern."
+    done_looks_like: "Action taken AND reported; undo path known."
+    level: 1
+    caps:
+      quantity: { max_actions_per_run: 5, max_records_modified: 20 }
+      scope: { allowed_targets: [internal_systems, calendar] }
+      forbidden: [external_humans, money, deletes_without_backup]
+      value: { max_dollars: 0 }
+    idle_revert_days: 30
+    on_cap_exceeded: escalate_to_L1
+
+  communications_as_operator:
+    belongs_here:
+      "Messages sent on the principal's behalf to other people or external agents."
+    risk_level: high
+    good_looks_like:
+      "Says what the principal meant, right recipient, right tone, no leaked private
+      data."
+    done_looks_like:
+      "Draft + recommendation prepared; sent only after explicit approval (or explicit
+      override)."
+    level: 1
+    caps:
+      quantity: { max_actions_per_run: 0 } # nothing auto-sends at L1
+      scope: { allowed_targets: [] }
+      forbidden: [external_humans, public_posts]
+      value: { max_dollars: 0 }
+    idle_revert_days: 14
+    on_cap_exceeded: escalate_to_L1
+
+  money_and_commitments:
+    belongs_here: "Payments, transfers, purchases, contractual commitments."
+    risk_level: high
+    good_looks_like:
+      "Correct amount, correct recipient, fully prepared, nothing executed without
+      sign-off."
+    done_looks_like: "One-click decision handed to the human; never auto-executed."
+    level: 1
+    caps:
+      quantity: { max_actions_per_run: 0 }
+      scope: { allowed_targets: [] }
+      forbidden: [money, transfers, purchases, commitments]
+      value: { max_dollars: 0 }
+    idle_revert_days: 7
+    on_cap_exceeded: escalate_to_L1
+
+  irreversible_and_destructive:
+    belongs_here:
+      "Deletes without backup, public posts, broad config/production changes, credential
+      changes."
+    risk_level: high
+    good_looks_like: "Treated as one-way; prepared with a rollback plan; escalated."
+    done_looks_like: "Recommendation + rollback plan handed over; never auto-executed."
+    level: 1
+    caps:
+      quantity: { max_actions_per_run: 0 }
+      scope: { allowed_targets: [] }
+      forbidden:
+        [deletes_without_backup, public_posts, production_changes, credential_changes]
+      value: { max_dollars: 0 }
+    idle_revert_days: 7
+    on_cap_exceeded: escalate_to_L1
+
+  relationship_sensitive:
+    belongs_here: "Anything touching the principal's close personal relationships."
+    risk_level: high
+    good_looks_like:
+      "Handled with care; never acted on unilaterally; surfaced to the human."
+    done_looks_like:
+      "Surfaced with context and a gentle recommendation; the human decides."
+    level: 1
+    caps:
+      quantity: { max_actions_per_run: 0 }
+      scope: { allowed_targets: [] }
+      forbidden: [external_humans, public_posts]
+      value: { max_dollars: 0 }
+    idle_revert_days: 7
+    on_cap_exceeded: escalate_to_L1
