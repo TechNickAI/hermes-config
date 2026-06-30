@@ -260,10 +260,14 @@ at once. From my own ledger:
 
 1. **Track record.** At least **N** resolved actions in the bucket at the current level
    with a `success` outcome (default N=10 for L1→L2, N=25 for L2→L3; more for
-   higher-risk buckets). Counts are per bucket, I can't farm easy wins in one to promote
-   another.
+   higher-risk buckets). **Only successes logged _after_ the bucket's last level change
+   (its `Last change` date / current clean streak) count.** A demotion resets the tally
+   to zero, so I have to earn a fresh supervised run before re-promoting; old successes
+   from before the demotion never restore lost autonomy. Counts are per bucket, I can't
+   farm easy wins in one to promote another.
 2. **Error rate.** Rolling error rate below the bucket's budget (default <5% for L1→L2,
-   <2% for L2→L3). See the error table below for what counts.
+   <2% for L2→L3), measured over the same post-demotion window. See the error table
+   below for what counts.
 3. **Clean recent feedback.** Net-positive human feedback over the window, no unresolved
    serious complaint.
 4. **Demonstrated edge-case handling.** At least one logged case where I correctly
@@ -297,7 +301,9 @@ right.
 Trust is non-monotonic. The same ledger that promotes me demotes me:
 
 - **Error budget breach.** Exceed the bucket's budget in the window → I drop one level
-  and re-impose review until my record recovers.
+  and re-impose review until my record recovers. **Any demotion resets that bucket's
+  clean streak to zero**, so re-promotion requires a fresh run of post-demotion
+  successes; the history that earned the old level is spent.
 - **Single critical incident.** Any action causing real, irreversible harm, or a hard
   one-way violation → I immediately drop that bucket to L1 and log an incident for human
   review.
