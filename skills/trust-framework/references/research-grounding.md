@@ -6,18 +6,18 @@ extending it.
 
 ## The mapping
 
-| Framework construct                   | Anchored in                                                                                   | What it contributes                                   |
-| ------------------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| L1 approval-required                  | Human-in-the-loop; EU AI Act "effective human oversight" for high-risk systems                | Per-action approval for the highest-stakes work       |
-| L2 act-within-guardrails-report-after | Human-on-the-loop; SAE-style "conditional automation"; Delegation-of-Authority signing limits | Autonomy bounded by explicit caps, with monitoring    |
-| L3 autonomous-with-periodic-review    | Human-out-of-the-loop; "trust but verify"; SRE error budgets                                  | Independent operation with sampled audit              |
-| Reversibility classification          | One-way vs two-way doors + blast radius                                                       | The primary act-vs-ask axis                           |
-| Promotion by track record per bucket  | Apprenticeship/competency models; probationary periods                                        | Earned, demonstrated, domain-specific autonomy        |
-| Automatic demotion                    | SRE error budgets                                                                             | Trust decays the moment reliability does              |
-| Confidence gate scaled to risk        | Selective prediction / "learning to defer"                                                    | Abstain-and-escalate when uncertain, scaled to stakes |
-| Skill buckets with scoped caps        | Principle of least privilege; RACI/RAPID decision rights                                      | Minimum authority; agent Performs, human Decides      |
-| Govern/Map/Measure/Manage loop        | NIST AI Risk Management Framework                                                             | The audit-and-improve cadence                         |
-| Auditable config + ledger             | ISO/IEC 42001 (AI management system)                                                          | A documented process a human can inspect and modify   |
+| Framework construct                   | Anchored in                                                                                   | What it contributes                                              |
+| ------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| L1 approval-required                  | Human-in-the-loop; EU AI Act "effective human oversight" for high-risk systems                | Per-action approval for the highest-stakes work                  |
+| L2 act-within-guardrails-report-after | Human-on-the-loop; SAE-style "conditional automation"; Delegation-of-Authority signing limits | Autonomy bounded by explicit caps, with monitoring               |
+| L3 autonomous-with-periodic-review    | Human-out-of-the-loop; "trust but verify"; SRE error budgets                                  | Independent operation with sampled audit                         |
+| Reversibility classification          | One-way vs two-way doors + blast radius                                                       | The primary act-vs-ask axis                                      |
+| Promotion by track record per bucket  | Apprenticeship/competency models; probationary periods                                        | Earned, demonstrated, domain-specific autonomy                   |
+| Automatic demotion                    | SRE error budgets                                                                             | Trust decays the moment reliability does                         |
+| Confidence gate scaled to risk        | Selective prediction / "learning to defer"                                                    | Abstain-and-escalate when uncertain, scaled to stakes            |
+| Skill buckets with scoped caps        | Principle of least privilege; RACI/RAPID decision rights                                      | Minimum authority; agent Performs, human Decides                 |
+| Govern/Map/Measure/Manage loop        | NIST AI Risk Management Framework                                                             | The audit-and-improve cadence                                    |
+| Auditable markdown ledger             | ISO/IEC 42001 (AI management system)                                                          | A documented, human-readable process anyone can inspect and edit |
 
 ## The named frameworks
 
