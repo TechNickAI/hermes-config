@@ -65,7 +65,8 @@ python3 scripts/grok_search.py web '<query>' --limit 5
 
 Optional:
 
-- `--recency-days D` — restrict to the last D days
+- `--recency-days D` — restrict to roughly the last D days (translated to a `from_date`
+  of today − D, which is xAI's supported recency mechanism)
 - `--allowed-domains a.com,b.com` — only these (max 5)
 - `--excluded-domains a.com,b.com` — never these (max 5; mutually exclusive with
   allowed)
@@ -80,7 +81,7 @@ python3 scripts/grok_search.py x '<query>' --limit 5
 
 Optional:
 
-- `--handles elonmusk,xai` — only posts from these handles (max 5)
+- `--handles elonmusk,xai` — only posts from these handles (max 20)
 - `--from-date YYYY-MM-DD` / `--to-date YYYY-MM-DD` — date window
 
 ## How to present results

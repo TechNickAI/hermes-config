@@ -38,6 +38,7 @@ non-zero.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -49,7 +50,8 @@ import urllib.request
 API_URL = "https://api.x.ai/v1/responses"
 DEFAULT_MODEL = "grok-4.3"  # stable reasoning flagship; agentic tools require a reasoning model
 DEFAULT_TIMEOUT = 90
-_MAX_DOMAINS = 5  # xAI hard cap on allowed/excluded domain filters
+_MAX_DOMAINS = 5  # xAI cap on allowed/excluded domain filters
+_MAX_HANDLES = 20  # xAI cap on allowed_x_handles filters
 _JSON_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 
 
@@ -76,7 +78,7 @@ def _api_key(args) -> str:
     return key
 
 
-def _csv(value: str | None, label: str = "value") -> list[str]:
+def _csv(value: str | None, label: str = "value", cap: int = _MAX_DOMAINS) -> list[str]:
     if not value:
         return []
     out: list[str] = []
@@ -84,8 +86,8 @@ def _csv(value: str | None, label: str = "value") -> list[str]:
         item = item.strip()
         if item:
             out.append(item)
-    if len(out) > _MAX_DOMAINS:
-        _die(f"Too many {label} ({len(out)}); xAI allows at most {_MAX_DOMAINS}.")
+    if len(out) > cap:
+        _die(f"Too many {label} ({len(out)}); xAI allows at most {cap}.")
     return out
 
 
@@ -117,7 +119,11 @@ def _post(payload: dict, key: str, timeout: int) -> dict:
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            _die(f"xAI returned a non-JSON response: {raw[:200]}".rstrip(), code=2)
     except urllib.error.HTTPError as exc:
         body = ""
         try:
@@ -234,9 +240,14 @@ def _search(mode: str, args) -> None:
         elif excluded:
             tool["filters"] = {"excluded_domains": excluded}
         if getattr(args, "recency_days", None):
-            tool.setdefault("filters", {})["recency_days"] = int(args.recency_days)
+            # xAI's web_search recency control is from_date/to_date, not a
+            # recency_days filter field (unknown fields are silently ignored),
+            # so translate the day count into a concrete from_date.
+            days = max(1, int(args.recency_days))
+            since = datetime.date.today() - datetime.timedelta(days=days)
+            tool["from_date"] = since.isoformat()
     else:  # x_search
-        handles = _csv(getattr(args, "handles", None), "handles")
+        handles = _csv(getattr(args, "handles", None), "handles", cap=_MAX_HANDLES)
         if handles:
             tool["allowed_x_handles"] = handles
         if getattr(args, "from_date", None):
@@ -256,6 +267,8 @@ def _search(mode: str, args) -> None:
     api_error = data.get("error") if isinstance(data, dict) else None
     if isinstance(api_error, dict):
         _die(f"xAI returned an error: {api_error.get('message') or api_error.get('code') or 'unknown'}", code=2)
+    elif isinstance(api_error, str) and api_error.strip():
+        _die(f"xAI returned an error: {api_error.strip()}", code=2)
 
     texts, annotations = _collect_text_and_annotations(data)
     # `_parse_json_results` returns None on parse failure and a list (possibly
@@ -285,11 +298,18 @@ def _search(mode: str, args) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Grok real-time web + X search")
-    parser.add_argument("--api-key", help="xAI API key (else env XAI_API_KEY)")
+    # Shared options live on a parent parser so global flags like --api-key work
+    # whether they appear before OR after the subcommand (argparse otherwise
+    # rejects a root-only flag placed after the subcommand name).
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--api-key", help="xAI API key (else env XAI_API_KEY)")
+
+    parser = argparse.ArgumentParser(
+        description="Grok real-time web + X search", parents=[common]
+    )
     sub = parser.add_subparsers(dest="mode", required=True)
 
-    web = sub.add_parser("web", help="Real-time web search via Grok")
+    web = sub.add_parser("web", help="Real-time web search via Grok", parents=[common])
     web.add_argument("query")
     web.add_argument("--limit", type=int, default=5)
     web.add_argument("--recency-days", type=int)
@@ -297,10 +317,10 @@ def main() -> None:
     web.add_argument("--excluded-domains", help="comma-separated, max 5")
     web.add_argument("--model", default=DEFAULT_MODEL)
 
-    xp = sub.add_parser("x", help="Search X (Twitter) posts via Grok")
+    xp = sub.add_parser("x", help="Search X (Twitter) posts via Grok", parents=[common])
     xp.add_argument("query")
     xp.add_argument("--limit", type=int, default=5)
-    xp.add_argument("--handles", help="comma-separated X handles, max 5")
+    xp.add_argument("--handles", help="comma-separated X handles, max 20")
     xp.add_argument("--from-date", help="YYYY-MM-DD")
     xp.add_argument("--to-date", help="YYYY-MM-DD")
     xp.add_argument("--model", default=DEFAULT_MODEL)
