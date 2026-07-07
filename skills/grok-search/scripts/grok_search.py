@@ -283,9 +283,15 @@ def _search(mode: str, args) -> None:
     if results is None:
         results = _results_from_citations(data, annotations, limit)
 
+    # Merge citation URLs from BOTH sources: per-chunk annotations and the
+    # Responses API's top-level `citations` field (which is where sources land
+    # when no_inline_citations suppresses inline annotations).
     citations: list[str] = []
-    for ann in annotations:
-        url = str(ann.get("url", "")).strip()
+    citation_sources: list[str] = [str(a.get("url", "")).strip() for a in annotations]
+    top_level = data.get("citations") if isinstance(data, dict) else None
+    if isinstance(top_level, list):
+        citation_sources.extend(str(u).strip() for u in top_level if isinstance(u, str))
+    for url in citation_sources:
         if url and url not in citations and _valid_url(url):
             citations.append(url)
 
