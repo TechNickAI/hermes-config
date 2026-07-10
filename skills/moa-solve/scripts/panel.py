@@ -30,7 +30,7 @@ from datetime import datetime
 ENV = Path(os.environ.get("MOA_ENV_PATH",
     str(Path.home() / ".hermes/.env")))
 OR_BASE = "https://openrouter.ai/api/v1"
-OMNI_BASE = os.environ.get("MOA_OMNI_BASE_URL", "http://localhost:20128/v1")
+OMNI_BASE = os.environ.get("MOA_OMNI_BASE_URL", "http://localhost:11434/v1")
 
 def load_env(name):
     if not ENV.exists():
@@ -82,13 +82,15 @@ def resolve_openrouter():
             panel[fam] = cands[0]
     return panel
 
-def call_openrouter(model, prompt, max_tokens=6000, temperature=0.8):
+def call_openrouter(model, prompt, max_tokens=None, temperature=0.8):
+    if max_tokens is None:
+        max_tokens = 16000 if "fusion" in model else 6000
     body = json.dumps({"model": model,
                        "messages": [{"role": "user", "content": prompt}],
                        "max_tokens": max_tokens, "temperature": temperature}).encode()
     req = urllib.request.Request(OR_BASE + "/chat/completions", data=body,
         headers={"Authorization": "Bearer " + OR_KEY, "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=300) as r:
+    with urllib.request.urlopen(req, timeout=600) as r:
         d = json.load(r)
     m = d["choices"][0]["message"]
     txt = (m.get("content") or m.get("reasoning") or "").strip()
@@ -102,7 +104,7 @@ def call_omniroute(model, prompt, max_tokens=6000, temperature=0.6):
                        "stream": False}).encode()
     req = urllib.request.Request(OMNI_BASE + "/chat/completions", data=body,
         headers={"Authorization": "Bearer " + (OMNI_KEY or ""), "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=300) as r:
+    with urllib.request.urlopen(req, timeout=600) as r:
         d = json.load(r)
     m = d["choices"][0]["message"]
     txt = (m.get("content") or m.get("reasoning") or "").strip()
@@ -147,7 +149,7 @@ def main():
         if backend == "openrouter" and model in fam_default:
             model = fam_default[model]
         if not model:
-            model = fam_default.get(s.get("seat", ""), "x-ai/grok-4.3")
+            model = list(fam_default.values())[0] if fam_default else "x-ai/grok-4.3"
         mandate = s.get("mandate", "")
         prompt = (mandate + "\n\n" + brief) if mandate else brief
         tasks.append((s["seat"], model, backend, prompt))
@@ -160,11 +162,13 @@ def main():
     # Write each seat as soon as it completes. This makes long runs observable and
     # preserves partial value if a slow reasoning model hangs or the parent process
     # times out after useful seats have already returned.
-    with ThreadPoolExecutor(max_workers=min(6, len(tasks))) as ex:
+    with ThreadPoolExecutor(max_workers=max(1, min(6, len(tasks)))) as ex:
         future_map = {ex.submit(run_seat, t): t[0] for t in tasks}
         for fut in as_completed(future_map):
             r = fut.result()
-            fn = outdir / f"{args.label}__{r['seat']}.md"
+            safe_seat = re.sub(r'[^A-Za-z0-9_-]', '_', r['seat'])
+            safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', args.label)
+            fn = outdir / f"{safe_label}__{safe_seat}.md"
             header = (f"# {r['seat']}  ({r['model']} via {r['backend']})\n"
                       f"_time {r['seconds']}s · {r['chars']} chars · err={r['error']}_\n\n")
             fn.write_text(header + (r["text"] or "(empty)"))

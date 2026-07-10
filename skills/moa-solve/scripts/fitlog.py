@@ -72,7 +72,7 @@ def report(a):
       ROUND(AVG(creativity),1) crea, ROUND(AVG(correctness),1) corr,
       SUM(used_in_synthesis) used,
       GROUP_CONCAT(won_on, ' | ') won
-      FROM scores s JOIN runs r USING(run_id)"""
+      FROM scores s LEFT JOIN runs r USING(run_id)"""
     params = ()
     if a.kind:
         q += " WHERE r.problem_kind=?"; params = (a.kind,)
