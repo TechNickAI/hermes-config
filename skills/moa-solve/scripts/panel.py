@@ -14,7 +14,7 @@ Usage:
   python3 panel.py --brief BRIEF.md --seats seats.json --out RUNDIR [--label NAME]
 
 seats.json = list of {"seat","model","backend","mandate"}. mandate is prepended to the brief.
-If a seat omits "model", a role-appropriate default is filled from DEFAULTS.
+If a seat omits "model", grok is used as the fallback default.
 
 Design notes:
   - stdlib only. Reads keys from the profile .env (override with MOA_ENV_PATH).
@@ -30,7 +30,7 @@ from datetime import datetime
 ENV = Path(os.environ.get("MOA_ENV_PATH",
     str(Path.home() / ".hermes/.env")))
 OR_BASE = "https://openrouter.ai/api/v1"
-OMNI_BASE = os.environ.get("MOA_OMNI_BASE_URL", "http://localhost:11434/v1")
+OMNI_BASE = os.environ.get("MOA_OMNI_BASE_URL")  # required if using omniroute backend
 
 def load_env(name):
     if not ENV.exists():
@@ -130,6 +130,8 @@ def call_openrouter(model, prompt, max_tokens=None, temperature=0.8):
     return txt, usage
 
 def call_omniroute(model, prompt, max_tokens=6000, temperature=0.6):
+    if not OMNI_BASE:
+        raise RuntimeError("MOA_OMNI_BASE_URL env var is required for omniroute backend")
     body = json.dumps({"model": model,
                        "messages": [{"role": "user", "content": prompt}],
                        "max_tokens": max_tokens, "temperature": temperature,
@@ -186,10 +188,11 @@ def main():
         prompt = (mandate + "\n\n" + brief) if mandate else brief
         tasks.append((s["seat"], model, backend, prompt))
 
+    safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', args.label)
     manifest = {"label": args.label, "when": datetime.now().isoformat(),
                 "brief_file": str(args.brief), "resolved_openrouter": orslugs,
                 "seats": []}
-    manifest_path = outdir / f"{args.label}__manifest.json"
+    manifest_path = outdir / f"{safe_label}__manifest.json"
 
     # Write each seat as soon as it completes. This makes long runs observable and
     # preserves partial value if a slow reasoning model hangs or the parent process
@@ -199,7 +202,6 @@ def main():
         for fut in as_completed(future_map):
             r = fut.result()
             safe_seat = re.sub(r'[^A-Za-z0-9_-]', '_', r['seat'])
-            safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', args.label)
             fn = outdir / f"{safe_label}__{safe_seat}.md"
             header = (f"# {r['seat']}  ({r['model']} via {r['backend']})\n"
                       f"_time {r['seconds']}s · {r['chars']} chars · err={r['error']}_\n\n")
