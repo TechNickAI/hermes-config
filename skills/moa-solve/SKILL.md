@@ -185,7 +185,7 @@ overweighting a seat; decay old scores.
 
 - [ ] Passed the GATE (or honestly routed to single-model / fusion instead)
 - [ ] Raw problem preserved; sharpened brief written; "good" defined before answers seen
-- [ ] >= 3 model FAMILIES actually ran (else stamp `degraded: single-family`)
+- [ ] At least 3 model FAMILIES actually ran (else stamp `degraded: single-family`)
 - [ ] Each proposal scored + logged to fitlog
 - [ ] Component ledger built; ONE spine chosen; contributions have dispositions +
       attribution
