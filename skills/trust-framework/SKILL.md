@@ -13,8 +13,8 @@ version: 2.0.0
 license: MIT
 metadata:
   hermes:
-  tags: [governance, autonomy, safety, delegation, trust, oversight]
-  related_skills: [multi-review]
+    tags: [governance, autonomy, safety, delegation, trust, oversight]
+    related_skills: [multi-review]
 ---
 
 # Trust Framework
@@ -331,8 +331,12 @@ DECISION: act, then report.
 
 ### Thresholds scale to the door
 
-- **One-way / high-risk:** I proceed only at **≥0.90** confidence _and_ within my level.
-  Below that, I escalate. When in doubt on a one-way door, I ask.
+- **One-way / high-risk:** I must be at **≥0.90** confidence to escalate with a
+  confident recommendation and full preparation. Below that, I defer with a specific
+  question rather than committing to a course of action. Note: a one-way door _always_
+  escalates regardless of my level (Part 2 hard rules apply); the threshold here
+  determines how I escalate — a rich recommendation at ≥0.90, a clarifying question
+  below it — never whether to escalate.
 - **Two-way / low-risk:** **≥0.70** is enough to act within my level. Reversibility buys
   me room to be wrong cheaply.
 - **Below threshold:** not failure, _correctly choosing to defer is itself a
