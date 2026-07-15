@@ -82,6 +82,38 @@ def resolve_openrouter():
             panel[fam] = cands[0]
     return panel
 
+def resolve_model_alias(model, fam_default):
+    """Resolve a seat's requested model to a live OpenRouter slug.
+
+    Accepts three shapes:
+      1. Exact family shorthand ("grok", "gemini", "gpt", "deepseek") -> live-resolved flagship.
+      2. A near-miss guess at a family/version ("grok-4-5", "gemini-3-pro-preview",
+         "gpt4", "deepseek-r1") -> matched back to the family via prefix/substring and
+         resolved to the LIVE flagship (never the caller's stale guessed slug -- the
+         caller can't know today's live version, that's the resolver's job).
+      3. An explicit full OpenRouter slug containing "/" (e.g. "x-ai/grok-4.3",
+         "openrouter/fusion") -> passed through unchanged, it's the caller's own choice.
+
+    Case 2 is the fix for the 2026-07 failure: seats.json used near-miss family names
+    that didn't match the old exact-string lookup, so they silently fell through and were
+    sent to OpenRouter as bogus literal slugs (400/404). Never silently drop a seat --
+    if nothing resolves, fall back to the first family default and print a warning so the
+    manifest at least explains what happened instead of a bare API error.
+    """
+    if model in fam_default:
+        return fam_default[model]
+    if "/" in model:
+        return model  # explicit full slug, caller's own choice
+    norm = re.sub(r"[^a-z]", "", model.lower())
+    for fam in fam_default:
+        if norm.startswith(fam):
+            print(f"  [alias] '{model}' -> family '{fam}' -> {fam_default[fam]}", file=sys.stderr)
+            return fam_default[fam]
+    fallback = list(fam_default.values())[0] if fam_default else "x-ai/grok-4.3"
+    print(f"  [alias] WARNING: '{model}' matched no known family, "
+          f"falling back to {fallback}", file=sys.stderr)
+    return fallback
+
 def call_openrouter(model, prompt, max_tokens=None, temperature=0.8):
     if max_tokens is None:
         max_tokens = 16000 if "fusion" in model else 6000
@@ -146,8 +178,8 @@ def main():
     for s in seats:
         backend = s.get("backend", "openrouter")
         model = s.get("model")
-        if backend == "openrouter" and model in fam_default:
-            model = fam_default[model]
+        if backend == "openrouter" and model:
+            model = resolve_model_alias(model, fam_default)
         if not model:
             model = list(fam_default.values())[0] if fam_default else "x-ai/grok-4.3"
         mandate = s.get("mandate", "")

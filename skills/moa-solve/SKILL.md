@@ -180,6 +180,17 @@ overweighting a seat; decay old scores.
    quality. Validate against primary sources.
 6. **Don't seat the aggregator as a proposer.** You bias your own synthesis toward your
    own draft.
+7. **`seats.json` model names must be a family shorthand, a full OpenRouter slug, or a
+   close variant `panel.py` can fuzzy-match back to a family** (fixed 2026-07: prior
+   versions did an exact-string lookup only, so near-miss guesses like `grok-4-5` or
+   `gemini-3-pro-preview` silently fell through as literal (bogus) OpenRouter model IDs
+   and 400/404'd). `resolve_model_alias()` now normalizes and prefix-matches against the
+   4 known families (`grok`/`gemini`/`gpt`/`deepseek`), live-resolving to the CURRENT
+   flagship rather than trusting a caller's guessed version number. A slug containing
+   `/` is always passed through untouched (explicit choice). Anything that matches no
+   family logs a `[alias] WARNING` to stderr and falls back to the first family default
+   instead of silently erroring the whole seat — check stderr/the manifest if a seat's
+   model looks unexpected.
 
 ## Verification checklist
 
