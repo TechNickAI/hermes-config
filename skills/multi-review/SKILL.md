@@ -234,9 +234,9 @@ execution rules that prevent silent failures:**
    affordable. Fall back to sequential foreground `hermes -z` calls only for a
    single-reviewer check or when background orchestration isn't available. **Do not
    stamp `degraded: single-model` just because a reviewer is slow** — only after a
-   genuine failure or a blown 600s timeout. Early-degrade on slowness is the classic bug
-   this rule exists to prevent. Confirmed in practice; parallel default reaffirmed after
-   a later recurrence.
+   genuine failure or a blown timeout for the configured depth (300s for normal, 600s
+   for deep). Early-degrade on slowness is the classic bug this rule exists to prevent.
+   Confirmed in practice; parallel default reaffirmed after a later recurrence.
 
 ```bash
 # Provider/model names are illustrative — match them to the local config.

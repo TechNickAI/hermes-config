@@ -20,8 +20,9 @@ minute or more and still be perfectly healthy.
 2. Run model-family reviewers in parallel so wall time is the slowest single reviewer,
    not the sum of all of them.
 3. Use generous timeouts: about 300s for normal reviews and 600s for deep/slow panels.
-4. Stamp `degraded: single-model` only after a genuine failure or a blown 600s timeout —
-   never because a reviewer was merely slow.
+4. Stamp `degraded: single-model` only after a genuine failure or a blown timeout for
+   the configured depth (300s for normal, 600s for deep) — never because a reviewer was
+   merely slow.
 5. If the human says the path is "just slow," treat that as a scope correction. Do not
    keep debugging it as an outage or patch around it.
 
