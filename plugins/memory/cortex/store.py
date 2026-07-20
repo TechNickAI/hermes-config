@@ -399,6 +399,70 @@ class CortexStore:
             logger.info("CortexStore: embedded %d pages with %s", written, model)
         return written
 
+    def _resolve_vector_model(self, active_model: str, qdim: int) -> str | None:
+        """Pick the stored embedding model to compare the query vector against.
+
+        Never mixes distinct models (that would produce meaningless cosine
+        scores), but self-heals the common "same model, different name" case so a
+        provider/prefix rename or route swap can't silently disable semantic
+        search. Resolution order, all constrained to embeddings of dimension
+        ``qdim``:
+
+          1. Exact name match — the fast, normal path.
+          2. Suffix match — provider prefixes differ but the model id after the
+             last "/" is identical (e.g. ``google/gemini-embedding-001`` vs
+             ``gemini/gemini-embedding-001``).
+          3. Homogeneous store — exactly one model exists at this dimension, so a
+             rename is unambiguous; adopt it and warn once.
+
+        Returns the stored model name to filter on, or ``None`` when there is no
+        safe choice (no embeddings at this dim, or several genuinely different
+        models and none match — caller then falls back to lexical FTS5).
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT model, COUNT(*) AS n FROM page_embeddings WHERE dimensions = ? GROUP BY model",
+                (qdim,),
+            ).fetchall()
+        except Exception as e:
+            logger.debug("CortexStore: model resolution query failed: %s", e)
+            return active_model  # fall back to strict exact-match behavior
+        models = [str(r["model"]) for r in rows]
+        if not models:
+            return None
+        # 1. exact
+        if active_model in models:
+            return active_model
+
+        def suffix(m: str) -> str:
+            return m.rsplit("/", 1)[-1]
+
+        # 2. suffix (provider-prefix change), only if unambiguous
+        active_suffix = suffix(active_model)
+        suffix_matches = [m for m in models if suffix(m) == active_suffix]
+        if len(suffix_matches) == 1:
+            logger.warning(
+                "CortexStore: query embedder model %r not stored verbatim; matched "
+                "%r by model id (provider prefix differs). Re-run backfill to align.",
+                active_model, suffix_matches[0],
+            )
+            return suffix_matches[0]
+        # 3. homogeneous store — single model at this dim, unambiguous rename
+        if len(models) == 1:
+            logger.warning(
+                "CortexStore: query embedder model %r not stored; store holds a single "
+                "model %r at dim %d — using it. Re-run backfill to align names.",
+                active_model, models[0], qdim,
+            )
+            return models[0]
+        # Multiple distinct models and none match — refuse to guess.
+        logger.warning(
+            "CortexStore: query embedder model %r has no compatible stored embeddings "
+            "at dim %d (stored models: %s); semantic tier off, using lexical only.",
+            active_model, qdim, ", ".join(sorted(set(models))),
+        )
+        return None
+
     def vector_search(self, query: str, *, limit: int = 5, category: str | None = None) -> list[dict]:
         """Exact semantic search over page-level embeddings.
 
@@ -418,6 +482,17 @@ class CortexStore:
         q = [float(x) for x in qvecs[0]]
         qdim = len(q)
         active_model = getattr(self.embedder, "model", "unknown")
+        # Choose which stored model(s) to compare against. Comparing a query
+        # vector against document vectors from a DIFFERENT embedding model yields
+        # meaningless cosine scores, so we must never mix models. But we also must
+        # not silently return nothing when the same underlying model is merely
+        # recorded under a different name (e.g. a provider/prefix change like
+        # "google/gemini-embedding-001" -> "gemini/gemini-embedding-001", or a
+        # route swap OpenRouter->OmniRoute). Resolve the target model defensively:
+        target_model = self._resolve_vector_model(active_model, qdim)
+        if target_model is None:
+            # No compatible embeddings at this dimension — fall back to lexical.
+            return []
         sql = """
             SELECT p.rel_path, p.category, p.title, p.tags, p.body, e.embedding, e.dimensions, e.model
             FROM page_embeddings e
@@ -425,7 +500,7 @@ class CortexStore:
             WHERE e.dimensions = ?
             AND e.model = ?
         """
-        params: list[Any] = [qdim, active_model]
+        params: list[Any] = [qdim, target_model]
         if category:
             sql += " AND p.category = ?"
             params.append(category)
