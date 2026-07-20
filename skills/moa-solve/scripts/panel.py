@@ -148,6 +148,13 @@ def call_omniroute(model, prompt, max_tokens=6000, temperature=0.6):
 def run_seat(args):
     seat, model, backend, prompt = args
     t0 = time.time()
+    # Fail fast on missing config — don't let the broad except below swallow it
+    # into a silent per-seat error with exit code zero.
+    if backend == "omniroute" and not OMNI_BASE:
+        raise RuntimeError(
+            "MOA_OMNI_BASE_URL is unset but an omniroute seat is configured. "
+            "Set the env var or remove omniroute seats from the seats file."
+        )
     try:
         if backend == "omniroute":
             txt, usage = call_omniroute(model, prompt)

@@ -33,10 +33,26 @@ DB = Path(os.environ.get("MOA_FITLOG_DB",
 
 def conn():
     DB.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(DB)
+    c = sqlite3.connect(DB)
+    migrate_legacy_scores(c)
+    return c
+
+def migrate_legacy_scores(c):
+    """Rebuild scores if it still has the pre-rubric columns.
+
+    Early versions used quality/creativity/correctness. CREATE TABLE IF NOT
+    EXISTS leaves that layout in place, and the new rubric columns then fail
+    with an OperationalError. Legacy rows aren't translatable to the new
+    rubric, so archive the old table and start fresh.
+    """
+    cols = {row[1] for row in c.execute("PRAGMA table_info(scores)")}
+    if cols and "soundness" not in cols:
+        c.execute("ALTER TABLE scores RENAME TO scores_legacy_v1")
+        print("fitlog: archived old scores table as scores_legacy_v1 (pre-rubric schema)")
 
 def init():
     c = conn()
+    migrate_legacy_scores(c)
     c.executescript("""
     CREATE TABLE IF NOT EXISTS runs(
       run_id TEXT PRIMARY KEY, when_ts TEXT, problem_kind TEXT,
