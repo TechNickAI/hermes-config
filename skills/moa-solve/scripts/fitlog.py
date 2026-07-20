@@ -48,18 +48,9 @@ def migrate_legacy_scores(c):
     cols = {row[1] for row in c.execute("PRAGMA table_info(scores)")}
     if cols and "soundness" not in cols:
         c.execute("ALTER TABLE scores RENAME TO scores_legacy_v1")
-        c.execute("""CREATE TABLE scores(
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          run_id TEXT, seat TEXT, model TEXT, backend TEXT, role TEXT,
-          completeness INT, soundness INT, actionability INT,
-          usable_novelty INT, testability INT,
-          won_on TEXT, used_in_synthesis INT,
-          UNIQUE(run_id, seat))""")
-        c.commit()
-        print("fitlog: archived old scores table as scores_legacy_v1 (pre-rubric schema), new table ready")
-
-def init():
-    c = conn()
+    # Ensure current schema exists. Covers: just-renamed legacy table (above),
+    # a DB left by the earlier broken migration (scores_legacy_v1 present,
+    # scores gone), and a fresh DB used without an explicit `init`.
     c.executescript("""
     CREATE TABLE IF NOT EXISTS runs(
       run_id TEXT PRIMARY KEY, when_ts TEXT, problem_kind TEXT,
@@ -72,7 +63,11 @@ def init():
       won_on TEXT, used_in_synthesis INT,
       UNIQUE(run_id, seat));
     """)
-    c.commit(); c.close(); print("fitlog initialized at", DB)
+    c.commit()
+
+def init():
+    c = conn()  # conn() ensures the full current schema
+    c.close(); print("fitlog initialized at", DB)
 
 def add_run(a):
     c = conn()
