@@ -43,16 +43,14 @@ def migrate_legacy_scores(c):
     Early versions used quality/creativity/correctness. CREATE TABLE IF NOT
     EXISTS leaves that layout in place, and the new rubric columns then fail
     with an OperationalError. Legacy rows aren't translatable to the new
-    rubric, so archive the old table and start fresh.
+    rubric, so archive the old table and immediately recreate with the new schema.
     """
     cols = {row[1] for row in c.execute("PRAGMA table_info(scores)")}
     if cols and "soundness" not in cols:
         c.execute("ALTER TABLE scores RENAME TO scores_legacy_v1")
-        print("fitlog: archived old scores table as scores_legacy_v1 (pre-rubric schema)")
-
-def init():
-    c = conn()
-    migrate_legacy_scores(c)
+    # Ensure current schema exists. Covers: just-renamed legacy table (above),
+    # a DB left by the earlier broken migration (scores_legacy_v1 present,
+    # scores gone), and a fresh DB used without an explicit `init`.
     c.executescript("""
     CREATE TABLE IF NOT EXISTS runs(
       run_id TEXT PRIMARY KEY, when_ts TEXT, problem_kind TEXT,
@@ -65,7 +63,11 @@ def init():
       won_on TEXT, used_in_synthesis INT,
       UNIQUE(run_id, seat));
     """)
-    c.commit(); c.close(); print("fitlog initialized at", DB)
+    c.commit()
+
+def init():
+    c = conn()  # conn() ensures the full current schema
+    c.close(); print("fitlog initialized at", DB)
 
 def add_run(a):
     c = conn()
