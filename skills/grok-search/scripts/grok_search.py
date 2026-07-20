@@ -239,7 +239,7 @@ def _search(mode: str, args) -> None:
             tool["filters"] = {"allowed_domains": allowed}
         elif excluded:
             tool["filters"] = {"excluded_domains": excluded}
-        if getattr(args, "recency_days", None):
+        if getattr(args, "recency_days", None) is not None:
             # xAI's web_search recency control is from_date/to_date, not a
             # recency_days filter field (unknown fields are silently ignored),
             # so translate the day count into a concrete from_date.
