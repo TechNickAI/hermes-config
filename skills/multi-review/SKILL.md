@@ -235,8 +235,8 @@ execution rules that prevent silent failures:**
    single-reviewer check or when background orchestration isn't available. **Do not
    stamp `degraded: single-model` just because a reviewer is slow** — only after a
    genuine failure or a blown 600s timeout. Early-degrade on slowness is the classic bug
-   this rule exists to prevent. Confirmed 2026-06-12; parallel default reaffirmed
-   2026-06-22.
+   this rule exists to prevent. Confirmed in practice; parallel default reaffirmed after
+   a later recurrence.
 
 ```bash
 # Provider/model names are illustrative — match them to the local config.
