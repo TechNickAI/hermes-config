@@ -6,7 +6,7 @@ description: >
   Runs a small panel of diverse review lenses across model families when available,
   synthesizes findings into fix/ask/defer/wontfix decisions, and iterates until the
   result is ready.
-version: 1.0.0
+version: 1.1.0
 license: MIT
 metadata:
   hermes:
@@ -180,7 +180,18 @@ The cleanest way to run an independent reviewer is a headless `hermes -z` call a
 chosen provider/model. Confirm the local profile actually has the provider before using
 it: `hermes config get model.providers` (or read `~/.hermes/config.yaml`).
 
-**Five execution rules that prevent silent failures:**
+**Keep reviewers on the configured router path — a slow reviewer is not a broken one.**
+A `hermes -z` reviewer call pays chat-session startup (config load, memory/Cortex
+prefetch, skill scan, system-prompt build) on top of the model's own latency, so a
+single reviewer can take a minute or more even when everything is working. That slowness
+is **not** a model failure and is **not** a reason to drop to a same-model panel or to
+"optimize" by POSTing a router/provider endpoint directly. The fix for slowness is a
+generous timeout plus parallelism _inside_ the configured Hermes/provider/router path
+(including a custom OpenAI-compatible router) — never a bypass. The only exceptions are
+the router being genuinely unreachable (for a diagnostic) or the human explicitly
+approving a different architecture. For the concrete slow-vs-broken correction that
+produced this rule, see `references/slow-reviewer-timeouts-router-path.md`. **Six
+execution rules that prevent silent failures:**
 
 1. **Mind the artifact size.** A `hermes -z "$PROMPT"` call places the whole prompt on
    the process argv, and command substitution like `hermes -z "$(cat file)"` does the
@@ -208,6 +219,24 @@ it: `hermes config get model.providers` (or read `~/.hermes/config.yaml`).
    of safety.
 5. **Confirm the provider exists first** with `hermes config get model.providers` (or
    read `~/.hermes/config.yaml`) before selecting it.
+
+6. **Run a cross-family panel in parallel background processes — but never with shell
+   `&`.** For a genuine multi-family panel, wall time should be the _slowest single
+   reviewer_, not the sum, so run the reviewers concurrently. The Hermes terminal tool
+   **rejects** foreground commands containing `&` backgrounding ("Use
+   terminal(background=true)...") and also rejects `workdir` strings containing shell
+   metacharacters, so a one-shot `cmd & cmd & wait` panel will be blocked. The working
+   parallel pattern is: launch each reviewer with
+   `terminal(background=true, notify_on_complete=true)` writing to a distinct
+   `/tmp/out_<lens>.txt`, then read the files after all complete. **Default for a
+   cross-family (2+ model) panel: parallel background** — the whole point of a panel is
+   diversity, and parallelism is what makes waiting for slow-but-healthy reviewers
+   affordable. Fall back to sequential foreground `hermes -z` calls only for a
+   single-reviewer check or when background orchestration isn't available. **Do not
+   stamp `degraded: single-model` just because a reviewer is slow** — only after a
+   genuine failure or a blown 600s timeout. Early-degrade on slowness is the classic bug
+   this rule exists to prevent. Confirmed in practice; parallel default reaffirmed after
+   a later recurrence.
 
 ```bash
 # Provider/model names are illustrative — match them to the local config.
