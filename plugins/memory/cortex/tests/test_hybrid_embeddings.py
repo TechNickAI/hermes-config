@@ -142,3 +142,63 @@ def test_fts_self_heal_is_safe_noop_on_healthy_store(tmp_path: Path) -> None:
     assert rows and rows[0]["rel_path"] == "daily/2026-05-14.md"
 
 
+
+
+# --- vector model-name resolution hardening (regression for the 2026-07-19
+#     provider-prefix rename that silently disabled semantic search) --------
+
+class RenamableEmbedder(FakeEmbedder):
+    """FakeEmbedder whose reported model name can be changed after backfill."""
+
+    def __init__(self, model: str = "fake-semantic") -> None:
+        super().__init__()
+        self.model = model
+
+
+def _seed_estate_store(tmp_path: Path, model: str) -> CortexStore:
+    store = CortexStore(store_path=tmp_path / "cortex", embedder=RenamableEmbedder(model))
+    store.write_page("topics", "estate-blueprint", "# Estate Blueprint\nLegacy trust design for family wealth.")
+    store.backfill_embeddings(force=True)
+    return store
+
+
+def test_vector_search_exact_model_match(tmp_path: Path) -> None:
+    store = _seed_estate_store(tmp_path, "google/gemini-embedding-001")
+    rows = store.vector_search("inheritance planning for heirs", limit=3)
+    assert rows and rows[0]["rel_path"] == "topics/estate-blueprint.md"
+
+
+def test_vector_search_survives_provider_prefix_rename(tmp_path: Path) -> None:
+    # Stored under google/…, but the live embedder now reports gemini/… (same
+    # model id, different provider prefix) — must still retrieve, not go silent.
+    store = _seed_estate_store(tmp_path, "google/gemini-embedding-001")
+    store.embedder.model = "gemini/gemini-embedding-001"
+    rows = store.vector_search("inheritance planning for heirs", limit=3)
+    assert rows, "provider-prefix rename must not disable semantic search"
+    assert rows[0]["rel_path"] == "topics/estate-blueprint.md"
+
+
+def test_vector_search_survives_rename_in_homogeneous_store(tmp_path: Path) -> None:
+    # Completely different name but the store holds exactly one model at this
+    # dimension → unambiguous, adopt it.
+    store = _seed_estate_store(tmp_path, "old-local-embedder")
+    store.embedder.model = "totally-different-name"
+    rows = store.vector_search("inheritance planning for heirs", limit=3)
+    assert rows and rows[0]["rel_path"] == "topics/estate-blueprint.md"
+
+
+def test_vector_search_refuses_to_mix_distinct_models(tmp_path: Path) -> None:
+    # Two genuinely different models at the same dim, neither matching the live
+    # embedder → must NOT guess (mixing models = garbage cosine). Returns [].
+    store = _seed_estate_store(tmp_path, "model-A")
+    # Add a second page recorded under a different model name, same dim.
+    store.write_page("topics", "second", "# Second\nAnother estate wealth trust note.")
+    store.backfill_embeddings(force=True)
+    store._conn.execute(
+        "UPDATE page_embeddings SET model = ? WHERE rel_path = ?",
+        ("model-B", "topics/second.md"),
+    )
+    store._conn.commit()
+    store.embedder.model = "model-C-unmatched"
+    rows = store.vector_search("inheritance planning for heirs", limit=3)
+    assert rows == [], "must not compare against a mismatched/mixed model set"
