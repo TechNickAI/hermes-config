@@ -45,14 +45,19 @@ OR_KEY = load_env("OPENROUTER_API_KEY")
 OMNI_KEY = load_env("OMNIROUTE_KEY")
 
 # Fallback pins per family (used if live resolution fails)
+# NOTE: "pin" is only a last-resort fallback for when live resolution fails.
+# Live resolution (resolve_openrouter) is the real source of truth. Refresh these
+# pins when they fall a generation behind; a stale pin silently seats an obsolete
+# model exactly when the live lookup is already failing.
+# Last refreshed against the live OpenRouter catalog: 2026-07-28.
 FAMILIES = {
-    "grok":   {"pin": "x-ai/grok-4.3",           "include": "x-ai/grok-",     "require": [],
+    "grok":   {"pin": "x-ai/grok-4.5",           "include": "x-ai/grok-",     "require": [],
                "exclude": r"(mini|nano|lite|build|code|image|audio|fast|multi-agent|deep-research|:free)"},
-    "gemini": {"pin": "google/gemini-2.5-pro",   "include": "google/gemini-", "require": ["pro"],
+    "gemini": {"pin": "google/gemini-3.1-pro-preview", "include": "google/gemini-", "require": ["pro"],
                "exclude": r"(flash|lite|image|vision|audio|tts|customtools|preview-\d|:free)"},
-    "gpt":    {"pin": "openai/gpt-5.1",           "include": "openai/gpt-",    "require": [],
+    "gpt":    {"pin": "openai/gpt-5.6-sol",       "include": "openai/gpt-",    "require": [],
                "exclude": r"(mini|nano|lite|image|audio|oss|codex|chat|search|safeguard|turbo|instruct|-pro\b|gpt-3|gpt-4|:free)"},
-    "deepseek": {"pin": "deepseek/deepseek-chat", "include": "deepseek/deepseek", "require": [],
+    "deepseek": {"pin": "deepseek/deepseek-v3.2", "include": "deepseek/deepseek", "require": [],
                "exclude": r"(:free|distill|base)"},
 }
 
@@ -91,7 +96,7 @@ def resolve_model_alias(model, fam_default):
          "gpt4", "deepseek-r1") -> matched back to the family via prefix/substring and
          resolved to the LIVE flagship (never the caller's stale guessed slug -- the
          caller can't know today's live version, that's the resolver's job).
-      3. An explicit full OpenRouter slug containing "/" (e.g. "x-ai/grok-4.3",
+      3. An explicit full OpenRouter slug containing "/" (e.g. "x-ai/grok-4.5",
          "openrouter/fusion") -> passed through unchanged, it's the caller's own choice.
 
     Case 2 is the fix for the 2026-07 failure: seats.json used near-miss family names
@@ -109,7 +114,7 @@ def resolve_model_alias(model, fam_default):
         if norm.startswith(fam):
             print(f"  [alias] '{model}' -> family '{fam}' -> {fam_default[fam]}", file=sys.stderr)
             return fam_default[fam]
-    fallback = list(fam_default.values())[0] if fam_default else "x-ai/grok-4.3"
+    fallback = list(fam_default.values())[0] if fam_default else FAMILIES["grok"]["pin"]
     print(f"  [alias] WARNING: '{model}' matched no known family, "
           f"falling back to {fallback}", file=sys.stderr)
     return fallback
@@ -190,7 +195,7 @@ def main():
         if backend == "openrouter" and model:
             model = resolve_model_alias(model, fam_default)
         if not model:
-            model = list(fam_default.values())[0] if fam_default else "x-ai/grok-4.3"
+            model = list(fam_default.values())[0] if fam_default else FAMILIES["grok"]["pin"]
         mandate = s.get("mandate", "")
         prompt = (mandate + "\n\n" + brief) if mandate else brief
         tasks.append((s["seat"], model, backend, prompt))

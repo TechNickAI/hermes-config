@@ -114,7 +114,7 @@ its real-time / X reach earns the call, not for routine lookups.
 ## Pitfalls
 
 - **Reasoning model required.** The agentic `web_search` / `x_search` tools need a
-  reasoning-capable Grok model. The default (`grok-4.3`, the stable flagship) supports
+  reasoning-capable Grok model. The default (`grok-4.5`, the current flagship) supports
   them. If a non-reasoning model is passed via `--model`, the call may return no tool
   results. Stick with the default unless you know the target model supports agentic
   tools.
