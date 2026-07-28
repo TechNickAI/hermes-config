@@ -169,10 +169,40 @@ those; otherwise inspect the local config and choose equivalent provider/model p
   source?" checks.
 - **Grok / xAI** — strong contrarian/red-team reviewer: assumptions, edge cases, blunt
   risk, adversarial misuse, policy gaps, and "what would embarrass us if true?" checks.
-  High variance is useful for surfacing issues, not for final wording.
+  High variance is useful for surfacing issues, not for final wording. Grok is also the
+  family most likely to offer **native live X-graph retrieval** (via xAI's `x_search`
+  server-side tool) rather than general web search, which helps when the question is
+  "how are people reacting right now?" — public-facing copy, launch posts, naming,
+  positioning, and reputational blast radius. Live retrieval applies only when the
+  selected route actually enables that tool; otherwise treat Grok as cutoff-bound like
+  any other model.
 - **Local or small models** — useful for cheap/private quick passes, syntax/style
   checks, and obvious inconsistencies. Do not rely on them alone for high-stakes
   judgment.
+
+These family strengths are **observed heuristics, not guarantees** — they shift with
+model versions and prompting. Verify against the artifact in front of you rather than
+treating them as fixed properties.
+
+### When Grok is the right pick
+
+Grok earns a seat (or the lead reviewer slot) when the artifact needs adversarial or
+socially-grounded judgment rather than careful synthesis:
+
+- **Critical / red-team review** — "tear this apart", pre-mortems, threat modeling,
+  "what's the strongest argument this is wrong?"
+- **Public reaction and sentiment** — how a post, product name, price change, or policy
+  will land publicly; what critics will seize on. Treat this as *platform* reaction
+  (X discourse skews fast, vocal, and manipulable), not a proxy for the general public.
+- **Current events grounding** — claims that depend on what happened recently, where a
+  stale training cutoff produces confidently wrong review notes.
+- **Contrarian check on consensus** — when the other reviewers agree suspiciously fast
+  and you want a dissent probe.
+
+Do **not** default to Grok for final wording, empathetic messaging, or careful policy
+synthesis; its variance is a feature for finding problems and a liability for phrasing
+them. Pair it with a lower-variance synthesizer from a different configured family, and
+verify its claims rather than rubber-stamping them.
 
 ### Running reviewers as Hermes one-shots
 
@@ -239,14 +269,23 @@ execution rules that prevent silent failures:**
    Confirmed in practice; parallel default reaffirmed after a later recurrence.
 
 ```bash
-# Provider/model names are illustrative — match them to the local config.
+# Provider/model names are PLACEHOLDERS — resolve them from the local config.
 # Suitable for normal-sized artifacts; for large inputs, chunk or send a bounded brief.
 # When running these through an agent terminal tool, set timeout=300 for normal reviews
 # and timeout=600 for deep/slow model panels.
-hermes -z "$PROMPT_GROK"   --provider openrouter -m x-ai/grok-4.3  --ignore-rules -t ''
-hermes -z "$PROMPT_GEMINI" --provider google     -m gemini-2.5-pro --ignore-rules -t ''
-hermes -z "$PROMPT_GPT"    --provider openai      -m gpt-4o         --ignore-rules -t ''
+hermes -z "$PROMPT_GROK"   --provider <grok-provider>   -m <current-grok-model>   --ignore-rules -t ''
+hermes -z "$PROMPT_GEMINI" --provider <gemini-provider> -m <current-gemini-model> --ignore-rules -t ''
+hermes -z "$PROMPT_GPT"    --provider <gpt-provider>    -m <current-gpt-model>    --ignore-rules -t ''
 ```
+
+Do not copy a version number out of this document. Resolve each family's **current**
+flagship from the local config or provider listing — hard-coded slugs go stale and
+silently 404.
+
+If the profile exposes a router combo/alias for a family, prefer the **combo name** over
+a raw slug. A subscription-backed combo (for example an OAuth seat with a pay-per-token
+fallback) prefers subscription quota, but **can still fall back to metered usage** — so
+verify routing and cost policy rather than assuming a review is free.
 
 If the profile routes everything through a custom multi-provider router, the providers
 will instead be custom aliases (for example `custom:grok`, `custom:gemini`,

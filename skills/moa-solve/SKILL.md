@@ -69,8 +69,13 @@ Trigger phrases: "throw a few models at this", "hard problem, want the best solu
 ## The models (resolve live, never hardcode stale slugs)
 
 - Proposers via OpenRouter (families, live-resolved to current flagships by the runner):
-  Grok (`x-ai/grok-*`, has Twitter), Gemini Pro, GPT, DeepSeek. Plus
-  `openrouter/fusion`.
+  Grok (`x-ai/grok-*`), Gemini Pro, GPT, DeepSeek. Plus `openrouter/fusion`.
+- **Keep the Grok seat when the problem is adversarial or socially grounded** —
+  red-team/pre-mortem framing, "how will people react", or anything where recent
+  real-world chatter beats a training cutoff. On those shapes don't cut Grok first
+  merely to save a seat; still drop it if another seat already covers the live-social
+  need and the real gap is elsewhere (formal reasoning, code, math). Note that live X
+  retrieval applies only when the selected route actually enables that tool.
 - Custom router backends supported via `MOA_OMNI_BASE_URL` env var (OpenAI-compatible
   shape, must send `stream:false`).
 - **You (the calling agent) are the aggregator of record. Do NOT seat yourself as a
@@ -172,8 +177,14 @@ overweighting a seat; decay old scores.
    `json.loads` (already handled in panel.py; remember it if you write a fresh caller).
 3. **`openrouter/fusion` returns a HUGE payload** (~70KB — it dumps every panel member +
    judge rationale). Grep its section headers, don't read it whole into context.
-4. **Grok ONLY via OpenRouter** (`x-ai/grok-*`), never via native xAI endpoints if your
-   config prohibits it.
+4. **Grok routing depends on how the profile is wired.** Historically Grok was reachable
+   only via OpenRouter (`x-ai/grok-*`). If the local config exposes a router combo or
+   alias for the family, prefer it over a raw slug — identify it by looking for a
+   combo/alias name for the family, or a provider block authenticated by OAuth rather
+   than a metered API key. A subscription-backed combo prefers subscription quota but
+   **can still fall back to metered usage**, so don't assume a seat is free. Follow
+   whatever the local config actually exposes, and never call a native provider endpoint
+   your config prohibits.
 5. **Correlated hallucination masquerades as consensus.** All the models share training
    blind spots; if 4 agree, that raises confidence ONLY if their error sources are
    plausibly independent. Never report "N models agreed" as if agreement-count were
