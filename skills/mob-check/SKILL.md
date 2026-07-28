@@ -134,17 +134,18 @@ Per source, in rough priority order:
   403s from servers; going through search + extract is the robust path.) Record `score`,
   `num_comments`, `upvote_ratio` when visible.
 - **X / Twitter**: use the `x_search` tool if present, else the `xurl` skill, else
-  `web_search("<topic> site:x.com")`. Record likes/reposts/replies when visible.
-  Where available, `x_search` is an xAI server-side tool with live access to the X
-  graph, so it surfaces conversation a general web index has not caught up to yet.
-  That makes it valuable for breaking topics and fast-moving reactions. Two cautions.
-  First, X discourse is platform-biased, vocal, and manipulable, so treat it as X
-  reaction rather than general public sentiment, and triangulate with other
-  communities. Second, the tool may bill per invocation, so issue focused queries
-  rather than many near-duplicate ones.
+  `web_search("<topic> site:x.com")`. Record likes/reposts/replies when visible. Where
+  available, `x_search` is an xAI server-side tool with live access to the X graph, so
+  it surfaces conversation a general web index has not caught up to yet. That makes it
+  valuable for breaking topics and fast-moving reactions. Two cautions. First, X
+  discourse is platform-biased, vocal, and manipulable, so treat it as X reaction rather
+  than general public sentiment, and triangulate with other communities. Second, the
+  tool may bill per invocation, so issue focused queries rather than many near-duplicate
+  ones.
 
   Using `x_search` for evidence is independent of which model runs this skill. Do not
   switch the synthesizing model just to reach the tool.
+
 - **YouTube**: use the `youtube-content` skill to find recent videos and pull
   transcripts; record views/likes/comments.
 - **Hacker News**: `web_search("<topic> site:news.ycombinator.com")`; record

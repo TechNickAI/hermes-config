@@ -192,8 +192,8 @@ socially-grounded judgment rather than careful synthesis:
 - **Critical / red-team review** — "tear this apart", pre-mortems, threat modeling,
   "what's the strongest argument this is wrong?"
 - **Public reaction and sentiment** — how a post, product name, price change, or policy
-  will land publicly; what critics will seize on. Treat this as *platform* reaction
-  (X discourse skews fast, vocal, and manipulable), not a proxy for the general public.
+  will land publicly; what critics will seize on. Treat this as _platform_ reaction (X
+  discourse skews fast, vocal, and manipulable), not a proxy for the general public.
 - **Current events grounding** — claims that depend on what happened recently, where a
   stale training cutoff produces confidently wrong review notes.
 - **Contrarian check on consensus** — when the other reviewers agree suspiciously fast
