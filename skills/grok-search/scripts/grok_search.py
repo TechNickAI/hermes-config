@@ -48,7 +48,7 @@ import urllib.parse
 import urllib.request
 
 API_URL = "https://api.x.ai/v1/responses"
-DEFAULT_MODEL = "grok-4.3"  # stable reasoning flagship; agentic tools require a reasoning model
+DEFAULT_MODEL = "grok-4.5"  # current reasoning flagship; agentic tools require a reasoning model
 DEFAULT_TIMEOUT = 90
 _MAX_DOMAINS = 5  # xAI cap on allowed/excluded domain filters
 _MAX_HANDLES = 20  # xAI cap on allowed_x_handles filters
