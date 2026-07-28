@@ -69,8 +69,16 @@ Trigger phrases: "throw a few models at this", "hard problem, want the best solu
 ## The models (resolve live, never hardcode stale slugs)
 
 - Proposers via OpenRouter (families, live-resolved to current flagships by the runner):
-  Grok (`x-ai/grok-*`, has Twitter), Gemini Pro, GPT, DeepSeek. Plus
-  `openrouter/fusion`.
+  Grok (`x-ai/grok-*`), Gemini Pro, GPT, DeepSeek. Plus `openrouter/fusion`.
+- **Keep the Grok seat when the problem is adversarial or socially grounded** —
+  red-team/pre-mortem framing, "how will people react", or reasoning about social
+  dynamics. On those shapes don't cut Grok first merely to save a seat; still drop it if
+  another seat already covers that need and the real gap is elsewhere (formal reasoning,
+  code, math). **The panel runner sends tool-less completions, so no seat performs live
+  retrieval** — a Grok seat reasons from its training cutoff like any other. When the
+  problem genuinely depends on recent real-world chatter, gather that evidence first
+  (the `grok-search` skill or an `x_search`-capable path) and pass it into the brief; do
+  not expect the panel to fetch it.
 - Custom router backends supported via `MOA_OMNI_BASE_URL` env var (OpenAI-compatible
   shape, must send `stream:false`).
 - **You (the calling agent) are the aggregator of record. Do NOT seat yourself as a
@@ -172,8 +180,16 @@ overweighting a seat; decay old scores.
    `json.loads` (already handled in panel.py; remember it if you write a fresh caller).
 3. **`openrouter/fusion` returns a HUGE payload** (~70KB — it dumps every panel member +
    judge rationale). Grep its section headers, don't read it whole into context.
-4. **Grok ONLY via OpenRouter** (`x-ai/grok-*`), never via native xAI endpoints if your
-   config prohibits it.
+4. **Grok routing depends on how the profile is wired.** Historically Grok was reachable
+   only via OpenRouter (`x-ai/grok-*`). If a subscription-backed router combo exists,
+   route that seat through the **`omniroute` backend** (`"backend": "omniroute"` in
+   `seats.json` plus `MOA_OMNI_BASE_URL`), using the combo name as the model. Do **not**
+   put a combo name on an `openrouter` seat: `panel.py` does not read the Hermes
+   profile, and `resolve_model_alias()` will fuzzy-match a family-looking name into a
+   raw OpenRouter slug (or fall back to a default), silently sending the seat somewhere
+   you did not intend. A subscription-backed combo prefers subscription quota but **can
+   still fall back to metered usage**, so don't assume a seat is free. Never call a
+   native provider endpoint your config prohibits.
 5. **Correlated hallucination masquerades as consensus.** All the models share training
    blind spots; if 4 agree, that raises confidence ONLY if their error sources are
    plausibly independent. Never report "N models agreed" as if agreement-count were
