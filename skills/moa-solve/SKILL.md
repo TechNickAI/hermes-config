@@ -296,19 +296,35 @@ runtime equivalent, and it makes no network calls.
    aggregator papers over it.
 5. **Silently-dropped slots.** An incomplete slot is discarded at read time and the
    preset may revert to defaults. Re-read the effective config after editing.
-6. **Correlated hallucination masquerading as consensus.** The models share training
+6. **Treating a silently-truncated reference as a real proposal.** A slot can complete
+   with no error and still return only the opening of an answer (observed in practice: a
+   ~1KB fragment while sibling seats returned 5-27KB on the same brief). Length
+   disparity is a WARNING, not proof — families differ in verbosity and a short answer
+   may be complete and concise. Use it as a prompt to check whether the response is
+   _structurally_ incomplete (stops mid-section, never reaches a conclusion, no coverage
+   of the brief's asks) or whether a truncation/termination signal is available in the
+   trace. Only then discount it as a partial; a genuinely concise answer can be the best
+   one in the panel.
+7. **Assuming a slow reference is a dead one.** Reasoning-heavy models can take many
+   minutes while siblings finish in one or two, and the slowest seat is sometimes the
+   sharpest. Wait for the run to actually finish before declaring a family missing.
+8. **Reading a long reference linearly.** A very long response can be mostly visible
+   chain-of-thought that never commits to an answer. Skim the structure and the final
+   section first, harvest components into the ledger, and do not pull the whole thing
+   into context.
+9. **Correlated hallucination masquerading as consensus.** The models share training
    blind spots; if 4 agree, that raises confidence ONLY if their error sources are
    plausibly independent. Never report "N models agreed" as if agreement-count were
    quality. Validate against primary sources.
-7. **Seating the aggregator's own family as a reference.** It biases synthesis toward
-   its own draft.
-8. **Leaving `save_traces` on permanently.** It writes full prompts and every reference
-   response to disk. Enable it for runs you need to defend, then turn it off.
-9. **Switching the session onto a preset and forgetting.** Every later turn pays panel
-   cost. Prefer the one-shot paths.
-10. **Panel-ing a problem that had a right answer.** If the question is verifiable,
+10. **Seating the aggregator's own family as a reference.** It biases synthesis toward
+    its own draft.
+11. **Leaving `save_traces` on permanently.** It writes full prompts and every reference
+    response to disk. Enable it for runs you need to defend, then turn it off.
+12. **Switching the session onto a preset and forgetting.** Every later turn pays panel
+    cost. Prefer the one-shot paths.
+13. **Panel-ing a problem that had a right answer.** If the question is verifiable,
     verify it — a panel on a factual question produces expensive agreement.
-11. **Shipping the merge because you built it.** If the synthesis is not better than the
+14. **Shipping the merge because you built it.** If the synthesis is not better than the
     best single reference, ship the single reference.
 
 ## Verification checklist
