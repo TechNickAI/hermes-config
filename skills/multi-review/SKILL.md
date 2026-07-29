@@ -160,10 +160,11 @@ those; otherwise inspect the local config and choose equivalent provider/model p
 Pair each alias with the provider block the local config actually wires it to, and do
 not "normalize" a reviewer onto a different provider for tidiness. When one router is
 exposed through several provider blocks, they usually differ by API shape
-(`chat_completions` vs `anthropic_messages`), and the right block depends on the
-upstream model family: xAI and OpenAI models are natively OpenAI-shaped, Claude models
-are natively Anthropic-shaped. The wrong block still returns HTTP 200, so this fails
-silently rather than loudly.
+(`chat_completions` vs `anthropic_messages`), and the better block depends on the
+upstream model family: Claude models are natively Anthropic-shaped, most others (OpenAI,
+xAI, Google) are natively OpenAI-shaped. The wrong block still returns HTTP 200, so this
+fails silently rather than loudly. If an existing config contradicts that, assume it is
+deliberate until you have checked why.
 
 ### Family strengths
 

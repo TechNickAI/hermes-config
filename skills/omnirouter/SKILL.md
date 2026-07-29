@@ -96,24 +96,33 @@ IDs (e.g. `claude/...`, `codex/...`, `openrouter/...`). Confirm the live set wit
 ### Match the API shape to the model family, not to habit
 
 Both provider blocks point at the same router, so it is tempting to send every alias
-through whichever one is already the default. Do not. Pick the block whose `api_mode`
-matches the **upstream model family** the alias resolves to:
+through whichever one is already the default. Prefer the block whose `api_mode` matches
+the **upstream model family** the alias resolves to:
 
-| Alias fronts                    | Use the block with   | Because                   |
-| ------------------------------- | -------------------- | ------------------------- |
-| Claude / Codex models           | `anthropic_messages` | Natively Anthropic-shaped |
-| xAI (Grok), OpenAI, most others | `chat_completions`   | Natively OpenAI-shaped    |
+| Alias fronts               | Prefer the block with | Because                   |
+| -------------------------- | --------------------- | ------------------------- |
+| Anthropic (Claude) models  | `anthropic_messages`  | Natively Anthropic-shaped |
+| OpenAI, xAI, Google, other | `chat_completions`    | Natively OpenAI-shaped    |
 
-An alias backed by a subscription-connected xAI account belongs on the
-`chat_completions` block even when the surrounding aliases are Anthropic-shaped. The
-mismatch is easy to miss because **both shapes return HTTP 200** — the router will
-happily translate between them. What you lose is silent: an extra translation hop on
-every call, and provider-native reasoning fields getting re-wrapped into the other
-shape's equivalent (for example xAI `reasoning_content` arriving as `thinking` blocks).
+This applies per alias, not per block: an alias fronting an OpenAI-family model belongs
+on the `chat_completions` block even when neighbouring aliases in the same map front
+Claude models.
 
-Verify rather than assume. Send the same prompt through both blocks and compare the raw
-response envelope, not just the text: the correct surface returns the upstream
-provider's native field names.
+The mismatch is easy to miss because **both shapes return HTTP 200** — the router
+translates between them. The cost is silent: an extra translation hop on every call, and
+provider-native fields getting re-wrapped into the other shape's equivalent (for example
+xAI `reasoning_content` arriving as `thinking` blocks).
+
+Treat this as a default rather than a law. A deployment may deliberately route a
+non-Anthropic alias over the Anthropic surface — commonly to reach behaviour the other
+surface does not expose, such as signed thinking blocks or prompt caching. If a working
+config contradicts the table, find out why before "fixing" it.
+
+**Determining which family backs an alias:** ask the router, do not infer it from the
+response envelope. `/v1/messages` always emits an Anthropic-shaped body and
+`/v1/chat/completions` always emits an OpenAI-shaped one, whatever the upstream model
+is, so comparing the two proves nothing about the backing family. Use `GET /v1/models`,
+the router's combo/alias definition, or the served model id in its call logs.
 
 ## Admin API essentials
 
