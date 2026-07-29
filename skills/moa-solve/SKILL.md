@@ -215,29 +215,36 @@ first with your own tools and put it in the brief.**
    toward whichever answer you happen to like.
 3. **Gather grounding evidence.** Anything time-sensitive, private, or file-based must
    be collected by you and embedded in the brief. References are tool-less.
-4. **Convene the panel** via one of the three paths above.
-5. **Verify the panel ran** via the trace. Stamp degradation honestly.
-6. **Score each reference** against your pre-declared criteria before synthesizing.
-7. **Build the component ledger** (`templates/synthesis-ledger.md`): pick ONE spine
+4. **Pick the seats from evidence, not habit.** Run
+   `scripts/fitlog.py report --kind <task-class>` and let the recorded per-model/role
+   history shape the preset you choose (or the preset you edit for this run). If the KB
+   has too few samples for this task class, say so and pick on reasoned diversity
+   instead — then step 9 makes the next run better informed.
+5. **Convene the panel** via one of the three paths above.
+6. **Verify the panel ran** via the trace. Stamp degradation honestly.
+7. **Score each reference** against your pre-declared criteria before synthesizing.
+8. **Build the component ledger** (`templates/synthesis-ledger.md`): pick ONE spine
    answer, then walk every distinct contribution from the others and give each an
    explicit disposition — grafted / rejected / already covered — with attribution. Graft
    only through an interface check: does the receiving design actually provide the state
    this component assumes?
-8. **Adversarially test the synthesis.** Attack your own merged answer. If the merged
+9. **Adversarially test the synthesis.** Attack your own merged answer. If the merged
    answer is not demonstrably better than the best single reference, **ship the best
    single reference** and say so. Anti-mush is a real outcome, not a failure.
-9. **Log the outcome** to `scripts/fitlog.py` — which model contributed what, at which
-   role, on which task class. This is the only part of v1's tooling that survives, and
-   it is what makes the NEXT panel's composition an evidence-based choice instead of a
-   guess. Require several samples before overweighting a seat, and decay old scores.
-10. **Report** with the panel composition, degradation stamps, the ledger, and the open
+10. **Log the outcome** to `scripts/fitlog.py` — which model contributed what, at which
+    role, on which task class, scored on the rubric dimensions the CLI accepts. This
+    closes the loop that step 4 reads from: it is the only part of v1's tooling that
+    survives, and it is what makes the NEXT panel's composition an evidence-based choice
+    instead of a guess. Require several samples before overweighting a seat, and decay
+    old scores.
+11. **Report** with the panel composition, degradation stamps, the ledger, and the open
     risks.
 
 ## Scoring rubric
 
 | Dimension          | 1                 | 3                         | 5                                       |
 | ------------------ | ----------------- | ------------------------- | --------------------------------------- |
-| **Correctness**    | wrong / unfounded | mostly right, gaps        | verifiably right, assumptions stated    |
+| **Soundness**      | wrong / unfounded | mostly right, gaps        | verifiably right, assumptions stated    |
 | **Completeness**   | fragment          | covers the main path      | covers main + edges + failure modes     |
 | **Actionability**  | vague direction   | needs real work to use    | an operator can execute without rework  |
 | **Usable-Novelty** | generic rehash    | 1 usable non-obvious idea | multiple usable new levers (not sci-fi) |
@@ -314,6 +321,7 @@ runtime equivalent, and it makes no network calls.
       checked); any shortfall stamped `degraded: <n>-family`
 - [ ] Enough model FAMILIES answered to justify the claim being made about the result
 - [ ] Each reference scored against pre-declared criteria
+- [ ] Seats chosen from `fitlog.py report` history where samples exist (else noted)
 - [ ] Outcome logged to `fitlog.py` so the next panel picks seats on evidence
 - [ ] Component ledger built; ONE spine chosen; contributions have dispositions +
       attribution
