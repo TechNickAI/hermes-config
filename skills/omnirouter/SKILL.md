@@ -93,6 +93,28 @@ OmniRoute deployments commonly expose semantic aliases — `chat`, `think`, `wor
 IDs (e.g. `claude/...`, `codex/...`, `openrouter/...`). Confirm the live set with
 `GET /v1/models` (routing key) before wiring aux slots.
 
+### Match the API shape to the model family, not to habit
+
+Both provider blocks point at the same router, so it is tempting to send every alias
+through whichever one is already the default. Do not. Pick the block whose `api_mode`
+matches the **upstream model family** the alias resolves to:
+
+| Alias fronts                    | Use the block with   | Because                   |
+| ------------------------------- | -------------------- | ------------------------- |
+| Claude / Codex models           | `anthropic_messages` | Natively Anthropic-shaped |
+| xAI (Grok), OpenAI, most others | `chat_completions`   | Natively OpenAI-shaped    |
+
+An alias backed by a subscription-connected xAI account belongs on the
+`chat_completions` block even when the surrounding aliases are Anthropic-shaped. The
+mismatch is easy to miss because **both shapes return HTTP 200** — the router will
+happily translate between them. What you lose is silent: an extra translation hop on
+every call, and provider-native reasoning fields getting re-wrapped into the other
+shape's equivalent (for example xAI `reasoning_content` arriving as `thinking` blocks).
+
+Verify rather than assume. Send the same prompt through both blocks and compare the raw
+response envelope, not just the text: the correct surface returns the upstream
+provider's native field names.
+
 ## Admin API essentials
 
 All `/api/*` calls require `Authorization: Bearer $OMNIROUTE_API_KEY` (the management

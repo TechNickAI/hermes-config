@@ -157,6 +157,14 @@ Use the models configured in the local Hermes profile. Do not hard-code API keys
 profile has aliases such as `custom:grok`, `custom:gemini`, or `custom:openrouter`, use
 those; otherwise inspect the local config and choose equivalent provider/model pairs.
 
+Pair each alias with the provider block the local config actually wires it to, and do
+not "normalize" a reviewer onto a different provider for tidiness. When one router is
+exposed through several provider blocks, they usually differ by API shape
+(`chat_completions` vs `anthropic_messages`), and the right block depends on the
+upstream model family: xAI and OpenAI models are natively OpenAI-shaped, Claude models
+are natively Anthropic-shaped. The wrong block still returns HTTP 200, so this fails
+silently rather than loudly.
+
 ### Family strengths
 
 - **Claude / Anthropic** — best for synthesis, nuanced tradeoffs, voice, empathy, policy
