@@ -4,218 +4,326 @@ description: >
   Use when you have a HARD, open-ended, high-stakes problem worth throwing multiple AI
   models at and pulling the best solution out — architecture decisions, strategy design,
   thorny debugging, research synthesis, "what am I missing", tool/system design. This is
-  the SOLVE counterpart to multi-review (which critiques an existing artifact). It fans
-  the problem out to a role-differentiated panel of model families (proposer layer),
-  then the caller acts as aggregator and builds a NEW best-of-breed answer via a
-  component ledger — not an average, not a cut-and-paste splice. Also encodes WHEN NOT
-  to use a panel (most problems), routing to a single strong model or the commodity
-  openrouter/fusion instead. Accumulates a persistent model-task-fit knowledge base so
-  future runs pick the right models for the right roles.
-version: 1.0.0
+  the SOLVE counterpart to multi-review (which critiques an existing artifact). It
+  drives Hermes' NATIVE Mixture-of-Agents runtime (`/moa` and the `moa` virtual
+  provider): a configured reference layer answers independently, then an aggregator
+  writes a NEW best-of-breed answer via a component ledger — not an average, not a
+  cut-and-paste splice. Also encodes WHEN NOT to use a panel (most problems), routing to
+  a single strong model instead.
+version: 2.0.0
 author: Hermes Agent
 license: MIT
 metadata:
   hermes:
-    tags: [orchestration, multi-model, moa, synthesis, problem-solving, fusion]
-    related_skills: [multi-review, smart-delegation, create-great-prompts]
+    tags: [orchestration, multi-model, moa, synthesis, problem-solving]
+    related_skills: [multi-review, create-great-prompts]
 ---
 
 # MOA-Solve — Mixture-of-Agents for hard problems
 
 ## What this is
 
-A control plane for solving hard problems with multiple models. Grounded in
-Mixture-of-Agents (Wang et al., Together AI, arXiv:2406.04692, ICLR 2025): a **proposer
-layer** (many model families answer independently) plus an **aggregator** (one strong
-model — usually YOU — writes a NEW synthesized answer). The paper's load-bearing result:
-the aggregator that _synthesizes_ beats an LLM-ranker that merely _picks the best
-proposal_. That is the empirical basis for "pull the best from EACH, don't pick the
-single best ONE."
+A control plane for solving hard problems with multiple models, built on **Hermes' own
+MoA runtime**. Grounded in Mixture-of-Agents (Wang et al., Together AI,
+arXiv:2406.04692, ICLR 2025): a **reference layer** (several model families answer
+independently) plus an **aggregator** (one strong model writes a NEW synthesized
+answer). The paper's load-bearing result: the aggregator that _synthesizes_ beats an
+LLM-ranker that merely _picks the best proposal_. That is the empirical basis for "pull
+the best from EACH, don't pick the single best ONE."
 
 Important reframing (do not skip): "best from each" does NOT mean cut-and-paste splicing
-spans from proposers. Splicing produces Frankenstein artifacts where model A's
+spans from references. Splicing produces Frankenstein artifacts where model A's
 architecture assumes state that model B's grafted completion never provides. It means:
 **synthesize a superior answer that is accountable to the strongest element found in
-each proposal**, grafted through explicit interface checks. The component ledger (below)
-is how you do that without averaging to mush.
+each reference**, grafted through explicit interface checks. The component ledger
+(below) is how you do that without averaging to mush.
+
+**This skill does not implement fan-out.** Hermes already ships a real MoA runtime with
+parallel reference dispatch, per-slot provider/model routing, credential handling,
+prompt-cache decoration, usage/cost accounting, and trace persistence. This skill is the
+**method** — when to convene a panel, how to brief it, and how to synthesize the result.
+Do not hand-roll an HTTP fan-out script; see "Why there is no runner script" below.
 
 ## When to use (and when NOT to — read this first)
 
-The most common failure is running a panel when you shouldn't: you pay 4-6x the cost and
-latency for consensus noise on a problem where a single model was fine. Panels earn
-their keep only when models _disagree_, and disagreement is rare on easy problems.
+The most common failure is running a panel when you shouldn't: you pay several times the
+cost and latency for consensus noise on a problem where a single model was fine. Panels
+earn their keep only when models _disagree_, and disagreement is rare on easy problems.
 
 Routing rule:
 
-- **Single strong model** — routine, low-stakes, or easily verifiable.
-- **`openrouter/fusion`** (commodity MoA, cheap, benchmark-competitive) — the problem is
-  genuinely hard/open-ended but generic model diversity is enough and you don't need a
-  special role or tool. Call it as a model (`model: "openrouter/fusion"`) or as a tool
-  (`tools:[{"type":"openrouter:fusion"}]`) so YOU write the final answer. This is the
-  DEFAULT for hard pure-reasoning problems.
-- **Custom `moa-solve` panel (this skill)** — only when ALL hold: (a) high-stakes /
-  irreversible / reusable, (b) genuinely open-ended (multiple defensible answers, no
-  ground-truth), AND (c) it benefits from a role or tool `openrouter/fusion` can't route
-  (a red-teamer with a shell, Grok with live Twitter, a formal solver,
-  provenance/auditability of every proposal).
+- **Single strong model** — routine, low-stakes, or easily verifiable. This is the
+  default for almost everything.
+- **MoA panel (this skill)** — only when ALL hold: (a) high-stakes / irreversible /
+  reusable, (b) genuinely open-ended (multiple defensible answers, no ground truth), AND
+  (c) you expect real disagreement between model families.
 
-Do NOT route on fusion's vendor benchmark claims — they're unverified and
-task-dependent. Route on task SHAPE.
+Route on task SHAPE, never on a vendor's benchmark claim.
 
 Trigger phrases: "throw a few models at this", "hard problem, want the best solution",
 "what am I missing on X", "design/architect Y", "solve this properly", "MOA this",
 "panel this".
 
-## The models (resolve live, never hardcode stale slugs)
+## How to run a panel
 
-- Proposers via OpenRouter (families, live-resolved to current flagships by the runner):
-  Grok (`x-ai/grok-*`), Gemini Pro, GPT, DeepSeek. Plus `openrouter/fusion`.
-- **Keep the Grok seat when the problem is adversarial or socially grounded** —
-  red-team/pre-mortem framing, "how will people react", or reasoning about social
-  dynamics. On those shapes don't cut Grok first merely to save a seat; still drop it if
-  another seat already covers that need and the real gap is elsewhere (formal reasoning,
-  code, math). **The panel runner sends tool-less completions, so no seat performs live
-  retrieval** — a Grok seat reasons from its training cutoff like any other. When the
-  problem genuinely depends on recent real-world chatter, gather that evidence first
-  (the `grok-search` skill or an `x_search`-capable path) and pass it into the brief; do
-  not expect the panel to fetch it.
-- Custom router backends supported via `MOA_OMNI_BASE_URL` env var (OpenAI-compatible
-  shape, must send `stream:false`).
-- **You (the calling agent) are the aggregator of record. Do NOT seat yourself as a
-  proposer** — it double-counts and biases synthesis.
+Hermes exposes MoA three ways. All three read the same `moa:` config block, so the panel
+composition is defined once in config and never hardcoded in a prompt.
 
-## Panel design for a hard problem (2 generalists + 3 specialists)
+### 1. Interactive one-shot — `/moa <prompt>`
 
-Shared core prompt for every seat, plus a limited role OVERLAY on the specialists. Every
-seat — including specialists — must return a COMPLETE proposed solution. Roles alter
-optimization priority, not scope. This resolves the same-prompt-vs-role-differentiated
-tension: 2 unconstrained generalist seats protect raw solution quality; 3 differentiated
-seats supply formalism, robustness, and novelty; nobody is allowed to skip solving the
-problem (prevents "role soup" fragments).
+Runs a single turn through the default preset, then restores the previous model. This is
+the normal path when a human is in the loop.
 
-Default lineup:
+### 2. Headless one-shot — the `moa` virtual provider
 
-1. **Generalist A** (GPT) — shared prompt only, strongest end-to-end answer.
-2. **Generalist B** (Gemini) — shared prompt only, genuinely independent architecture.
-3. **Formal/constraint solver** (DeepSeek R1) — assumptions, invariants, calculations,
-   "what would make this invalid".
-4. **Robustness / red-team** (Grok) — full solution optimized for edge cases +
-   adversarial conditions; leads with the sharpest attacks and cheapest kill-tests.
-5. **Creative contrarian** (DeepSeek or a second Grok temp) — non-obvious, novel levers
-   others miss.
+```bash
+hermes -z "$(cat brief.md)" --provider moa -m <preset-name> -t ''
+```
 
-Round 1 is independent — do NOT show proposals to each other. Use targeted
-cross-examination only after you've identified contradictions.
+`-z` takes a literal string; the **preset name** goes in `-m` (not a model slug), and
+the virtual provider is selected by `--provider moa`. In `-z` mode approvals are
+auto-bypassed already, so `-t ''` is not about approval hangs — it loads no toolsets at
+all, which is what you want for a pure text-in/text-out panel call. This is the path to
+use from a script, a scheduled job, or when you want the panel result as plain text.
 
-## Orchestrator steps (you, in order)
+`-z` accepts a literal string argument only — there is no stdin flag — so a very large
+brief goes on the command line via `"$(cat brief.md)"` and can hit the OS `ARG_MAX`
+limit. If the brief is large enough to risk that, keep the argv prompt short and have
+the panel read the detail from context you have already summarized into it, rather than
+pasting an entire corpus.
 
-1. **GATE** — is this panel-worthy per the routing rule? If not, single model or fusion.
-   Set a budget/latency cap.
-2. **PRESERVE** the raw problem verbatim in the run dir.
-3. **SHARPEN** into: goal, constraints, deliverable format, success tests, non-goals.
-4. **DEFINE "GOOD"** — attach the scoring rubric + concrete acceptance tests BEFORE
-   seeing answers.
-5. **SELECT PANEL** — query the fitlog KB (`scripts/fitlog.py report --kind <class>`)
-   for which model wins which role on this task class; keep some exploration diversity.
-6. **FAN OUT** — write a `seats.json`, run `scripts/panel.py`. Independent, parallel.
-7. **NORMALIZE** each answer into: assumptions / architecture / steps / risks / tests /
-   novel ideas.
-8. **VALIDATE** objective claims yourself (run code, calcs, searches). Model agreement
-   is NOT validation — it can be correlated hallucination.
-9. **SCORE** whole answers + individual components on the rubric (anonymize model
-   identity while scoring to kill brand bias). Log via `scripts/fitlog.py score ...`.
-10. **BUILD THE LEDGER** (the core move) — a requirement matrix, candidate components,
-    disposition per contribution. See `templates/synthesis-ledger.md`. Pick ONE
-    architectural spine (highest- scoring architecture, not an average). Graft
-    compatible components through interface checks. Quarantine speculative ideas as
-    labeled "optional experiments".
-11. **SYNTHESIZE** a NEW answer accountable to the strongest element of each proposal.
-    Attribute origin inline (`[GPT arch]`, `[R1 edges]`, `[Grok option B]`) for trust.
-12. **ADVERSARIALLY TEST** the synthesized answer itself. One repair pass max.
-    **Anti-mush fallback: diff the synthesis against the best single proposal; if the
-    synthesis is longer but not measurably higher on the rubric, SHIP THE BEST SINGLE
-    PROPOSAL.**
-13. **PERSIST** the run + scores + (later) the real-world outcome. Update the KB.
+### 3. Session switch — pick the preset in the model picker
 
-## Scoring rubric (define "good" for a SOLUTION)
+Switches the whole session onto the panel until you switch back. Rarely what you want
+for a single hard problem; it multiplies cost on every subsequent turn.
 
-0-5 integers each. Explicitly BAN: number of sources cited, length, confidence-theater,
-"sounds smart".
+### Verifying a panel actually ran
 
-| Dim                | 0                           | 3                         | 5                                                       |
-| ------------------ | --------------------------- | ------------------------- | ------------------------------------------------------- |
-| **Completeness**   | misses core requirements    | main path, weak edges     | all requirements + material edge cases + constraints    |
-| **Soundness**      | wrong / unsafe / incoherent | plausible with gaps       | internally consistent, constraint-satisfying, checkable |
-| **Actionability**  | essay, unusable             | partial plan              | operator can execute without rework                     |
-| **Usable-Novelty** | generic rehash              | 1 usable non-obvious idea | multiple usable new levers (not sci-fi)                 |
-| **Testability**    | no way to verify            | partial checks            | clear acceptance tests / numbers / code                 |
+**Never claim "N models answered" without evidence.** The aggregator produces fluent
+output whether or not any reference succeeded — a failed slot degrades silently into a
+single-model answer that reads exactly like a panel result.
+
+Turn on tracing and read the trace:
+
+```yaml
+moa:
+  save_traces: true # writes <hermes_home>/moa-traces/<session_id>.jsonl
+```
+
+Each trace line carries `references[]` with per-slot `label`, `provider`, `model`,
+`output`, `usage`, and cost fields. **There is no `error` key** — a failed slot records
+its failure _inside_ `output` as `[failed: ...]`, and a skipped one as `[skipped: ...]`.
+So the check is: every configured reference must have `output` that is non-empty AND
+does not start with `[failed:` / `[skipped:`. Read against the trace schema of your
+installed Hermes version. If fewer families answered than your panel intended, stamp the
+result `degraded: <n>-family` and say so in your report.
+
+Leave `save_traces` off for routine work (it writes the full prompt and every reference
+response to disk) and turn it on for runs whose provenance you need to defend.
+
+## Configuring the panel
+
+The panel lives in `moa:` in the profile config. Presets are named; `default_preset`
+picks the one `/moa` uses.
+
+```yaml
+moa:
+  default_preset: highstakes
+  save_traces: false
+  presets:
+    highstakes:
+      enabled: true
+      fanout: user_turn # or per_iteration
+      max_tokens: 4096
+      reference_max_tokens: 1200
+      reference_models:
+        - { provider: <provider-alias>, model: <model> }
+        - { provider: <provider-alias>, model: <model> }
+        - { provider: <provider-alias>, model: <model> }
+      aggregator: { provider: <provider-alias>, model: <model> }
+```
+
+Rules that the runtime enforces, and that you should design around:
+
+- **A slot is `{provider, model}` plus an optional `reasoning_effort`.** There is **no
+  per-slot system prompt, mandate, temperature, or role field.** Every reference gets
+  the same fixed advisory system prompt and the same conversation view. Role
+  differentiation must go in the BRIEF, not the config (see below).
+- **`provider` must be a provider alias the local profile actually defines**, and the
+  alias must match the model's API shape. On some providers a mismatch is not an error:
+  the call returns HTTP 200 while being silently translated. Read the local config, pair
+  each model with the provider block that genuinely fronts it, and confirm with a live
+  call; never "normalize" slots onto one provider for tidiness.
+- **`provider: moa` is rejected in a slot** — presets cannot recursively nest.
+- **A slot missing `provider` or `model` is silently dropped** at read time and the
+  preset can fall back to hardcoded defaults. After editing `moa:`, re-read the
+  effective config and confirm your slots survived.
+- Choose **different model families** for the references. Three slots on three builds of
+  the same family is not a panel; it is one opinion with error bars.
+- Do not seat the aggregator's own family in a reference slot when you can avoid it — it
+  biases synthesis toward its own draft.
+
+Resolve model names from the **live** local config or provider listing. Hardcoded slugs
+go stale and a stale slug is worst exactly when you need the panel most.
+
+**A renamed model identifier is a silent, total outage for every caller pinned to the
+old name.** Providers typically return `404 model_not_found` at request time with no
+fallback, and nothing warns you at edit time. When an identifier changes, the rename is
+not done until you have swept **every** surface that names it — `moa:` slots, the
+provider `models:` map, scheduled-job model pins, prompts, and docs — everywhere it is
+configured. Verify by running the preset through the real config path, not just a raw
+API call.
+
+## Role differentiation without per-slot prompts
+
+The old approach gave each seat a private mandate. The native runtime cannot do that:
+every reference sees the same messages. So put the role structure **in the brief
+itself** and ask each reference to answer all of it:
+
+```text
+Answer the problem below completely. Then, in clearly labelled sections, also give:
+(a) FORMAL — the assumptions, invariants, and calculations that must hold, and what
+    would make this answer invalid;
+(b) RED TEAM — the sharpest attack on your own answer and the cheapest test that
+    would kill it;
+(c) CONTRARIAN — the strongest non-obvious alternative you rejected, and why.
+```
+
+Every reference produces a complete solution plus the three lenses; the diversity comes
+from the model families genuinely differing, not from artificially narrowing each seat.
+
+This is a real tradeoff, not a pure win. Per-seat mandates let each seat spend its whole
+token budget on one lens, whereas here every seat covers everything within the shared
+`reference_max_tokens` cap, so each lens gets less depth per seat. The compensating
+advantage is that no seat can skip solving the problem and return only a fragment. If
+you need real depth on one lens, raise `reference_max_tokens` or run a second, narrower
+panel on that lens alone.
+
+**No reference can use tools.** The runtime tells every reference explicitly that it
+cannot call tools, run commands, browse, or read files, and instructs it to reason from
+the context given. So a panel never performs live retrieval — not even a model whose
+provider has live search. If the problem depends on current facts, **gather the evidence
+first with your own tools and put it in the brief.**
+
+## Orchestration method
+
+1. **Gate.** Apply the routing rule above. If it fails the gate, route to a single model
+   and say why. Most problems should exit here.
+2. **Preserve the raw problem, then sharpen it.** Keep the user's exact words; write a
+   brief that states the goal, hard constraints, non-goals, and what "good" means.
+   Define the success criteria BEFORE you see any answers — otherwise you will grade
+   toward whichever answer you happen to like.
+3. **Gather grounding evidence.** Anything time-sensitive, private, or file-based must
+   be collected by you and embedded in the brief. References are tool-less.
+4. **Pick the seats from evidence, not habit.** Run
+   `scripts/fitlog.py report --kind <task-class>` and let the recorded per-model/role
+   history shape the preset you choose (or the preset you edit for this run). If the KB
+   has too few samples for this task class, say so and pick on reasoned diversity
+   instead — then step 9 makes the next run better informed.
+5. **Convene the panel** via one of the three paths above.
+6. **Verify the panel ran** via the trace. Stamp degradation honestly.
+7. **Score each reference** against your pre-declared criteria before synthesizing.
+8. **Build the component ledger** (`templates/synthesis-ledger.md`): pick ONE spine
+   answer, then walk every distinct contribution from the others and give each an
+   explicit disposition — grafted / rejected / already covered — with attribution. Graft
+   only through an interface check: does the receiving design actually provide the state
+   this component assumes?
+9. **Adversarially test the synthesis.** Attack your own merged answer. If the merged
+   answer is not demonstrably better than the best single reference, **ship the best
+   single reference** and say so. Anti-mush is a real outcome, not a failure.
+10. **Log the outcome** to `scripts/fitlog.py` — which model contributed what, at which
+    role, on which task class, scored on the rubric dimensions the CLI accepts. This
+    closes the loop that step 4 reads from: it is the only part of v1's tooling that
+    survives, and it is what makes the NEXT panel's composition an evidence-based choice
+    instead of a guess. Require several samples before overweighting a seat, and decay
+    old scores.
+11. **Report** with the panel composition, degradation stamps, the ledger, and the open
+    risks.
+
+## Scoring rubric
+
+| Dimension          | 1                 | 3                         | 5                                       |
+| ------------------ | ----------------- | ------------------------- | --------------------------------------- |
+| **Soundness**      | wrong / unfounded | mostly right, gaps        | verifiably right, assumptions stated    |
+| **Completeness**   | fragment          | covers the main path      | covers main + edges + failure modes     |
+| **Actionability**  | vague direction   | needs real work to use    | an operator can execute without rework  |
+| **Usable-Novelty** | generic rehash    | 1 usable non-obvious idea | multiple usable new levers (not sci-fi) |
+| **Testability**    | no way to verify  | partial checks            | clear acceptance tests / numbers / code |
 
 Hard gates first: anything that violates a mandatory constraint or is unsafe is
-disqualified regardless of score. The KB stores per (model x role x task-class) rolling
-means plus a free-text `won_on` contribution note. Require >= 5 samples before
-overweighting a seat; decay old scores.
+disqualified regardless of score.
 
-## The tools (in this skill's scripts/)
+## Why there is no runner script
 
-- `scripts/panel.py --brief B.md --seats S.json --out DIR --label NAME` — live-resolves
-  OpenRouter flagships, dispatches all seats in parallel, writes each response
-  incrementally + a manifest. stdlib only; reads keys from the profile `.env` (override
-  with `MOA_ENV_PATH`). `seats.json` is a list of `{seat, model, backend, mandate}`;
-  `model` may be a family shorthand (`grok`/`gemini`/`gpt`/`deepseek`) that resolves to
-  the live flagship, or an explicit slug (`openrouter/fusion`). `backend` is
-  `openrouter` or `omniroute`.
-- `scripts/fitlog.py init | add-run | score | report [--kind CLASS]` — the persistent
-  model-task-fit SQLite KB. Query it in step 5, write to it in step 9. Portable via
-  `MOA_FITLOG_DB` env var.
-- `templates/synthesis-ledger.md` — the component-ledger + requirement-matrix template
-  for step 10.
+Version 1 of this skill shipped `scripts/panel.py`, a hand-rolled `urllib` client with
+its own `.env` parser, its own model-family resolver, its own hardcoded fallback pins,
+and its own threadpool. It was written as if Hermes had no MoA support. It did.
+
+That duplication was not free:
+
+- It bypassed the profile's provider configuration, so it could not inherit the
+  deployment's routing, authorization, or credential behavior — and could route a seat
+  somewhere the profile never authorized.
+- Its hardcoded model pins went stale silently and were consulted exactly when live
+  resolution had already failed.
+- Its fuzzy model-name matcher would fall back to a default family rather than fail, so
+  a typo produced a confident answer from the wrong model.
+- It produced no usage or cost accounting, and none of its calls appeared in the
+  runtime's normal telemetry.
+
+The native runtime handles all of that. **Do not reintroduce a bespoke fan-out script.**
+If the native runtime is missing a capability you need, the correct move is to file it
+upstream, not to route around the config layer.
+
+`scripts/fitlog.py` remains: it is a local SQLite record of model-task fit that has no
+runtime equivalent, and it makes no network calls.
 
 ## Pitfalls
 
-1. **Slow reasoning models (DeepSeek R1, `openrouter/fusion`) can take 2-7 minutes.**
-   `panel.py` writes each seat file and updates the manifest incrementally as seats
-   complete, so partial results are visible during long runs. Still run serious panels
-   BACKGROUNDED and poll the manifest rather than relying on a short foreground timeout.
-2. **OmniRoute custom router needs `stream:false`** or you get SSE chunks that fail
-   `json.loads` (already handled in panel.py; remember it if you write a fresh caller).
-3. **`openrouter/fusion` returns a HUGE payload** (~70KB — it dumps every panel member +
-   judge rationale). Grep its section headers, don't read it whole into context.
-4. **Grok routing depends on how the profile is wired.** Historically Grok was reachable
-   only via OpenRouter (`x-ai/grok-*`). If a subscription-backed router combo exists,
-   route that seat through the **`omniroute` backend** (`"backend": "omniroute"` in
-   `seats.json` plus `MOA_OMNI_BASE_URL`), using the combo name as the model. Do **not**
-   put a combo name on an `openrouter` seat: `panel.py` does not read the Hermes
-   profile, and `resolve_model_alias()` will fuzzy-match a family-looking name into a
-   raw OpenRouter slug (or fall back to a default), silently sending the seat somewhere
-   you did not intend. A subscription-backed combo prefers subscription quota but **can
-   still fall back to metered usage**, so don't assume a seat is free. Never call a
-   native provider endpoint your config prohibits.
-5. **Correlated hallucination masquerades as consensus.** All the models share training
+1. **Assuming a fluent answer means the panel ran.** A dead reference slot is invisible
+   in the output. Check the trace, not the prose.
+2. **Expecting live retrieval.** Every reference is explicitly tool-less. Ground the
+   brief yourself.
+3. **Pairing a model with the wrong provider alias.** Provider aliases must match the
+   configured provider and API shape for the target model. On some providers a mismatch
+   does not error — it returns HTTP 200 and silently translates — so verify with a live
+   call on your own deployment rather than assuming a mismatch fails loudly. Some
+   deployments also front the _same_ model under more than one alias with different
+   routing or billing behavior; if that is true where you run, confirm which path a slot
+   actually took from the response metadata, not from the model string.
+4. **Pinning a slot to a renamed model identifier.** The old name typically 404s at
+   request time with no fallback; the panel loses that family entirely and the
+   aggregator papers over it.
+5. **Silently-dropped slots.** An incomplete slot is discarded at read time and the
+   preset may revert to defaults. Re-read the effective config after editing.
+6. **Correlated hallucination masquerading as consensus.** The models share training
    blind spots; if 4 agree, that raises confidence ONLY if their error sources are
    plausibly independent. Never report "N models agreed" as if agreement-count were
    quality. Validate against primary sources.
-6. **Don't seat the aggregator as a proposer.** You bias your own synthesis toward your
-   own draft.
-7. **`seats.json` model names must be a family shorthand, a full OpenRouter slug, or a
-   close variant `panel.py` can fuzzy-match back to a family** (fixed 2026-07: prior
-   versions did an exact-string lookup only, so near-miss guesses like `grok-4-5` or
-   `gemini-3-pro-preview` silently fell through as literal (bogus) OpenRouter model IDs
-   and 400/404'd). `resolve_model_alias()` now normalizes and prefix-matches against the
-   4 known families (`grok`/`gemini`/`gpt`/`deepseek`), live-resolving to the CURRENT
-   flagship rather than trusting a caller's guessed version number. A slug containing
-   `/` is always passed through untouched (explicit choice). Anything that matches no
-   family logs a `[alias] WARNING` to stderr and falls back to the first family default
-   instead of silently erroring the whole seat — check stderr/the manifest if a seat's
-   model looks unexpected.
+7. **Seating the aggregator's own family as a reference.** It biases synthesis toward
+   its own draft.
+8. **Leaving `save_traces` on permanently.** It writes full prompts and every reference
+   response to disk. Enable it for runs you need to defend, then turn it off.
+9. **Switching the session onto a preset and forgetting.** Every later turn pays panel
+   cost. Prefer the one-shot paths.
+10. **Panel-ing a problem that had a right answer.** If the question is verifiable,
+    verify it — a panel on a factual question produces expensive agreement.
+11. **Shipping the merge because you built it.** If the synthesis is not better than the
+    best single reference, ship the single reference.
 
 ## Verification checklist
 
-- [ ] Passed the GATE (or honestly routed to single-model / fusion instead)
+- [ ] Passed the GATE (or honestly routed to a single model instead)
 - [ ] Raw problem preserved; sharpened brief written; "good" defined before answers seen
-- [ ] At least 3 model FAMILIES actually ran (else stamp `degraded: single-family`)
-- [ ] Each proposal scored + logged to fitlog
+- [ ] Time-sensitive grounding gathered by the caller and embedded in the brief
+- [ ] Panel ran via native `/moa` / `--provider moa` (no bespoke fan-out script)
+- [ ] Every configured reference slot actually completed with usable content (trace
+      checked); any shortfall stamped `degraded: <n>-family`
+- [ ] Enough model FAMILIES answered to justify the claim being made about the result
+- [ ] Each reference scored against pre-declared criteria
+- [ ] Seats chosen from `fitlog.py report` history where samples exist (else noted)
+- [ ] Outcome logged to `fitlog.py` so the next panel picks seats on evidence
 - [ ] Component ledger built; ONE spine chosen; contributions have dispositions +
       attribution
 - [ ] Synthesis adversarially tested; anti-mush fallback checked (ship best-single if
       not better)
-- [ ] Run + scores persisted; KB updated
