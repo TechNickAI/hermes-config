@@ -298,10 +298,13 @@ runtime equivalent, and it makes no network calls.
    preset may revert to defaults. Re-read the effective config after editing.
 6. **Treating a silently-truncated reference as a real proposal.** A slot can complete
    with no error and still return only the opening of an answer (observed in practice: a
-   ~1KB fragment while sibling seats returned 5-27KB on the same brief). Compare output
-   lengths across slots; a slot far shorter than its siblings on a meaty brief is
-   truncated, not concise. Its fragment may still carry the thesis, so read it — but do
-   not weight it as a complete proposal in the ledger.
+   ~1KB fragment while sibling seats returned 5-27KB on the same brief). Length
+   disparity is a WARNING, not proof — families differ in verbosity and a short answer
+   may be complete and concise. Use it as a prompt to check whether the response is
+   _structurally_ incomplete (stops mid-section, never reaches a conclusion, no coverage
+   of the brief's asks) or whether a truncation/termination signal is available in the
+   trace. Only then discount it as a partial; a genuinely concise answer can be the best
+   one in the panel.
 7. **Assuming a slow reference is a dead one.** Reasoning-heavy models can take many
    minutes while siblings finish in one or two, and the slowest seat is sometimes the
    sharpest. Wait for the run to actually finish before declaring a family missing.
