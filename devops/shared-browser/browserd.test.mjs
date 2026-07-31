@@ -1,62 +1,55 @@
 /**
- * Regression test for the orphan-tab leak in getPage().
+ * Tests for browserd's window/tab registry — the REAL one.
  *
- * The bug (issue #34): getPage() captured the window's tab Map, then awaited
- * ctx.newPage(). If a /close for that window landed during the await, close()
- * called windows.delete(window), detaching the captured Map. A later getPage()
- * installed a *fresh* Map. When the original newPage() resolved it wrote into
- * the detached Map — leaving a real Chrome page that no windows lookup could
- * ever reach. It leaked until the entire browser context closed.
+ * These import `createPageRegistry` from page-registry.mjs, the exact module
+ * browserd.mjs runs. An earlier version of this file reimplemented the logic and
+ * asserted against the copy; that version passed even when the shipped fix was
+ * reverted, so it guarded nothing. Caught in review on PR #77.
  *
- * Reproducing it needs only the Map bookkeeping, not a real browser, so this
- * models getPage()'s exact structure against a fake newPage() whose resolution
- * we control. `node --test` runs it with no Playwright and no Chrome.
+ * A fake browser context stands in for Playwright, so these run in milliseconds
+ * with no Chrome and no dependencies: `node --test`.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-/**
- * The BUGGY implementation: writes to the tab Map captured before the await.
- */
-function makeBuggyGetPage(windows, newPage) {
-  return async function getPage(window, tab) {
-    let tabs = windows.get(window);
-    if (!tabs) {
-      tabs = new Map();
-      windows.set(window, tabs);
-    }
-    const page = await newPage();
-    tabs.set(tab, { page, lastUsed: Date.now() }); // stale reference
-    return page;
+import { createPageRegistry } from "./page-registry.mjs";
+
+/** Minimal stand-in for a Playwright Page. */
+function fakePage(id) {
+  const handlers = {};
+  return {
+    id,
+    closed: false,
+    isClosed() {
+      return this.closed;
+    },
+    on(event, fn) {
+      handlers[event] = fn;
+    },
+    async close() {
+      this.closed = true;
+      handlers.close?.();
+    },
   };
 }
 
 /**
- * The FIXED implementation: re-resolves the live Map after the await.
- * Mirrors browserd.mjs getPage().
+ * Fake context whose newPage() can be held open, letting a test park a caller
+ * mid-creation and interleave a close — the exact race from issue #34.
  */
-function makeFixedGetPage(windows, newPage) {
-  return async function getPage(window, tab) {
-    let tabs = windows.get(window);
-    if (!tabs) {
-      tabs = new Map();
-      windows.set(window, tabs);
-    }
-    const page = await newPage();
-    let live = windows.get(window);
-    if (!live) {
-      live = new Map();
-      windows.set(window, live);
-    }
-    live.set(tab, { page, lastUsed: Date.now() });
-    return page;
+function fakeContext() {
+  let counter = 0;
+  const gates = [];
+  return {
+    gates,
+    async newPage() {
+      counter += 1;
+      const gate = gates[counter - 1];
+      if (gate) await gate;
+      return fakePage(`page${counter}`);
+    },
   };
-}
-
-/** Close a whole window, exactly as browserd's close() does. */
-function closeWindow(windows, window) {
-  windows.delete(window);
 }
 
 /** Is `page` reachable by walking the windows registry? */
@@ -69,63 +62,38 @@ function isReachable(windows, page) {
   return false;
 }
 
-/**
- * Drive the exact interleaving from issue #34:
- *   1. Request A calls getPage("w", "tab1") and blocks in newPage().
- *   2. /close runs for "w", detaching the Map A captured.
- *   3. Request B calls getPage("w", "tab2"), installing a fresh Map.
- *   4. A's newPage() resolves and records its page.
- */
-async function runRace(makeGetPage) {
+test("close racing newPage does not orphan the created page", async () => {
+  // Issue #34's exact interleaving:
+  //   1. Request A calls getPage("w","tab1") and blocks inside newPage().
+  //   2. /close runs for "w", detaching the Map A captured.
+  //   3. Request B calls getPage("w","tab2"), installing a fresh Map.
+  //   4. A's newPage() resolves and records its page.
   const windows = new Map();
+  const ctx = fakeContext();
   let releaseA;
-  const aBlocked = new Promise((resolve) => {
+  ctx.gates[0] = new Promise((resolve) => {
     releaseA = resolve;
   });
 
-  let call = 0;
-  const newPage = async () => {
-    call += 1;
-    if (call === 1) {
-      await aBlocked; // Request A parks here
-      return { id: "pageA" };
-    }
-    return { id: `page${call}` };
-  };
-
-  const getPage = makeGetPage(windows, newPage);
+  const { getPage, closePage } = createPageRegistry({
+    windows,
+    ensureContext: async () => ctx,
+  });
 
   const aPromise = getPage("w", "tab1"); // step 1
   await Promise.resolve(); // let A reach the await
-  closeWindow(windows, "w"); // step 2
+  await closePage({ window: "w" }); // step 2
   const pageB = await getPage("w", "tab2"); // step 3
   releaseA();
   const pageA = await aPromise; // step 4
 
-  return { windows, pageA, pageB };
-}
-
-test("the race leaks an unreachable page under the buggy implementation", async () => {
-  const { windows, pageA } = await runRace(makeBuggyGetPage);
-  // Documents the bug this fix removes: A's page is open but orphaned.
-  assert.equal(
-    isReachable(windows, pageA),
-    false,
-    "expected the buggy version to orphan page A (if this fails, the test no longer models the bug)",
-  );
-});
-
-test("close racing newPage does not orphan the created page", async () => {
-  const { windows, pageA, pageB } = await runRace(makeFixedGetPage);
-
   assert.equal(
     isReachable(windows, pageA),
     true,
-    "page A must be reachable through the windows registry, not leaked",
+    "page A must be reachable through the windows registry, not leaked into a detached Map",
   );
   assert.equal(isReachable(windows, pageB), true, "page B must remain reachable");
 
-  // Both tabs land in the same live window map.
   const tabs = windows.get("w");
   assert.ok(tabs, "window 'w' must exist");
   assert.equal(tabs.get("tab1").page, pageA);
@@ -136,19 +104,20 @@ test("close racing newPage does not orphan the created page", async () => {
 test("a page created after its window is closed is still reachable", async () => {
   // Degenerate case: window closed and never re-created by another request.
   const windows = new Map();
+  const ctx = fakeContext();
   let release;
-  const blocked = new Promise((resolve) => {
+  ctx.gates[0] = new Promise((resolve) => {
     release = resolve;
   });
-  const newPage = async () => {
-    await blocked;
-    return { id: "solo" };
-  };
-  const getPage = makeFixedGetPage(windows, newPage);
+
+  const { getPage, closePage } = createPageRegistry({
+    windows,
+    ensureContext: async () => ctx,
+  });
 
   const promise = getPage("w", "tab1");
   await Promise.resolve();
-  closeWindow(windows, "w");
+  await closePage({ window: "w" });
   release();
   const page = await promise;
 
@@ -157,4 +126,108 @@ test("a page created after its window is closed is still reachable", async () =>
     true,
     "the page must be registered under a freshly installed window map",
   );
+});
+
+test("concurrent callers for the same tab share one page", async () => {
+  // The pageLocks contract: two racing getPage calls must not both newPage().
+  const windows = new Map();
+  const ctx = fakeContext();
+  const { getPage } = createPageRegistry({ windows, ensureContext: async () => ctx });
+
+  const [p1, p2] = await Promise.all([getPage("w", "t"), getPage("w", "t")]);
+  assert.equal(p1, p2, "both callers must receive the same page");
+  assert.equal(windows.get("w").size, 1, "only one tab should be registered");
+});
+
+test("separate windows never collide", async () => {
+  // The core promise of the window model: parallel agents don't clobber.
+  const windows = new Map();
+  const ctx = fakeContext();
+  const { getPage } = createPageRegistry({ windows, ensureContext: async () => ctx });
+
+  const [a, b] = await Promise.all([getPage("agent1", "main"), getPage("agent2", "main")]);
+  assert.notEqual(a, b);
+  assert.equal(windows.get("agent1").get("main").page, a);
+  assert.equal(windows.get("agent2").get("main").page, b);
+});
+
+test("a closed page deregisters itself and prunes its empty window", async () => {
+  const windows = new Map();
+  const ctx = fakeContext();
+  const { getPage } = createPageRegistry({ windows, ensureContext: async () => ctx });
+
+  const page = await getPage("w", "t");
+  await page.close(); // fires the 'close' handler browserd registers
+  assert.equal(windows.has("w"), false, "empty window map should be pruned");
+});
+
+test("getPage replaces a page that was closed underneath it", async () => {
+  const windows = new Map();
+  const ctx = fakeContext();
+  const { getPage } = createPageRegistry({ windows, ensureContext: async () => ctx });
+
+  const first = await getPage("w", "t");
+  first.closed = true; // closed without firing the handler (crash / external close)
+  const second = await getPage("w", "t");
+
+  assert.notEqual(second, first, "a stale closed page must not be handed back");
+  assert.equal(windows.get("w").get("t").page, second);
+});
+
+test("closing one tab leaves the window's other tabs intact", async () => {
+  const windows = new Map();
+  const ctx = fakeContext();
+  const { getPage, closePage } = createPageRegistry({
+    windows,
+    ensureContext: async () => ctx,
+  });
+
+  const keep = await getPage("w", "keep");
+  await getPage("w", "drop");
+  await closePage({ window: "w", tab: "drop" });
+
+  assert.equal(windows.get("w").has("drop"), false);
+  assert.equal(windows.get("w").get("keep").page, keep);
+});
+
+test("reapIdle closes stale tabs but spares default/main", async () => {
+  const windows = new Map();
+  const ctx = fakeContext();
+  let clock = 1000;
+  const { getPage, reapIdle } = createPageRegistry({
+    windows,
+    ensureContext: async () => ctx,
+    now: () => clock,
+  });
+
+  const protectedPage = await getPage("default", "main");
+  const stale = await getPage("agent", "scratch");
+
+  clock += 10_000; // both are now well past the idle threshold
+  const reaped = [];
+  reapIdle(5_000, (w, t) => reaped.push(`${w}/${t}`));
+
+  assert.deepEqual(reaped, ["agent/scratch"], "only the non-default tab is reaped");
+  assert.equal(stale.closed, true, "the stale page should be closed");
+  assert.equal(protectedPage.closed, false, "default/main must never be reaped");
+  assert.equal(windows.get("default").get("main").page, protectedPage);
+  assert.equal(windows.has("agent"), false, "emptied window should be pruned");
+});
+
+test("reapIdle keeps recently used tabs", async () => {
+  const windows = new Map();
+  const ctx = fakeContext();
+  let clock = 1000;
+  const { getPage, reapIdle } = createPageRegistry({
+    windows,
+    ensureContext: async () => ctx,
+    now: () => clock,
+  });
+
+  const page = await getPage("agent", "active");
+  clock += 1_000; // still inside the idle window
+  reapIdle(5_000);
+
+  assert.equal(page.closed, false);
+  assert.equal(windows.get("agent").get("active").page, page);
 });
