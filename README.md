@@ -132,7 +132,7 @@ lexical search rather than breaking recall. See
 
 ### `knowledge/` — the research behind every decision
 
-Ten documents, ~3,000 lines, each leading with its conclusion. This is the part worth
+Eleven documents, ~3,100 lines, each leading with its conclusion. This is the part worth
 reading even if you take no code:
 
 - **[`hermes-architecture.md`](knowledge/hermes-architecture.md)** — how the harness
@@ -145,6 +145,9 @@ reading even if you take no code:
   supermemory, with a recommendation
 - **[`skill-system-deep-dive.md`](knowledge/skill-system-deep-dive.md)** — how
   agent-authored skills get promoted and retired
+- **[`discovery-harvest-pattern.md`](knowledge/discovery-harvest-pattern.md)** — why
+  ecosystem-monitoring agents miss the thing that's taking off, and how to fix the
+  harvest layer instead of loosening the filter
 - **[`nousresearch-philosophy.md`](knowledge/nousresearch-philosophy.md)** — "get out of
   the model's way," and what follows from it
 - **[`paradigm-translation.md`](knowledge/paradigm-translation.md)** — per-concept
