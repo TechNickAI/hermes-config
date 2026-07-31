@@ -28,15 +28,15 @@ Explicitly allowed:
 
 ### Substitution table
 
-| If you would write...                          | Write instead                                        |
-| ---------------------------------------------- | ---------------------------------------------------- |
-| A real person's name                           | "the user", "the maintainer", "a partner"            |
-| A fleet member, instance, bot, or persona name | `<instance-name>`, `<bot-name>`, "a fleet member"    |
-| `/Users/<real>/...`                            | `~/...` or `$HOME/...`                               |
-| `~/.openclaw-<real-instance>/`                 | `~/.openclaw-<instance>/`                            |
-| `ai.openclaw.<real-instance>`                  | `ai.openclaw.<instance>`                             |
-| A real port like `18789`                       | `<gateway-port>`                                     |
-| Personal details (family / health / financial) | drop entirely, or generalize to "sensitive context"  |
+| If you would write...                          | Write instead                                         |
+| ---------------------------------------------- | ----------------------------------------------------- |
+| A real person's name                           | "the user", "the maintainer", "a partner"             |
+| A fleet member, instance, bot, or persona name | `<instance-name>`, `<bot-name>`, "a fleet member"     |
+| `/Users/<real>/...`                            | `~/...` or `$HOME/...`                                |
+| `~/.openclaw-<real-instance>/`                 | `~/.openclaw-<instance>/`                             |
+| `ai.openclaw.<real-instance>`                  | `ai.openclaw.<instance>`                              |
+| A real port like `18789`                       | `<gateway-port>`                                      |
+| Personal details (family / health / financial) | drop entirely, or generalize to "sensitive context"   |
 | A specific incident date                       | "a recent incident" (date specificity rarely matters) |
 
 ### Scrub before you stage
@@ -135,15 +135,15 @@ Every addition should survive these five filters:
 
 Where things go:
 
-| Content                              | Location                            |
-| ------------------------------------ | ----------------------------------- |
-| Research, comparisons, deep-dives    | `knowledge/` — lead with the conclusion |
-| How-to runbooks and guides           | `docs/`                             |
-| Personality presets                  | `templates/soul/`                   |
-| Procedural skills                    | `skills/<name>/SKILL.md`            |
-| Hermes plugins                       | `plugins/<category>/<name>/`        |
-| Infrastructure patterns and helpers  | `devops/`                           |
-| Per-machine notes                    | `CLAUDE.local.md` (gitignored)      |
+| Content                             | Location                                |
+| ----------------------------------- | --------------------------------------- |
+| Research, comparisons, deep-dives   | `knowledge/` — lead with the conclusion |
+| How-to runbooks and guides          | `docs/`                                 |
+| Personality presets                 | `templates/soul/`                       |
+| Procedural skills                   | `skills/<name>/SKILL.md`                |
+| Hermes plugins                      | `plugins/<category>/<name>/`            |
+| Infrastructure patterns and helpers | `devops/`                               |
+| Per-machine notes                   | `CLAUDE.local.md` (gitignored)          |
 
 ## Working in parallel
 
