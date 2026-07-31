@@ -15,3 +15,57 @@ jobs:
 
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Hermes requires 3.11+. Test the floor and a current release so the
+        # plugin keeps working across the supported range.
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        # Deliberately NOT installing hermes-agent: these tests must pass from a
+        # bare clone, which is what a new contributor actually has. The plugin
+        # falls back to hermes_compat stubs when the runtime is absent.
+        run: python -m pip install --upgrade pip pytest pyyaml
+
+      - name: Run tests
+        run: python -m pytest -q
+
+  node-test:
+    name: Tests (auth-service, Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: devops/app-router/auth-service/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: devops/app-router/auth-service
+
+      - name: Run tests
+        run: npm test
+        working-directory: devops/app-router/auth-service

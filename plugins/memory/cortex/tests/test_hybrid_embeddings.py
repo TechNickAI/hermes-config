@@ -178,13 +178,19 @@ def test_vector_search_survives_provider_prefix_rename(tmp_path: Path) -> None:
     assert rows[0]["rel_path"] == "topics/estate-blueprint.md"
 
 
-def test_vector_search_survives_rename_in_homogeneous_store(tmp_path: Path) -> None:
-    # Completely different name but the store holds exactly one model at this
-    # dimension → unambiguous, adopt it.
+def test_vector_search_refuses_a_lone_stored_model_on_rename(tmp_path: Path) -> None:
+    # A completely different active model name with exactly one stored model at
+    # this dimension is NOT evidence of a rename — it is indistinguishable from
+    # a genuine embedder swap before backfill has re-embedded the pages.
+    #
+    # Adopting the stored model would compare new-model query vectors against
+    # old-model document vectors and surface confident nonsense. Returning
+    # nothing lets the retriever fall back to lexical FTS5: degraded recall
+    # beats wrong recall. (Flagged by two independent review bots on PR #76.)
     store = _seed_estate_store(tmp_path, "old-local-embedder")
     store.embedder.model = "totally-different-name"
     rows = store.vector_search("inheritance planning for heirs", limit=3)
-    assert rows and rows[0]["rel_path"] == "topics/estate-blueprint.md"
+    assert rows == [], "must not compare against an unverified stored model"
 
 
 def test_vector_search_refuses_to_mix_distinct_models(tmp_path: Path) -> None:

@@ -13,11 +13,14 @@ import sys
 from pathlib import Path
 
 # Import the plugin as a package so the provider exercises the real tool-call
-# read path in __init__.py instead of only the lower-level store API.
-REPO_ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(REPO_ROOT))
+# read path in __init__.py instead of only the lower-level store API. Loaded by
+# file path rather than `import plugins.memory.cortex` because Hermes ships its
+# own top-level `plugins` package that shadows this repo's namespace directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from plugins.memory.cortex import CortexMemoryProvider  # noqa: E402
+from plugin_loader import load_cortex_plugin  # noqa: E402
+
+CortexMemoryProvider = load_cortex_plugin().CortexMemoryProvider
 
 
 def test_read_date_valued_frontmatter_returns_json_serializable_strings(tmp_path: Path) -> None:
