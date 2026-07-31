@@ -35,6 +35,7 @@ import { createRequire } from "node:module";
 import { execSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { createPageRegistry } from "./page-registry.mjs";
 
 const HOME = process.env.HOME;
 const BROWSER_HOME =
@@ -168,85 +169,17 @@ async function ensureContext() {
   }
 }
 
-// Per-(window,tab) creation locks so two concurrent calls for the same tab
-// don't both newPage() and orphan one. Keyed "window\u0000tab".
-const pageLocks = new Map();
-
-async function getPage(window = "default", tab = "main") {
-  const ctx = await ensureContext();
-  // Get-or-create the window's tab map. This block MUST stay synchronous
-  // (no await between get and set): Node's single-threaded model then makes
-  // it atomic, so two concurrent callers for the same new window can't each
-  // create a map and overwrite the other. Per-tab creation is serialized
-  // separately by pageLocks below.
-  let tabs = windows.get(window);
-  if (!tabs) {
-    tabs = new Map();
-    windows.set(window, tabs);
-  }
-  const entry = tabs.get(tab);
-  if (entry && !entry.page.isClosed()) {
-    entry.lastUsed = Date.now();
-    return entry.page;
-  }
-  // Serialize creation for this exact window/tab.
-  const key = `${window}\u0000${tab}`;
-  let pending = pageLocks.get(key);
-  if (!pending) {
-    pending = (async () => {
-      // Re-check inside the lock: a racing caller may have just created it.
-      const existing = tabs.get(tab);
-      if (existing && !existing.page.isClosed()) {
-        existing.lastUsed = Date.now();
-        return existing.page;
-      }
-      const page = await ctx.newPage();
-      page.on("close", () => {
-        const t = windows.get(window);
-        if (t) {
-          const e = t.get(tab);
-          if (e && e.page === page) t.delete(tab);
-          if (t.size === 0) windows.delete(window);
-        }
-      });
-      // Re-resolve the window's tab map instead of reusing the `tabs` reference
-      // captured before the await. A /close for this window during newPage()
-      // detaches that Map from `windows` (close() calls windows.delete), and a
-      // later getPage() installs a fresh one. Writing the new page into the
-      // detached Map would leave it open in Chrome but unreachable by any
-      // lookup — an orphan tab that leaks until the whole context closes.
-      let live = windows.get(window);
-      if (!live) {
-        live = new Map();
-        windows.set(window, live);
-      }
-      live.set(tab, { page, lastUsed: Date.now() });
-      return page;
-    })();
-    pageLocks.set(key, pending);
-  }
-  try {
-    return await pending;
-  } finally {
-    pageLocks.delete(key);
-  }
-}
+// Window/tab bookkeeping lives in page-registry.mjs so it can be tested
+// directly — this file starts a real Chrome on import, so the tests would
+// otherwise have to reimplement the logic (and would then pass even when this
+// code regressed).
+const registry = createPageRegistry({ windows, ensureContext });
+const getPage = registry.getPage;
 
 // Reap idle tabs (cookies live in the context, so closing tabs is safe).
 // Never reaps the default/main page.
 setInterval(() => {
-  const now = Date.now();
-  for (const [window, tabs] of windows) {
-    for (const [tab, { page, lastUsed }] of tabs) {
-      if (window === "default" && tab === "main") continue;
-      if (now - lastUsed > IDLE_MS) {
-        log(`reaping idle tab: ${window}/${tab}`);
-        page.close().catch(() => {});
-        tabs.delete(tab);
-      }
-    }
-    if (tabs.size === 0) windows.delete(window);
-  }
+  registry.reapIdle(IDLE_MS, (window, tab) => log(`reaping idle tab: ${window}/${tab}`));
 }, 60000).unref();
 
 // Compact aria snapshot with refs an agent can click.
@@ -364,20 +297,7 @@ const handlers = {
     return { ok: true, count: cookies.length, cookies };
   },
   async close({ window = "default", tab }) {
-    const tabs = windows.get(window);
-    if (!tabs) return { ok: true };
-    if (tab) {
-      const e = tabs.get(tab);
-      if (e) {
-        await e.page.close().catch(() => {});
-        tabs.delete(tab);
-      }
-    } else {
-      // Close the whole window (all its tabs).
-      for (const e of tabs.values()) await e.page.close().catch(() => {});
-      windows.delete(window);
-    }
-    return { ok: true };
+    return registry.closePage({ window, tab });
   },
   async shutdown() {
     log("shutdown requested");
