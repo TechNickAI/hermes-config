@@ -88,7 +88,7 @@ Four `SOUL.md` starters: `personal-assistant`, `engineer`, `it-admin`,
 the single highest-leverage file in your setup. Copy one, then make it yours. See
 [`templates/soul/README.md`](templates/soul/README.md).
 
-### `skills/` — eighteen procedural skills
+### `skills/` — nineteen procedural skills
 
 Skills are markdown procedures the agent loads on demand. These are the ones that earned
 their keep in daily use:
@@ -98,6 +98,7 @@ their keep in daily use:
 | `recall`               | Restore context after `/new` — sessions, memories, transcripts       |
 | `keep-going`           | `/keep_going` — restart an agent that stopped short of the goal      |
 | `trust-framework`      | Govern your own autonomy: when to act, when to ask, how to earn more |
+| `project-steward`      | Run a portfolio of long-running projects as a chief of staff         |
 | `moa-solve`            | Throw multiple models at one hard problem, extract the best answer   |
 | `multi-review`         | Review any artifact through a panel of diverse lenses across models  |
 | `address-pr-comments`  | Triage PR bot feedback, fix what's valid, push back on what isn't    |
