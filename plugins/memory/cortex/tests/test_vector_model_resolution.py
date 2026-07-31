@@ -94,11 +94,21 @@ def test_provider_prefix_change_resolves_by_model_id(tmp_path: Path) -> None:
     assert resolved == "google/gemini-embedding-001"
 
 
-def test_single_stored_model_is_adopted_on_rename(tmp_path: Path) -> None:
-    """A homogeneous store makes a rename unambiguous, so adopt it."""
+def test_lone_stored_model_is_not_adopted_on_rename(tmp_path: Path) -> None:
+    """A single stored model is NOT positive evidence of a rename.
+
+    "Exactly one model at this dimension" is indistinguishable from a genuine
+    embedder swap: change `embed_model` in config, restart before re-running
+    backfill, and the store looks exactly like this. Adopting the stored model
+    would compare new-model query vectors against old-model document vectors and
+    feed confident nonsense into the agent's context.
+
+    Falling back to lexical FTS5 is strictly better — degraded recall beats
+    wrong recall. Flagged by two independent review bots on PR #76.
+    """
     store = _store(tmp_path)
     _insert_embedding(store, "old-name-entirely")
-    assert store._resolve_vector_model("brand-new-name", 3) == "old-name-entirely"
+    assert store._resolve_vector_model("brand-new-name", 3) is None
 
 
 def test_ambiguous_multi_model_store_refuses_to_guess(tmp_path: Path) -> None:

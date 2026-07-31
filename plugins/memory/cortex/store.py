@@ -403,7 +403,7 @@ class CortexStore:
         """Pick the stored embedding model to compare the query vector against.
 
         Never mixes distinct models (that would produce meaningless cosine
-        scores), but self-heals the common "same model, different name" case so a
+        scores), but self-heals the "same model, different name" case so a
         provider/prefix rename or route swap can't silently disable semantic
         search. Resolution order, all constrained to embeddings of dimension
         ``qdim``:
@@ -411,13 +411,13 @@ class CortexStore:
           1. Exact name match — the fast, normal path.
           2. Suffix match — provider prefixes differ but the model id after the
              last "/" is identical (e.g. ``google/gemini-embedding-001`` vs
-             ``gemini/gemini-embedding-001``).
-          3. Homogeneous store — exactly one model exists at this dimension, so a
-             rename is unambiguous; adopt it and warn once.
+             ``gemini/gemini-embedding-001``), and only when unambiguous.
 
-        Returns the stored model name to filter on, or ``None`` when there is no
-        safe choice (no embeddings at this dim, or several genuinely different
-        models and none match — caller then falls back to lexical FTS5).
+        Anything else returns ``None`` and the caller falls back to lexical
+        FTS5. In particular a lone stored model at this dimension is NOT
+        adopted: that state is indistinguishable from a genuine embedder swap
+        before a backfill, and silently comparing across two different models
+        yields confident nonsense. Degraded recall beats wrong recall.
         """
         try:
             rows = self._conn.execute(
@@ -447,18 +447,19 @@ class CortexStore:
                 active_model, suffix_matches[0],
             )
             return suffix_matches[0]
-        # 3. homogeneous store — single model at this dim, unambiguous rename
-        if len(models) == 1:
-            logger.warning(
-                "CortexStore: query embedder model %r not stored; store holds a single "
-                "model %r at dim %d — using it. Re-run backfill to align names.",
-                active_model, models[0], qdim,
-            )
-            return models[0]
-        # Multiple distinct models and none match — refuse to guess.
+        # No positive evidence that any stored model is the active one — refuse to guess.
+        #
+        # Note we deliberately do NOT adopt a lone stored model just because it is the
+        # only one at this dimension. "Exactly one stored model" does not distinguish a
+        # rename from a genuine embedder swap, and a genuine swap (change embed_model,
+        # restart before re-running backfill) produces exactly that state. Adopting it
+        # would compare new-model query vectors against old-model document vectors and
+        # feed confident nonsense into the agent's context. Falling back to lexical FTS5
+        # is strictly better: degraded recall beats wrong recall.
         logger.warning(
             "CortexStore: query embedder model %r has no compatible stored embeddings "
-            "at dim %d (stored models: %s); semantic tier off, using lexical only.",
+            "at dim %d (stored models: %s); semantic tier off, using lexical only. "
+            "Re-run backfill to embed pages with the active model.",
             active_model, qdim, ", ".join(sorted(set(models))),
         )
         return None
