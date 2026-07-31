@@ -46,6 +46,11 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
+      - name: Run skill self-checks
+        # Some skills ship executable helpers with their own verification suites.
+        # Run them here so a shipped script can't silently rot.
+        run: python skills/project-steward/scripts/verify_board.py
+
   node-test:
     name: Tests (Node)
     runs-on: ubuntu-latest

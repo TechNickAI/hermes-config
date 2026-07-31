@@ -210,6 +210,41 @@ def save_state(topic: str, state: dict) -> None:
     tmp.replace(path)  # atomic; a crash mid-write cannot corrupt the board
 
 
+def escape_md(text: str) -> str:
+    """Neutralize Telegram legacy-Markdown control characters in user content.
+
+    The board is sent with parse_mode="Markdown", and the template supplies its own
+    emphasis (**bold** headers, _italic_ timestamp). Item titles and bodies are
+    arbitrary text: a single unmatched `_`, `*`, `[`, or backtick in a title makes
+    Telegram reject the ENTIRE message with "can't parse entities", so one stray
+    underscore in one item silently blanks the whole board. Escaping content — but
+    not the template's own markup — keeps the board sendable no matter what a pass
+    writes into it.
+    """
+    for ch in ("\\", "_", "*", "[", "`"):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
+def truncate_escaped(text: str, budget: int) -> str:
+    """Truncate `text` so its ESCAPED form fits `budget` characters, then mark the cut.
+
+    Slicing raw text and escaping afterwards can overshoot, because each escaped
+    character costs two. Worse, a naive slice of already-escaped text can land between
+    a backslash and the character it escapes, leaving a dangling escape that makes
+    Telegram reject the message. Building up character by character against the escaped
+    cost avoids both.
+    """
+    out, used = [], 0
+    for ch in text:
+        cost = len(escape_md(ch))
+        if used + cost > budget:
+            break
+        out.append(ch)
+        used += cost
+    return "".join(out).rstrip() + " […]"
+
+
 def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
     """Render open items only. Resolved items are GONE, not struck through.
 
@@ -234,10 +269,10 @@ def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
 
     parts = [header, ""]
     for idx, item in enumerate(items, 1):
-        parts.append(f"**{idx}. {item.get('title', '').strip()}**")
+        parts.append(f"**{idx}. {escape_md(item.get('title', '').strip())}**")
         body = item.get("body", "").strip()
         if body:
-            parts.append(body)
+            parts.append(escape_md(body))
         parts.append("")
     parts.append(f"_as of {stamp}_")
     out = "\n".join(parts)
@@ -246,7 +281,13 @@ def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
         # Never truncate mid-item; drop whole trailing items and say how many.
         keep, running = [], len(header) + 60
         for item in items:
-            size = len(item.get("title", "")) + len(item.get("body", "")) + 12
+            # Estimate against the ESCAPED length: escaping can only grow the text,
+            # so measuring the raw string would under-count and keep too many rows.
+            size = (
+                len(escape_md(item.get("title", "")))
+                + len(escape_md(item.get("body", "")))
+                + 12
+            )
             if running + size > TG_LIMIT - 120:
                 break
             keep.append(item)
@@ -258,8 +299,12 @@ def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
         # A single over-long item gets hard-truncated instead, with the cut marked.
         if not keep:
             first = dict(items[0])
-            budget = TG_LIMIT - len(header) - len(first.get("title", "")) - 220
-            first["body"] = first.get("body", "")[: max(budget, 0)].rstrip() + " […]"
+            # Budget against ESCAPED lengths, matching the multi-item estimate above.
+            # A raw-length budget under-counts (escaping only grows text), so a body of
+            # mostly Markdown-sensitive characters would blow past the cap and fall
+            # through to the hard slice.
+            budget = TG_LIMIT - len(header) - len(escape_md(first.get("title", ""))) - 220
+            first["body"] = truncate_escaped(first.get("body", ""), max(budget, 0))
             keep = [first]
 
         dropped = len(items) - len(keep)
@@ -270,8 +315,37 @@ def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
             )
         # Final belt-and-braces guard: the platform rejects the whole message if it is over
         # the hard cap, so a board that cannot be shortened must still be sendable.
-        out = trimmed if len(trimmed) <= TG_LIMIT else trimmed[: TG_LIMIT - 4].rstrip() + " […]"
+        # The slice must not land between a backslash and the character it escapes —
+        # a dangling escape makes Telegram reject the message outright, which is the
+        # exact failure this guard exists to prevent.
+        if len(trimmed) > TG_LIMIT:
+            cut = trimmed[: TG_LIMIT - 4]
+            if len(cut) - len(cut.rstrip("\\")) & 1:  # odd trailing backslashes = dangling
+                cut = cut[:-1]
+            trimmed = cut.rstrip() + " […]"
+        out = trimmed
     return out
+
+
+def try_pin(cfg: dict, topic: str, state: dict) -> None:
+    """Pin the board, recording success so a failure is retried on the next run.
+
+    Pinning can fail for a recoverable reason (the bot hasn't been granted pin
+    permission yet, or Telegram had a blip). Since later runs edit the existing
+    message rather than re-posting, a failure here would otherwise never be retried
+    and the board would scroll out of view forever. A board that is merely unpinned
+    still works, so warn rather than fail the run — but never report success silently.
+    """
+    pin = api(cfg, "pinChatMessage", chat_id=cfg["chat_id"],
+              message_id=state["message_id"], disable_notification=True)
+    state["pinned"] = bool(pin.get("ok"))
+    save_state(topic, state)
+    if not state["pinned"]:
+        print(
+            f"warning: board posted but NOT pinned ({pin.get('description')}). "
+            "Grant the bot pin permission; this retries on the next run.",
+            file=sys.stderr,
+        )
 
 
 def push(cfg: dict, topic: str, state: dict) -> None:
@@ -283,6 +357,11 @@ def push(cfg: dict, topic: str, state: dict) -> None:
         res = api(cfg, "editMessageText", chat_id=cfg["chat_id"], message_id=mid,
                   text=text, parse_mode="Markdown")
         if res.get("ok") or "not modified" in res.get("description", ""):
+            # An earlier run posted the board but couldn't pin it (no permission yet, or
+            # a transient failure). Edits keep succeeding forever, so without this retry
+            # the board would stay unpinned and scroll away permanently.
+            if not state.get("pinned"):
+                try_pin(cfg, topic, state)
             return
         # Board was deleted or is too old to edit; fall through and create a new one.
 
@@ -295,9 +374,11 @@ def push(cfg: dict, topic: str, state: dict) -> None:
         raise SystemExit(f"send failed: {res.get('description')}")
 
     state["message_id"] = res["result"]["message_id"]
-    api(cfg, "pinChatMessage", chat_id=cfg["chat_id"],
-        message_id=state["message_id"], disable_notification=True)
+    state["pinned"] = False
+    # Save BEFORE pinning: the message exists now, so the id must be persisted even if
+    # pinning fails. Losing it here would orphan the board and post a duplicate next run.
     save_state(topic, state)
+    try_pin(cfg, topic, state)
 
 
 def cmd_set(cfg: dict, args) -> int:

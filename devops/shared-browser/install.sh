@@ -13,6 +13,9 @@ echo "==> installing shared browser to $BROWSER_HOME"
 mkdir -p "$BROWSER_HOME/logs" "$BROWSER_HOME/output" "$BIN_DIR"
 
 install -m 0755 "$HERE/browserd.mjs" "$BROWSER_HOME/browserd.mjs"
+# browserd.mjs statically imports ./page-registry.mjs, so the module must land
+# beside it or every daemon start fails with ERR_MODULE_NOT_FOUND.
+install -m 0644 "$HERE/page-registry.mjs" "$BROWSER_HOME/page-registry.mjs"
 install -m 0755 "$HERE/bin/browser" "$BROWSER_HOME/browser"
 
 # Put the CLI on PATH via symlink so updates to BROWSER_HOME propagate.

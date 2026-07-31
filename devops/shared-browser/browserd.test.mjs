@@ -231,3 +231,28 @@ test("reapIdle keeps recently used tabs", async () => {
   assert.equal(page.closed, false);
   assert.equal(windows.get("agent").get("active").page, page);
 });
+
+test("install.sh ships every local module browserd imports", async () => {
+  // browserd.mjs uses static relative imports, so any local module it imports must
+  // be copied into BROWSER_HOME or the installed daemon dies at startup with
+  // ERR_MODULE_NOT_FOUND. install.sh copies files individually, so extracting a new
+  // module silently breaks every install until the copy line is added — which is
+  // exactly what happened when page-registry.mjs was extracted (caught in review
+  // on PR #78). This keeps the two in sync without needing a browser.
+  const { readFile } = await import("node:fs/promises");
+  const here = new URL(".", import.meta.url);
+
+  const daemon = await readFile(new URL("browserd.mjs", here), "utf8");
+  const install = await readFile(new URL("install.sh", here), "utf8");
+
+  const localImports = [...daemon.matchAll(/^import .*? from "\.\/([^"]+)"/gm)].map((m) => m[1]);
+  assert.ok(localImports.length > 0, "expected browserd.mjs to import at least one local module");
+
+  for (const mod of localImports) {
+    assert.ok(
+      install.includes(mod),
+      `install.sh must copy "${mod}" into BROWSER_HOME — browserd.mjs imports it, ` +
+        `so an install without it fails at startup with ERR_MODULE_NOT_FOUND`,
+    );
+  }
+});

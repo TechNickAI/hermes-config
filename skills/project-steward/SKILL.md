@@ -214,12 +214,12 @@ A cluster can be at full quota and completely broken at the same time, and that 
 expensive combination, because every failure silently retries or fails over to a metered
 model.
 
-The incident that produced this rule: a primary model threw 262 stream-abort errors in a
-day, 233 inside one hour, and every failure fell through to a metered fallback. That
-billed 267 requests carrying 54.8M input tokens to produce 180K output tokens, a 305:1
-ratio, on a day that cost roughly seven times baseline. The capacity signal reported
-healthy throughout and was telling the truth: it measures room, not liveness. The
-scheduler marked every run `completed`. Nothing looked wrong from the inside.
+The incident that produced this rule: a primary model began throwing stream-abort
+errors, heavily clustered inside a single hour, and every failure fell through to a
+metered fallback. The retry storm burned two orders of magnitude more input tokens than
+the output it produced, on a day that cost several times baseline. The capacity signal
+reported healthy throughout and was telling the truth: it measures room, not liveness.
+The scheduler marked every run `completed`. Nothing looked wrong from the inside.
 
 **The tell for a retry storm is a huge input-to-output token ratio, not a high request
 count.**
