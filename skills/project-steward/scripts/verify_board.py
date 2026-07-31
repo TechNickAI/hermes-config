@@ -98,6 +98,84 @@ check("title match dedups", len(st["items"]) == 1 and st["items"][0]["body"] == 
 lb.save_state("rt", st)
 check("state round-trips", lb.load_state("rt")["items"][0]["body"] == "second")
 
+# --- review round 2: overflow correctness, ordering, portability ---
+print("\n== overflow and portability ==")
+
+# header must report the TRUE open count even when the board is trimmed
+big = [{"title": f"Item {i}", "body": "z" * 1200} for i in range(9)]
+r = lb.render(cfg, "needs-me", {"items": big})
+check("header counts ALL open items, not the trimmed subset", "9 waiting on you" in r,
+      r.split(chr(10))[0])
+check("trimmed board under cap", len(r) <= lb.TG_LIMIT, f"len={len(r)}")
+check("trimmed board reports the drop", "more in the project log" in r)
+
+# the drop note must actually appear (an earlier version replaced on a recomputed stamp)
+import re
+m = re.search(r"\+(\d+) more in the project log", r)
+shown = r.count("**") // 2 - 0  # bold markers: header + one per kept title
+check("drop note present with a count", bool(m), m.group(0) if m else "MISSING")
+
+# no mid-item cut: every rendered body must be whole (no bare slice artefacts)
+kept_bodies = re.findall(r"z+", r)
+check("kept bodies are whole, never mid-sliced",
+      all(len(b) == 1200 for b in kept_bodies) or "[…]" in r,
+      f"lengths={sorted(set(len(b) for b in kept_bodies))}")
+
+# a single item too large for the whole board keeps its title and marks the cut
+one = lb.render(cfg, "needs-me", {"items": [{"title": "Solo", "body": "q" * 9000}]})
+check("single oversized item keeps its title", "Solo" in one)
+check("single oversized item marks the cut", "[…]" in one)
+check("single oversized item under cap", len(one) <= lb.TG_LIMIT, f"len={len(one)}")
+
+# timestamp must not use POSIX-only %-I (crashes on Windows)
+src = (HERE / "scripts/living_board.py").read_text()
+# Strip comments AND docstrings via the AST: a prose mention of a directive in an
+# explanatory comment is not a use of it, and an earlier version of this check kept
+# failing on its own documentation.
+import ast
+_tree = ast.parse(src)
+for _node in ast.walk(_tree):
+    if isinstance(_node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if (_node.body and isinstance(_node.body[0], ast.Expr)
+                and isinstance(_node.body[0].value, ast.Constant)
+                and isinstance(_node.body[0].value.value, str)):
+            _node.body.pop(0)
+code = ast.unparse(_tree)
+check("no POSIX-only strftime directive", "%-I" not in code and "%-d" not in code)
+check("timestamp renders", bool(lb.now_local(cfg)), lb.now_local(cfg))
+
+# state is written only after a successful push, and the whole cycle is locked
+check("push happens before save in cmd_set",
+      src.index("push(cfg, args.topic, state)") < src.index("save_state(args.topic, state)"))
+check("board_lock wraps the read-modify-push cycle",
+      "with board_lock(args.topic):" in src and src.count("with board_lock") >= 2)
+check("pin failure is surfaced", "could not be pinned" in src)
+# Compare against `code` (comments stripped): a prose mention is not a use.
+check("uses HTML parse mode, never Markdown",
+      ("parse_mode='HTML'" in code or 'parse_mode="HTML"' in code)
+      and "Markdown" not in code)
+
+# the lock actually excludes a second holder
+import contextlib
+with lb.board_lock("locktest"):
+    try:
+        lb.LOCK_TIMEOUT = 1
+        with lb.board_lock("locktest"):
+            check("lock excludes a concurrent holder", False, "second acquire succeeded")
+    except SystemExit:
+        check("lock excludes a concurrent holder", True)
+check("lock released on exit", not lb.state_path("locktest").with_suffix(".lock").exists())
+
+# markdown-hostile content must survive rendering untouched
+hostile = lb.render(cfg, "brief", {"items": [{"title": "a_b *c* [d](e) `f`", "body": "x_y"}]})
+check("markdown-hostile text passes through unescaped", "a_b *c* [d](e) `f`" in hostile)
+
+# HTML-special characters MUST be escaped or Telegram rejects the whole message
+htmlish = lb.render(cfg, "brief", {"items": [{"title": "A & B <tag>", "body": "x > y & z"}]})
+check("ampersand escaped", "&amp;" in htmlish and "A & B" not in htmlish)
+check("angle brackets escaped", "&lt;tag&gt;" in htmlish)
+check("bold markup intact", "<b>1. A &amp; B &lt;tag&gt;</b>" in htmlish)
+
 # If a deployed copy exists elsewhere (a profile that vendored this script), check it too.
 # A fix applied to the repo but not back-ported to the running copy is the failure mode this
 # catches. Pass the path as argv[1]; skipped silently when not given.

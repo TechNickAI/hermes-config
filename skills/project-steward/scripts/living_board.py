@@ -55,9 +55,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -79,6 +82,8 @@ STATE_DIR = Path(os.environ.get("BOARD_STATE_DIR", Path.home() / ".hermes/state/
 
 TG_LIMIT = 3900  # platform hard cap is 4096; leave room for the footer
 ITEM_LIMIT = 600
+LOCK_TIMEOUT = 30  # seconds to wait for another run to release a board
+LOCK_STALE_SECONDS = 300  # a lock older than this is assumed abandoned by a crashed run
 
 # A board item is a HEADLINE plus the one thing that changed, not an essay. Measured on the
 # first real pass after deployment: a single item ran 3,287 characters and pushed the board to
@@ -175,7 +180,10 @@ def now_local(cfg: dict) -> str:
             tz = ZoneInfo(cfg["timezone"])
         except Exception:
             pass
-    return datetime.now(tz).strftime("%a %-I:%M %p")
+    stamp = datetime.now(tz)
+    # %-I is POSIX-only and raises ValueError on Windows, which would crash every render.
+    hour = stamp.hour % 12 or 12
+    return f"{stamp.strftime('%a')} {hour}:{stamp.strftime('%M %p')}"
 
 
 def state_path(topic: str) -> Path:
@@ -210,11 +218,44 @@ def save_state(topic: str, state: dict) -> None:
     tmp.replace(path)  # atomic; a crash mid-write cannot corrupt the board
 
 
-def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
+def _esc(text: str) -> str:
+    """Escape for Telegram's HTML parse mode.
+
+    Only these three characters are special in HTML mode, so escaping is total and
+    predictable. Markdown mode cannot be made safe the same way: item titles and bodies are
+    arbitrary agent prose, and a stray underscore, asterisk, bracket or backtick either
+    reformats the board or makes Telegram reject the message outright with an entity-parsing
+    error. A rejection means the update cannot be posted at all, since the same text is
+    reused by the fallback sendMessage. Plain text avoids that but loses bold headings; HTML
+    keeps the formatting and stays safe.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _assemble(header: str, items: list, footer: str) -> str:
+    parts = [header, ""]
+    for idx, item in enumerate(items, 1):
+        parts.append(f"<b>{idx}. {_esc(item.get('title', '').strip())}</b>")
+        body = item.get("body", "").strip()
+        if body:
+            parts.append(_esc(body))
+        parts.append("")
+    parts.append(footer)
+    return "\n".join(parts)
+
+
+def render(cfg: dict, topic: str, state: dict) -> str:
     """Render open items only. Resolved items are GONE, not struck through.
 
     A resolved item left visible is still something the reader has to process and dismiss,
     which is the exact cost this tool exists to remove.
+
+    Overflow is handled by MEASURING the assembled text rather than estimating per-item
+    sizes. An earlier version estimated (title + body + 12), which omitted markdown, the
+    index, and newlines, so it kept too many items and a final hard slice cut mid-item,
+    violating the rule it was supposed to enforce. It also recursed to re-render, which
+    recomputed the timestamp and produced a header counting the TRIMMED list, so a decision
+    board could under-report how many items were waiting.
     """
     items = [i for i in state.get("items", []) if not i.get("resolved")]
     stamp = now_local(cfg)
@@ -225,68 +266,56 @@ def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
 
     if not items:
         empty = "Nothing needs you." if decision else "Nothing material since your last look."
-        return f"{'✅' if decision else '🧭'} **{empty}**\n\n_as of {stamp}_"
+        return f"{'✅' if decision else '🧭'} <b>{empty}</b>\n\n<i>as of {stamp}</i>"
 
-    if decision:
-        header = f"🚦 **{len(items)} waiting on you**"
-    else:
-        header = "🧭 **What changed**"
+    # The header always reflects the TRUE number of open items, never the trimmed subset.
+    header = f"🚦 <b>{len(items)} waiting on you</b>" if decision else "🧭 <b>What changed</b>"
+    footer = f"<i>as of {stamp}</i>"
 
-    parts = [header, ""]
-    for idx, item in enumerate(items, 1):
-        parts.append(f"**{idx}. {item.get('title', '').strip()}**")
-        body = item.get("body", "").strip()
-        if body:
-            parts.append(body)
-        parts.append("")
-    parts.append(f"_as of {stamp}_")
-    out = "\n".join(parts)
+    out = _assemble(header, items, footer)
+    if len(out) <= TG_LIMIT:
+        return out
 
-    if len(out) > TG_LIMIT and _depth == 0:
-        # Never truncate mid-item; drop whole trailing items and say how many.
-        keep, running = [], len(header) + 60
-        for item in items:
-            size = len(item.get("title", "")) + len(item.get("body", "")) + 12
-            if running + size > TG_LIMIT - 120:
-                break
-            keep.append(item)
-            running += size
-
-        # If not even ONE item fits, keeping the first anyway is mandatory. Rendering an empty
-        # list here would print "Nothing needs you" while items are actually waiting, which is
-        # the worst possible failure for a board whose entire job is to be trusted when empty.
-        # A single over-long item gets hard-truncated instead, with the cut marked.
-        if not keep:
-            first = dict(items[0])
-            budget = TG_LIMIT - len(header) - len(first.get("title", "")) - 220
-            first["body"] = first.get("body", "")[: max(budget, 0)].rstrip() + " […]"
-            keep = [first]
-
+    # Drop whole trailing items, measuring the real assembled length each time.
+    keep = list(items)
+    while keep:
         dropped = len(items) - len(keep)
-        trimmed = render(cfg, topic, {**state, "items": keep}, _depth=1)
-        if dropped:
-            trimmed = trimmed.replace(
-                f"_as of {stamp}_", f"_+{dropped} more in the project log · as of {stamp}_"
-            )
-        # Final belt-and-braces guard: the platform rejects the whole message if it is over
-        # the hard cap, so a board that cannot be shortened must still be sendable.
-        out = trimmed if len(trimmed) <= TG_LIMIT else trimmed[: TG_LIMIT - 4].rstrip() + " […]"
-    return out
+        candidate = _assemble(
+            header, keep, f"<i>+{dropped} more in the project log · {stamp}</i>" if dropped else footer
+        )
+        if len(candidate) <= TG_LIMIT:
+            return candidate
+        keep.pop()
+
+    # Not even one whole item fits. Rendering an empty list here would print "Nothing needs
+    # you" while items are waiting, the worst possible failure for a board whose value is
+    # being trusted when it says empty. Truncate the single item's BODY instead, which keeps
+    # its title and the true count intact, and mark the cut.
+    first = dict(items[0])
+    dropped = len(items) - 1
+    tail = f"<i>+{dropped} more in the project log · {stamp}</i>" if dropped else footer
+    overhead = len(_assemble(header, [{**first, "body": ""}], tail))
+    first["body"] = first.get("body", "")[: max(TG_LIMIT - overhead - 8, 0)].rstrip() + " […]"
+    return _assemble(header, [first], tail)
 
 
 def push(cfg: dict, topic: str, state: dict) -> None:
-    """Edit the board in place; create and pin it if it does not exist yet."""
+    """Edit the board in place; create and pin it if it does not exist yet.
+
+    Sent as HTML, with every agent-supplied field escaped by _esc. See _esc for why HTML
+    rather than Markdown: only three characters are special, so escaping is total.
+    """
     text = render(cfg, topic, state)
     mid = state.get("message_id")
 
     if mid:
         res = api(cfg, "editMessageText", chat_id=cfg["chat_id"], message_id=mid,
-                  text=text, parse_mode="Markdown")
+                  text=text, parse_mode="HTML")
         if res.get("ok") or "not modified" in res.get("description", ""):
             return
         # Board was deleted or is too old to edit; fall through and create a new one.
 
-    params = {"chat_id": cfg["chat_id"], "text": text, "parse_mode": "Markdown"}
+    params = {"chat_id": cfg["chat_id"], "text": text, "parse_mode": "HTML"}
     thread = cfg["topics"].get(topic)
     if thread:
         params["message_thread_id"] = thread
@@ -295,9 +324,56 @@ def push(cfg: dict, topic: str, state: dict) -> None:
         raise SystemExit(f"send failed: {res.get('description')}")
 
     state["message_id"] = res["result"]["message_id"]
-    api(cfg, "pinChatMessage", chat_id=cfg["chat_id"],
-        message_id=state["message_id"], disable_notification=True)
-    save_state(topic, state)
+    save_state(topic, state)  # persist the id first: an unsaved id orphans the message
+
+    pin = api(cfg, "pinChatMessage", chat_id=cfg["chat_id"],
+              message_id=state["message_id"], disable_notification=True)
+    if not pin.get("ok"):
+        # Not fatal (the board still works unpinned), but silence here would leave the board
+        # permanently unpinned with the command reporting success, since every later update
+        # takes the edit path and never retries the pin.
+        print(
+            f"WARNING: board posted but could not be pinned: {pin.get('description')}\n"
+            "Grant the bot pin permission, then delete the board state file to re-create it.",
+            file=sys.stderr,
+        )
+
+
+@contextmanager
+def board_lock(topic: str):
+    """Serialize the whole read-modify-push cycle for one board.
+
+    Two scheduled passes calling `set` on the same board can otherwise both load the same
+    snapshot, each append their own item, and the second write silently erases the first.
+    Atomic file replacement prevents a half-written file, not a lost update.
+
+    Uses an exclusive-create lock directory, which is atomic on every POSIX filesystem and
+    on Windows. A lock older than LOCK_STALE_SECONDS is assumed abandoned by a crashed run.
+    """
+    path = state_path(topic).with_suffix(".lock")
+    deadline = time.time() + LOCK_TIMEOUT
+    while True:
+        try:
+            path.mkdir()
+            break
+        except FileExistsError:
+            try:
+                age = time.time() - path.stat().st_mtime
+            except FileNotFoundError:
+                continue  # released between the failed mkdir and the stat
+            if age > LOCK_STALE_SECONDS:
+                shutil.rmtree(path, ignore_errors=True)
+                continue
+            if time.time() > deadline:
+                raise SystemExit(
+                    f"Board {topic!r} is locked by another run ({int(age)}s old).\n"
+                    f"If nothing else is running, remove {path}"
+                )
+            time.sleep(0.2)
+    try:
+        yield
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def cmd_set(cfg: dict, args) -> int:
@@ -320,20 +396,25 @@ def cmd_set(cfg: dict, args) -> int:
             "If it genuinely needs the length, pass --long."
         )
 
-    state = load_state(args.topic)
-    stamp = datetime.now(timezone.utc).isoformat()
-    for item in state["items"]:
-        if item["title"].lower() == args.title.lower():
-            item.update(body=body, resolved=False, updated=stamp)
-            break
-    else:
-        state["items"].append(
-            {"title": args.title, "body": body, "resolved": False,
-             "created": stamp, "updated": stamp}
-        )
+    with board_lock(args.topic):
+        state = load_state(args.topic)
+        stamp = datetime.now(timezone.utc).isoformat()
+        for item in state["items"]:
+            if item["title"].lower() == args.title.lower():
+                item.update(body=body, resolved=False, updated=stamp)
+                break
+        else:
+            state["items"].append(
+                {"title": args.title, "body": body, "resolved": False,
+                 "created": stamp, "updated": stamp}
+            )
 
-    save_state(args.topic, state)
-    push(cfg, args.topic, state)
+        # Push BEFORE saving: if the platform rejects the update, on-disk state must not
+        # claim a change the pinned board never received. push() saves the message id itself
+        # when it has to create a new board.
+        push(cfg, args.topic, state)
+        save_state(args.topic, state)
+
     open_n = len([i for i in state["items"] if not i.get("resolved")])
     print(f"board updated: {args.topic} ({open_n} open)")
     return 0
@@ -341,15 +422,16 @@ def cmd_set(cfg: dict, args) -> int:
 
 def cmd_resolve(cfg: dict, args) -> int:
     """Mark an item resolved so it leaves the board. Substring match on title."""
-    state = load_state(args.topic)
-    for item in state["items"]:
-        if args.item.lower() in item["title"].lower() and not item.get("resolved"):
-            item["resolved"] = True
-            item["resolved_at"] = datetime.now(timezone.utc).isoformat()
-            save_state(args.topic, state)
-            push(cfg, args.topic, state)
-            print(f"resolved: {item['title']}")
-            return 0
+    with board_lock(args.topic):
+        state = load_state(args.topic)
+        for item in state["items"]:
+            if args.item.lower() in item["title"].lower() and not item.get("resolved"):
+                item["resolved"] = True
+                item["resolved_at"] = datetime.now(timezone.utc).isoformat()
+                push(cfg, args.topic, state)
+                save_state(args.topic, state)
+                print(f"resolved: {item['title']}")
+                return 0
     print(f"no open item matching {args.item!r}")
     return 1
 
