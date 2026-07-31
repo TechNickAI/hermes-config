@@ -256,6 +256,9 @@ for tlen in (600, 5000, 20000):
     r = lb.render(cfg, "needs-me", {"items": [{"title": "T" * tlen, "body": "b" * 9000}]})
     check(f"title {tlen} chars stays under cap", len(r) <= lb.TG_LIMIT, f"len={len(r)}")
     check(f"title {tlen} chars not falsely empty", "Nothing needs you" not in r)
+    # Under-cap is not enough: dropping the item entirely also fits, and leaves a header
+    # claiming N are waiting above a blank board. The item itself has to SURVIVE.
+    check(f"title {tlen} chars still shows the item", "T" in r, f"len={len(r)}")
 
 # worst case: long title made ENTIRELY of characters that double under escaping
 r = lb.render(cfg, "needs-me", {"items": [{"title": "_" * 8000, "body": "." * 8000}]})
