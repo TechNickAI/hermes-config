@@ -188,8 +188,18 @@ def load_state(topic: str) -> dict:
     if path.exists():
         try:
             return json.loads(path.read_text())
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as exc:
+            # Do NOT silently start fresh. A blank state means message_id is lost, so the next
+            # push orphans the existing pinned board and posts a second one, and every open
+            # item silently vanishes from view. Preserve the file and make a human look.
+            backup = path.with_suffix(f".corrupt-{int(datetime.now(timezone.utc).timestamp())}")
+            path.replace(backup)
+            raise SystemExit(
+                f"Board state for {topic!r} is corrupt: {exc}\n"
+                f"Preserved at {backup}\n"
+                "Fix or delete it. Starting fresh would orphan the pinned board and drop "
+                "every open item without saying so."
+            )
     return {"message_id": None, "items": []}
 
 
@@ -241,11 +251,26 @@ def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
                 break
             keep.append(item)
             running += size
+
+        # If not even ONE item fits, keeping the first anyway is mandatory. Rendering an empty
+        # list here would print "Nothing needs you" while items are actually waiting, which is
+        # the worst possible failure for a board whose entire job is to be trusted when empty.
+        # A single over-long item gets hard-truncated instead, with the cut marked.
+        if not keep:
+            first = dict(items[0])
+            budget = TG_LIMIT - len(header) - len(first.get("title", "")) - 220
+            first["body"] = first.get("body", "")[: max(budget, 0)].rstrip() + " […]"
+            keep = [first]
+
         dropped = len(items) - len(keep)
         trimmed = render(cfg, topic, {**state, "items": keep}, _depth=1)
-        out = trimmed.replace(
-            f"_as of {stamp}_", f"_+{dropped} more in the project log · as of {stamp}_"
-        )
+        if dropped:
+            trimmed = trimmed.replace(
+                f"_as of {stamp}_", f"_+{dropped} more in the project log · as of {stamp}_"
+            )
+        # Final belt-and-braces guard: the platform rejects the whole message if it is over
+        # the hard cap, so a board that cannot be shortened must still be sendable.
+        out = trimmed if len(trimmed) <= TG_LIMIT else trimmed[: TG_LIMIT - 4].rstrip() + " […]"
     return out
 
 
