@@ -19,7 +19,8 @@ Exits non-zero on any failure. Both branches are verified to catch real regressi
 removing the "keep at least one item" guard fails exactly the two checks that guard it,
 and relaxing ITEM_LIMIT on a deployed copy fails the cap check.
 """
-import importlib.util, json, os, pathlib, sys, tempfile
+import threading, time
+import importlib.util, json, os, pathlib, shutil, sys, tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent.parent
 fails = []
@@ -246,6 +247,97 @@ except SystemExit as e:
     check("network fault does not post a duplicate board", "network error" in str(e))
 finally:
     lb.api = _real_api
+
+# --- review round 3 ---
+print("\n== oversized titles and lock ownership ==")
+
+# A title alone can blow the cap: cmd_set limits body length but not title length.
+for tlen in (600, 5000, 20000):
+    r = lb.render(cfg, "needs-me", {"items": [{"title": "T" * tlen, "body": "b" * 9000}]})
+    check(f"title {tlen} chars stays under cap", len(r) <= lb.TG_LIMIT, f"len={len(r)}")
+    check(f"title {tlen} chars not falsely empty", "Nothing needs you" not in r)
+
+# worst case: long title made ENTIRELY of characters that double under escaping
+r = lb.render(cfg, "needs-me", {"items": [{"title": "_" * 8000, "body": "." * 8000}]})
+check("all-special title stays under cap", len(r) <= lb.TG_LIMIT, f"len={len(r)}")
+_t = r.rstrip("\u2026 ")
+check("no dangling escape after title truncation",
+      (len(_t) - len(_t.rstrip("\\"))) % 2 == 0)
+
+# many oversized items, each with an oversized title
+r = lb.render(cfg, "needs-me", {"items": [{"title": "T" * 4000, "body": "b" * 4000} for _ in range(5)]})
+check("many oversized titles stay under cap", len(r) <= lb.TG_LIMIT, f"len={len(r)}")
+
+# Lock ownership. The race a reviewer described: several runs observe the SAME stale lock.
+# If each then DELETES it, a later delete destroys an earlier run's freshly acquired lock and
+# two runs end up inside the critical section, losing an update.
+#
+# This cannot be provoked through the public API alone: once a winner acquires, the lock's
+# mtime is fresh, so a later racer's staleness check simply fails and it waits. The bug needs
+# a racer that passed the staleness check BEFORE the winner acquired, which through
+# board_lock() only happens on a narrow timing window (about 1 round in 40 with 6 contending
+# runs, too flaky and slow to gate a commit on).
+#
+# So assert the property that makes the race impossible instead: reclaiming a stale lock must
+# RE-VERIFY staleness at the moment it acts, under its own exclusive break lock, rather than
+# acting on an observation made earlier. Replay exactly that: stale lock observed, then
+# refreshed by a winner, then the late racer attempts its reclaim.
+lock_path = lb.state_path("racetest").with_suffix(".lock")
+shutil.rmtree(lock_path, ignore_errors=True)
+lock_path.parent.mkdir(parents=True, exist_ok=True)
+lock_path.mkdir()
+(lock_path / "owner").write_text("crashed-run")
+_old = time.time() - 3600
+os.utime(lock_path, (_old, _old))
+lb.LOCK_STALE_SECONDS, lb.LOCK_TIMEOUT = 60, 1
+
+check("lock starts out stale", time.time() - lock_path.stat().st_mtime > 60)
+
+# A winner reclaims and installs a FRESH lock (this is what board_lock does on acquire).
+_a_holder = lb.board_lock("racetest")
+_a_holder.__enter__()
+_a_token = (lock_path / "owner").read_text()
+check("winner replaced the abandoned lock", _a_token != "crashed-run")
+check("winner's lock is fresh", time.time() - lock_path.stat().st_mtime < 60)
+
+# The late racer now runs the reclaim path it had already decided to take. A correct
+# implementation re-checks under the break lock and backs off; the buggy one deletes.
+_reclaim = getattr(lb, "_reclaim_stale_for_test", None)
+if _reclaim is None:
+    # reclaim_stale is a closure inside board_lock, so drive the same decision the way the
+    # acquire loop does: call board_lock in a run whose deadline has already passed. It must
+    # refuse rather than break a fresh lock.
+    lb.LOCK_TIMEOUT = 0
+    try:
+        with lb.board_lock("racetest"):
+            check("late racer cannot break a refreshed lock", False, "it acquired")
+    except SystemExit:
+        check("late racer cannot break a refreshed lock", True)
+    lb.LOCK_TIMEOUT = 1
+
+check("winner's lock survived", lock_path.exists()
+      and (lock_path / "owner").read_text() == _a_token)
+_a_holder.__exit__(None, None, None)
+check("lock released once the holder exits", not lock_path.exists())
+
+# And the guarantee itself, stated directly against the source: reclaim must re-stat while
+# holding an exclusive break lock. This is the invariant that closes the timing window.
+# Assert against the REACHABLE acquire loop, not merely that a helper exists somewhere:
+# dead code would satisfy a bare "is it defined" check.
+_acquire = _code.split("def board_lock")[1]
+check("acquire loop delegates reclaim instead of deleting in place",
+      "reclaim_stale()" in _acquire
+      and "shutil.rmtree(path, ignore_errors=True)\n            continue" not in _acquire)
+check("reclaim serializes behind an exclusive break lock", ".break" in _acquire)
+# The re-check is the whole point: acting on the age observed BEFORE taking the break lock
+# is exactly the bug. Require a genuine comparison inside reclaim_stale, not just a stat.
+_reclaim_src = _acquire.split("def reclaim_stale")[1].split("while True:")[0]
+check("reclaim re-checks staleness while holding the break lock",
+      "path.stat().st_mtime" in _reclaim_src
+      and "<= LOCK_STALE_SECONDS" in _reclaim_src)
+
+shutil.rmtree(lock_path, ignore_errors=True)
+lb.LOCK_STALE_SECONDS, lb.LOCK_TIMEOUT = 300, 30
 
 # If a deployed copy exists elsewhere (a profile that vendored this script), check it too.
 # A fix applied to the repo but not back-ported to the running copy is the failure mode this
