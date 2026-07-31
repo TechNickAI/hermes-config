@@ -28,10 +28,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider
-from tools.registry import tool_error
-from hermes_cli.config import cfg_get
-
+from .hermes_compat import (
+    MemoryProvider,
+    tool_error,
+    cfg_get,
+    get_hermes_home,
+    display_hermes_home,
+)
 from .store import CortexStore, KNOWLEDGE_CATEGORIES, DAILY_DIR
 from .retrieval import CortexRetriever
 from .embeddings import OpenAIEmbeddingClient
@@ -105,7 +108,6 @@ def _config_bool(config: dict, key: str, default: bool = False) -> bool:
 def _load_plugin_config() -> dict:
     """Load plugin config from $HERMES_HOME/config.yaml under plugins.cortex."""
     try:
-        from hermes_constants import get_hermes_home
         config_path = get_hermes_home() / "config.yaml"
         if not config_path.exists():
             return {}
@@ -153,7 +155,6 @@ class CortexMemoryProvider(MemoryProvider):
         return True  # SQLite always available; store dir is auto-created
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        from hermes_constants import get_hermes_home
         hermes_home = kwargs.get("hermes_home") or str(get_hermes_home())
         default_store = str(Path(hermes_home) / "cortex")
         store_path = _resolve_path(self._config.get("store_path", default_store), hermes_home)
@@ -248,7 +249,6 @@ class CortexMemoryProvider(MemoryProvider):
 
     def get_config_schema(self) -> list[dict]:
         try:
-            from hermes_constants import display_hermes_home
             default_store = f"{display_hermes_home()}/cortex"
         except Exception:
             default_store = "$HERMES_HOME/cortex"
