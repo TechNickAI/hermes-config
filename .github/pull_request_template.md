@@ -24,10 +24,9 @@
 - [ ] Agent-authored (opened by an automated job)
 
 For anything other than human-authored, add an `Assisted-by:` trailer to the commit
-message and name the accountable human below. A human, not an agent, accepts
-responsibility for merging.
-
-Accountable human:
+message. A human, not an agent, accepts responsibility for merging — the merging GitHub
+account is that record, so **do not type anyone's name here** (this repo prohibits real
+names in PR descriptions).
 
 ## Reviewer hints
 
