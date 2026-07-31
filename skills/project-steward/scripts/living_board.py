@@ -210,6 +210,22 @@ def save_state(topic: str, state: dict) -> None:
     tmp.replace(path)  # atomic; a crash mid-write cannot corrupt the board
 
 
+def escape_md(text: str) -> str:
+    """Neutralize Telegram legacy-Markdown control characters in user content.
+
+    The board is sent with parse_mode="Markdown", and the template supplies its own
+    emphasis (**bold** headers, _italic_ timestamp). Item titles and bodies are
+    arbitrary text: a single unmatched `_`, `*`, `[`, or backtick in a title makes
+    Telegram reject the ENTIRE message with "can't parse entities", so one stray
+    underscore in one item silently blanks the whole board. Escaping content — but
+    not the template's own markup — keeps the board sendable no matter what a pass
+    writes into it.
+    """
+    for ch in ("\\", "_", "*", "[", "`"):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
 def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
     """Render open items only. Resolved items are GONE, not struck through.
 
@@ -234,10 +250,10 @@ def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
 
     parts = [header, ""]
     for idx, item in enumerate(items, 1):
-        parts.append(f"**{idx}. {item.get('title', '').strip()}**")
+        parts.append(f"**{idx}. {escape_md(item.get('title', '').strip())}**")
         body = item.get("body", "").strip()
         if body:
-            parts.append(body)
+            parts.append(escape_md(body))
         parts.append("")
     parts.append(f"_as of {stamp}_")
     out = "\n".join(parts)
@@ -246,7 +262,13 @@ def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
         # Never truncate mid-item; drop whole trailing items and say how many.
         keep, running = [], len(header) + 60
         for item in items:
-            size = len(item.get("title", "")) + len(item.get("body", "")) + 12
+            # Estimate against the ESCAPED length: escaping can only grow the text,
+            # so measuring the raw string would under-count and keep too many rows.
+            size = (
+                len(escape_md(item.get("title", "")))
+                + len(escape_md(item.get("body", "")))
+                + 12
+            )
             if running + size > TG_LIMIT - 120:
                 break
             keep.append(item)
@@ -295,9 +317,19 @@ def push(cfg: dict, topic: str, state: dict) -> None:
         raise SystemExit(f"send failed: {res.get('description')}")
 
     state["message_id"] = res["result"]["message_id"]
-    api(cfg, "pinChatMessage", chat_id=cfg["chat_id"],
-        message_id=state["message_id"], disable_notification=True)
+    # Save BEFORE pinning: the message exists now, so the id must be persisted even if
+    # pinning fails. Losing it here would orphan the board and post a duplicate next run.
     save_state(topic, state)
+    pin = api(cfg, "pinChatMessage", chat_id=cfg["chat_id"],
+              message_id=state["message_id"], disable_notification=True)
+    if not pin.get("ok"):
+        # A board that is not pinned still works, it just scrolls away — so warn loudly
+        # rather than failing the run, and never report success silently.
+        print(
+            f"warning: board posted but NOT pinned ({pin.get('description')}). "
+            "Grant the bot pin permission, or it will scroll out of view.",
+            file=sys.stderr,
+        )
 
 
 def cmd_set(cfg: dict, args) -> int:

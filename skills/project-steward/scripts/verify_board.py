@@ -98,6 +98,42 @@ check("title match dedups", len(st["items"]) == 1 and st["items"][0]["body"] == 
 lb.save_state("rt", st)
 check("state round-trips", lb.load_state("rt")["items"][0]["body"] == "second")
 
+# --- Telegram Markdown safety -------------------------------------------------------
+# parse_mode="Markdown" means one unmatched control character in ONE item's title makes
+# Telegram reject the ENTIRE message ("can't parse entities") — a stray underscore in a
+# branch name silently blanks the whole board. Content must be escaped; the template's
+# own **bold** / _italic_ markup must not be.
+risky = lb.render(cfg, "needs-me", {"items": [
+    {"title": "fix snake_case in main_module", "body": "see file_a.py and *not* a list [1]"},
+]})
+check("underscores in content are escaped", "snake\\_case" in risky)
+check("asterisks in content are escaped", "\\*not\\*" in risky)
+check("brackets in content are escaped", "\\[1]" in risky)
+check("template bold markup survives escaping", risky.startswith("🚦 **"))
+check("template italic stamp survives escaping", "_as of " in risky)
+# Backslashes must be escaped FIRST or the escape characters themselves get mangled.
+back = lb.render(cfg, "needs-me", {"items": [{"title": r"path\to", "body": ""}]})
+check("backslashes escaped before other characters", r"path\\to" in back)
+
+# Escaping grows the text, so the overflow estimate must measure the escaped length or
+# it keeps too many rows and the message blows the cap.
+underscored = lb.render(cfg, "needs-me", {"items": [
+    {"title": f"i_{i}", "body": "_" * 2000} for i in range(6)
+]})
+check("escaped content still respects the cap", len(underscored) <= lb.TG_LIMIT,
+      f"len={len(underscored)}")
+
+# --- Pin failure is surfaced, not swallowed -----------------------------------------
+# A board that posts but fails to pin still works; it just scrolls away. Reporting
+# success silently is what makes that failure invisible.
+src = (HERE / "scripts" / "living_board.py").read_text()
+push_body = src.split("def push(")[1].split("\ndef ")[0]
+check("pin result is inspected", 'pin.get("ok")' in push_body)
+check("pin failure warns the operator", "NOT pinned" in push_body)
+check("message_id saved before pinning",
+      push_body.index("save_state(topic, state)") < push_body.index("pinChatMessage"))
+
+
 # If a deployed copy exists elsewhere (a profile that vendored this script), check it too.
 # A fix applied to the repo but not back-ported to the running copy is the failure mode this
 # catches. Pass the path as argv[1]; skipped silently when not given.
