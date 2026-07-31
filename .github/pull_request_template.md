@@ -14,6 +14,21 @@
 - [ ] Public-safe (no PII, no fleet specifics, placeholders where needed)
 - [ ] Cross-references to related `knowledge/` docs added where useful
 
+## Authorship
+
+<!-- Required. This repo is public and permanent, and some upstream projects now gate
+     contributions on authorship (GCC, OpenJDK). Declare it here. -->
+
+- [ ] Human-authored
+- [ ] Agent-assisted (agent drafted, human reviewed and understands every line)
+- [ ] Agent-authored (opened by an automated job)
+
+For anything other than human-authored, add an `Assisted-by:` trailer to the commit
+message and name the accountable human below. A human, not an agent, accepts
+responsibility for merging.
+
+Accountable human:
+
 ## Reviewer hints
 
 <!-- What should the reviewer (human or `/code-review`) focus on? Tone? Accuracy? Scope? Anything to skip? -->
