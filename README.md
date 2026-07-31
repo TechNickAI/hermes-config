@@ -88,23 +88,31 @@ Four `SOUL.md` starters: `personal-assistant`, `engineer`, `it-admin`,
 the single highest-leverage file in your setup. Copy one, then make it yours. See
 [`templates/soul/README.md`](templates/soul/README.md).
 
-### `skills/` — ten procedural skills
+### `skills/` — eighteen procedural skills
 
 Skills are markdown procedures the agent loads on demand. These are the ones that earned
 their keep in daily use:
 
-| Skill                  | What it does                                                        |
-| ---------------------- | ------------------------------------------------------------------- |
-| `recall`               | Restore context after `/new` — sessions, memories, transcripts      |
-| `multi-review`         | Review any artifact through a panel of diverse lenses across models |
-| `address-pr-comments`  | Triage PR bot feedback, fix what's valid, push back on what isn't   |
-| `pr-review-sweep`      | Nightly sweep of merged PRs for unhandled review comments           |
-| `cron-healthcheck`     | Detect broken cron jobs; triage cheap, fix expensive                |
-| `mob-check`            | What real people are saying right now — Reddit, X, HN, YouTube      |
-| `report`               | File a bug or piece of feedback from any platform session           |
-| `mini-app`             | Add/protect/troubleshoot an app on the mini-app router              |
-| `omnirouter`           | Operate a self-hosted multi-provider LLM router                     |
-| `recall-from-openclaw` | One-time bridge to find your OpenClaw transcript mid-migration      |
+| Skill                  | What it does                                                         |
+| ---------------------- | -------------------------------------------------------------------- |
+| `recall`               | Restore context after `/new` — sessions, memories, transcripts       |
+| `keep-going`           | `/keep_going` — restart an agent that stopped short of the goal      |
+| `trust-framework`      | Govern your own autonomy: when to act, when to ask, how to earn more |
+| `moa-solve`            | Throw multiple models at one hard problem, extract the best answer   |
+| `multi-review`         | Review any artifact through a panel of diverse lenses across models  |
+| `address-pr-comments`  | Triage PR bot feedback, fix what's valid, push back on what isn't    |
+| `pr-review-sweep`      | Nightly sweep of merged PRs for unhandled review comments            |
+| `cron-healthcheck`     | Detect broken cron jobs; triage cheap, fix expensive                 |
+| `memory-cleanup`       | Shrink a bloated `MEMORY.md` / `USER.md` without losing signal       |
+| `mob-check`            | What real people are saying right now — Reddit, X, HN, YouTube       |
+| `grok-search`          | Real-time web and X search via xAI's Grok                            |
+| `report`               | File a bug or piece of feedback from any platform session            |
+| `google-docs`          | Create, format, and export Google Docs from markdown                 |
+| `google-sheets`        | Build and populate Sheets from CSV, JSON, or computed tables         |
+| `google-slides`        | Markdown to a Slides deck via PPTX conversion and Drive import       |
+| `mini-app`             | Add/protect/troubleshoot an app on the mini-app router               |
+| `omnirouter`           | Operate a self-hosted multi-provider LLM router                      |
+| `recall-from-openclaw` | One-time bridge to find your OpenClaw transcript mid-migration       |
 
 A skill is just a directory — `cp -r` it into `~/.hermes/skills/` and it works.
 
