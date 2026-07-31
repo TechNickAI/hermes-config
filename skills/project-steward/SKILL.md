@@ -314,3 +314,5 @@ next action, because that handles edge cases a lookup table cannot.
 - `references/project-state.md`, the markdown files each project carries, with templates
 - `templates/board.toml`, living board configuration
 - `scripts/living_board.py`, the board itself, Python 3.9+, no dependencies
+- `scripts/verify_board.py`, offline self-check for the board; run it after editing it
+  or on a new install. No token needed, no messages sent.
