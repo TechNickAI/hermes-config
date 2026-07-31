@@ -1,0 +1,33 @@
+# Living board configuration.
+#
+# Copy to ~/.hermes/board.toml and edit. Override the location with BOARD_CONFIG.
+# This file is safe to commit: the bot token is read from the environment, never from here.
+
+# Name of the environment variable holding your bot token.
+# The script also falls back to a dotenv-style .env sitting next to this file, which is
+# useful for cron jobs that run with a bare environment.
+bot_token_env = "TELEGRAM_BOT_TOKEN"
+
+# The group or supergroup the board posts into. Supergroups start with -100.
+chat_id = -100000000000000
+
+# Timezone for the "as of" stamp. Use an IANA name. The stamp exists so a stale board can
+# never be mistaken for a fresh one.
+timezone = "UTC"
+
+# Map a short board name to a forum topic id (message_thread_id).
+# For a non-forum chat, set the value to 0 and the board posts to the main chat.
+#
+# The two-board split is the design that matters:
+#   - a DECISION board, which should almost always read "Nothing needs you"
+#   - a CHANGE board, for things worth knowing that need no action
+# Keeping them separate is what lets the decision board stay trustworthy: the moment
+# status updates leak into it, it has to be read to find out whether it matters.
+[topics]
+needs-me = 0   # blocking decisions only
+brief = 0      # material change, no action required
+
+# Optional: mark which boards use decision framing ("N waiting on you" / "Nothing needs you").
+# Boards named needs-me or decisions are detected automatically.
+[topics_decision]
+needs-me = true
