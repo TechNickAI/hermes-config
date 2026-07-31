@@ -47,7 +47,7 @@ jobs:
         run: python -m pytest -q
 
   node-test:
-    name: Tests (auth-service, Node)
+    name: Tests (Node)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -62,10 +62,16 @@ jobs:
           cache: npm
           cache-dependency-path: devops/app-router/auth-service/package-lock.json
 
-      - name: Install dependencies
+      - name: Install auth-service dependencies
         run: npm ci
         working-directory: devops/app-router/auth-service
 
-      - name: Run tests
+      - name: Run auth-service tests
         run: npm test
         working-directory: devops/app-router/auth-service
+
+      - name: Run shared-browser tests
+        # No dependencies: these model browserd's bookkeeping directly so they
+        # run without Playwright or a real Chrome.
+        run: node --test browserd.test.mjs
+        working-directory: devops/shared-browser

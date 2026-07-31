@@ -209,7 +209,18 @@ async function getPage(window = "default", tab = "main") {
           if (t.size === 0) windows.delete(window);
         }
       });
-      tabs.set(tab, { page, lastUsed: Date.now() });
+      // Re-resolve the window's tab map instead of reusing the `tabs` reference
+      // captured before the await. A /close for this window during newPage()
+      // detaches that Map from `windows` (close() calls windows.delete), and a
+      // later getPage() installs a fresh one. Writing the new page into the
+      // detached Map would leave it open in Chrome but unreachable by any
+      // lookup — an orphan tab that leaks until the whole context closes.
+      let live = windows.get(window);
+      if (!live) {
+        live = new Map();
+        windows.set(window, live);
+      }
+      live.set(tab, { page, lastUsed: Date.now() });
       return page;
     })();
     pageLocks.set(key, pending);
