@@ -9,9 +9,15 @@ token and no side effects.
 Run it after editing the board, and on a new install to confirm the environment works:
 
     python3 scripts/verify_board.py
+    python3 scripts/verify_board.py ~/.hermes/scripts/living_board.py   # also check a
+                                                                       # deployed copy
 
-Exits non-zero on any failure. Verified to actually catch regressions: removing the
-"keep at least one item" guard makes it fail exactly the two checks that guard it.
+The optional argument catches the failure mode where a fix lands in the repo but never
+gets back-ported to the copy actually running.
+
+Exits non-zero on any failure. Both branches are verified to catch real regressions:
+removing the "keep at least one item" guard fails exactly the two checks that guard it,
+and relaxing ITEM_LIMIT on a deployed copy fails the cap check.
 """
 import importlib.util, json, os, pathlib, sys, tempfile
 
@@ -39,8 +45,24 @@ lb = load(HERE / "scripts/living_board.py", "lb_repo")
 cfg = lb.load_config()
 
 check("config parses", cfg["chat_id"] == -1001234567890 and cfg["topics"]["brief"] == 11)
-check("shipped template parses",
-      bool(lb._parse_minimal_toml((HERE / "templates/board.toml").read_text()).get("topics")))
+
+# Parse the SHIPPED template, not a fixture, so a broken template fails here rather than on
+# someone's first install. Cross-check the fallback parser against stdlib tomllib when
+# available: the two backends must agree or 3.9 and 3.11+ users get different boards.
+tpl = (HERE / "templates/board.toml").read_text()
+fb = lb._parse_minimal_toml(tpl)
+check("shipped template: topics", isinstance(fb.get("topics"), dict) and bool(fb["topics"]))
+check("shipped template: chat_id int", isinstance(fb.get("chat_id"), int))
+check("shipped template: decision map", fb.get("topics_decision", {}).get("needs-me") is True)
+try:
+    import tomllib
+    std = tomllib.loads(tpl)
+    check("TOML backends agree",
+          std["topics"] == fb["topics"] and std["chat_id"] == fb["chat_id"]
+          and std.get("topics_decision") == fb.get("topics_decision"))
+except ModuleNotFoundError:
+    print("  SKIP  TOML backends agree (stdlib tomllib needs 3.11+)")
+
 check("decision empty state", "Nothing needs you" in lb.render(cfg, "needs-me", {"items": []}))
 check("change empty state", "Nothing material" in lb.render(cfg, "brief", {"items": []}))
 check("decision board counts",
@@ -75,6 +97,28 @@ for body in ("first", "second"):
 check("title match dedups", len(st["items"]) == 1 and st["items"][0]["body"] == "second")
 lb.save_state("rt", st)
 check("state round-trips", lb.load_state("rt")["items"][0]["body"] == "second")
+
+# If a deployed copy exists elsewhere (a profile that vendored this script), check it too.
+# A fix applied to the repo but not back-ported to the running copy is the failure mode this
+# catches. Pass the path as argv[1]; skipped silently when not given.
+if len(sys.argv) > 1:
+    other = pathlib.Path(sys.argv[1]).expanduser()
+    if other.is_file():
+        print(f"\n== deployed copy ({other}) ==")
+        dl = load(other, "lb_deployed")
+        # Deployed copies predate the config layer, so render() takes (topic, state).
+        r = dl.render if dl.render.__code__.co_argcount == 2 else lambda t, s: dl.render(cfg, t, s)
+        g = r("needs-me", {"items": [{"title": "Huge", "body": "y" * 9000}]})
+        check("oversized item never renders as empty", "Nothing needs you" not in g)
+        check("oversized item stays under cap", len(g) <= dl.TG_LIMIT, f"len={len(g)}")
+        m = r("needs-me", {"items": [{"title": f"I{i}", "body": "z" * 3000} for i in range(6)]})
+        check("many oversized items stay under cap", len(m) <= dl.TG_LIMIT, f"len={len(m)}")
+        src = other.read_text()
+        check("corrupt state raises instead of wiping",
+              "raise SystemExit" in src.split("def load_state")[1][:900])
+        check("item cap enforced", getattr(dl, "ITEM_LIMIT", 0) == 600)
+    else:
+        check("deployed copy exists", False, str(other))
 
 print(f"\n{'ALL PASS' if not fails else 'FAILURES: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)
