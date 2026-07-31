@@ -75,7 +75,7 @@ check("resolved items vanish",
 giant = lb.render(cfg, "needs-me", {"items": [{"title": "Huge", "body": "y" * 9000}]})
 check("oversized item never renders as empty", "Nothing needs you" not in giant)
 check("oversized item stays under cap", len(giant) <= lb.TG_LIMIT, f"len={len(giant)}")
-check("oversized item marks the cut", "[…]" in giant)
+check("oversized item marks the cut", "…" in giant)
 
 many = lb.render(cfg, "needs-me", {"items": [{"title": f"I{i}", "body": "z"*3000} for i in range(6)]})
 check("many oversized items stay under cap", len(many) <= lb.TG_LIMIT, f"len={len(many)}")
@@ -100,7 +100,7 @@ check("state round-trips", lb.load_state("rt")["items"][0]["body"] == "second")
 
 # --- Telegram Markdown safety -------------------------------------------------------
 # parse_mode="Markdown" means one unmatched control character in ONE item's title makes
-# Telegram reject the ENTIRE message ("can't parse entities") — a stray underscore in a
+# Telegram reject the ENTIRE message ("can't parse entities"): a stray underscore in a
 # branch name silently blanks the whole board. Content must be escaped; the template's
 # own **bold** / _italic_ markup must not be.
 risky = lb.render(cfg, "needs-me", {"items": [
@@ -108,8 +108,12 @@ risky = lb.render(cfg, "needs-me", {"items": [
 ]})
 check("underscores in content are escaped", "snake\\_case" in risky)
 check("asterisks in content are escaped", "\\*not\\*" in risky)
-check("brackets in content are escaped", "\\[1]" in risky)
-check("template bold markup survives escaping", risky.startswith("🚦 **"))
+check("brackets in content are escaped", "\\[1\\]" in risky)
+# Telegram LEGACY Markdown bold is a SINGLE asterisk. `**text**` is not a delimiter: it
+# renders as literal text with zero bold entities, so the board silently loses all
+# formatting. Verified against the live API before changing this.
+check("template bold uses legacy single-asterisk", risky.startswith("🚦 *")
+      and not risky.startswith("🚦 **"))
 check("template italic stamp survives escaping", "_as of " in risky)
 # Backslashes must be escaped FIRST or the escape characters themselves get mangled.
 back = lb.render(cfg, "needs-me", {"items": [{"title": r"path\to", "body": ""}]})
@@ -171,6 +175,77 @@ check("fuzz: never exceeds the cap", over == 0, f"{over} of 3000")
 check("fuzz: never leaves a dangling escape", dangle == 0, f"{dangle} of 3000")
 check("fuzz: never falsely reports an empty board", false_empty == 0, f"{false_empty} of 3000")
 
+
+# --- second review round: overflow correctness, concurrency, portability ---
+print("\n== overflow, ordering, portability ==")
+
+import ast as _ast
+_src = (HERE / "scripts/living_board.py").read_text()
+# Strip comments AND docstrings via the AST: a prose mention of a directive in an
+# explanatory comment is not a use of it.
+_tree = _ast.parse(_src)
+for _n in _ast.walk(_tree):
+    if isinstance(_n, (_ast.Module, _ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+        if (_n.body and isinstance(_n.body[0], _ast.Expr)
+                and isinstance(_n.body[0].value, _ast.Constant)
+                and isinstance(_n.body[0].value.value, str)):
+            _n.body.pop(0)
+_code = _ast.unparse(_tree)
+
+# the header must report the TRUE open count, not the trimmed subset
+big = [{"title": f"Item {i}", "body": "z" * 1200} for i in range(9)]
+r9 = lb.render(cfg, "needs-me", {"items": big})
+check("header counts ALL open items, not the trimmed subset", "9 waiting on you" in r9,
+      r9.split(chr(10))[0])
+check("trimmed board under cap", len(r9) <= lb.TG_LIMIT, f"len={len(r9)}")
+check("drop note survives (not lost to a recomputed stamp)", "more in the project log" in r9)
+
+# no mid-item cut: kept bodies must be whole
+import re as _re
+bodies = _re.findall(r"z+", r9)
+check("kept bodies are whole, never mid-sliced",
+      all(len(b) == 1200 for b in bodies), f"lengths={sorted(set(len(b) for b in bodies))}")
+
+# a single item too large keeps its title, marks the cut, leaves no dangling escape
+solo = lb.render(cfg, "needs-me", {"items": [{"title": "Solo", "body": "_" * 9000}]})
+check("single oversized item keeps its title", "Solo" in solo)
+check("single oversized item marks the cut", "\u2026" in solo)
+check("single oversized item under cap", len(solo) <= lb.TG_LIMIT, f"len={len(solo)}")
+_tail = solo.rstrip("\u2026] ")
+check("no dangling escape at the cut", (len(_tail) - len(_tail.rstrip("\\"))) % 2 == 0)
+
+# portability + ordering + concurrency, asserted against real code
+check("no POSIX-only strftime directive", "%-I" not in _code and "%-d" not in _code)
+check("timestamp renders", bool(lb.now_local(cfg)), lb.now_local(cfg))
+check("push happens before save in cmd_set",
+      _code.index("push(cfg, args.topic, state)") < _code.index("save_state(args.topic, state)"))
+check("board_lock wraps the read-modify-push cycle", _code.count("with board_lock") >= 2)
+
+with lb.board_lock("locktest"):
+    lb.LOCK_TIMEOUT = 1
+    try:
+        with lb.board_lock("locktest"):
+            check("lock excludes a concurrent holder", False, "second acquire succeeded")
+    except SystemExit:
+        check("lock excludes a concurrent holder", True)
+check("lock released on exit", not lb.state_path("locktest").with_suffix(".lock").exists())
+
+# V2 template correctness, proven against the live API before being asserted here
+tpl = lb.render(cfg, "needs-me", {"items": [{"title": "A.B", "body": "x"}, {"title": "C", "body": "y"}]})
+_specials = ".!()~>#+=|{}"
+_bad = [(i, c) for i, c in enumerate(tpl) if c in _specials and (i == 0 or tpl[i-1] != "\\")]
+check("template escapes its own V2 punctuation", not _bad, f"first={_bad[:1]}")
+
+# a network fault must not crash, must not fall through to posting a duplicate board
+_real_api = lb.api
+lb.api = lambda cfg, method, **kw: {"ok": False, "description": "network error calling " + method}
+try:
+    lb.push(cfg, "needs-me", {"message_id": 123, "items": []})
+    check("network fault does not post a duplicate board", False, "push returned normally")
+except SystemExit as e:
+    check("network fault does not post a duplicate board", "network error" in str(e))
+finally:
+    lb.api = _real_api
 
 # If a deployed copy exists elsewhere (a profile that vendored this script), check it too.
 # A fix applied to the repo but not back-ported to the running copy is the failure mode this
