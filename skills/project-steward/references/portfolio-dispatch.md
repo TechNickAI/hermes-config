@@ -39,12 +39,19 @@ of the pass including on the failure path.
 A task-tracking database is better if you already have one, because the claim and the
 state record are then the same object. **The claim is the idempotency key, not the act
 of looking first.** Listing open tasks, seeing none, and then creating one is a race:
-both passes see nothing and both create a task. Keying the create on the project slug is
-what makes it atomic, and a second create with the same key returns the existing id
+both passes see nothing and both create a task. Keying the create on a stable identifier
+is what makes it atomic, and a second create with the same key returns the existing id
 instead of a duplicate.
 
+The key must be scoped to the attempt, not to the project forever. A constant
+`portfolio:<project-slug>` key is a permanent claim: when a project legitimately needs a
+second pass after its earlier task is complete, the create returns the historical task,
+the instruction below treats it as another pass's ownership, and the project becomes
+permanently unpickable. Scope the key to the pass instead so it is stable within a pass
+(atomic against a concurrent pass) but distinct across passes:
+
 ```bash
-<task-cli> create "<project>: <deliverable>" --idempotency-key "portfolio:<project-slug>"
+<task-cli> create "<project>: <deliverable>" --idempotency-key "portfolio:<project-slug>:<pass-iso-date>"
 ```
 
 If the id that comes back is not the one you just made, another pass owns that project:
@@ -114,8 +121,25 @@ database fully functional. Prefer that. **A card should be a record, not a trigg
 
 Two properties follow, and both are worth having. Local and remote agents are treated
 identically, since nothing is auto-dispatchable. And the self-feeding loop described
-above loses its engine, because a card can no longer manufacture an agent's next hour of
-work without the steward deciding to.
+above gets more expensive to run, because a card can no longer manufacture an agent's
+next hour of work without the steward deciding to.
+
+But disabling auto-dispatch does not break the loop, and claiming it does leaves the
+project starving. The steward can still select the same project every pass and
+explicitly dispatch it; the pass after that audits the answer, manufactures fresh
+urgency, and selects it again. Prose guidance against this already failed: the pass that
+ran after the guidance was written read it, named its own displacement accurately, and
+picked the same project anyway. The agent that manufactures the urgency cannot be the
+only judge of whether the urgency is real.
+
+The structural remedy is a rotation gate computed before the pass, outside the agent's
+judgment. A pre-pass step enumerates every project, reads the last-pick time for each
+from the log, and marks a project ineligible when it has taken N consecutive passes (N=3
+is the value in use). The agent receives this eligibility list as context, not as a
+suggestion it can override. The property that makes it work is that it is computed and
+injected, not argued for: the pass does not decide whether it is excused, because the
+pass is the thing being constrained. Treat this gate as the real fix for the
+self-feeding loop and the guidance as a secondary aid.
 
 ## Dispatch is visible or it did not happen
 
@@ -125,13 +149,18 @@ flat. This is a real reported failure: the principal asked why the pace had drop
 during the system's most productive day on record, because every dispatch that day was a
 silent row.
 
-So the channel is the dispatch surface and the board is the state surface. Send the work
-order in the agent's own thread, then record it on the board. If the board offers event
-subscriptions that push to a channel, wire them up, but **verify delivery end to end
-before relying on them**, subscribe a throwaway task, complete it, and confirm the
-message actually arrives. One steward wired subscriptions, documented them as the fix,
-and only discovered afterward that the notifier never advanced its cursor and no message
-was ever sent.
+So the channel is the dispatch surface and the board is the state surface. **Record the
+order on the board first, then send it to the channel.** The board write is the atomic
+claim that prevents a second pass from dispatching the same work; the channel message is
+the visible side effect. Sending first and recording second reintroduces the
+duplicate-dispatch bug this whole section exists to prevent: two overlapping passes both
+send before either records its card, and a crash after sending leaves no state so a
+retry sends the order again. The claim must come before the side effect, every time. If
+the board offers event subscriptions that push to a channel, wire them up, but **verify
+delivery end to end before relying on them**, subscribe a throwaway task, complete it,
+and confirm the message actually arrives. One steward wired subscriptions, documented
+them as the fix, and only discovered afterward that the notifier never advanced its
+cursor and no message was ever sent.
 
 ## Review panels gate findings, not passes
 
@@ -172,4 +201,9 @@ reports.
 - Rewrite the project's "now" file rather than appending to it.
 - Append to the project's log and update its roadmap.
 - Record decisions with their re-open conditions.
-- Release claim locks.
+- Release claim locks. For a `mkdir` lock, remove the directory. For a database-backed
+  claim, complete or close the task so the claim is released by the same lifecycle that
+  owns it. A claim left open by a crashed pass needs the same staleness treatment as a
+  stale lock directory: after a timeout and proof the owning process is dead, another
+  pass may treat the claim as abandoned and close it. Do not reuse a completed task's id
+  on a later pass; a new pass takes a new attempt-scoped key.
