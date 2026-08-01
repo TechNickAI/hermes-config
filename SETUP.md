@@ -4,16 +4,16 @@ You almost certainly arrived here with an agent already running — Claude Code,
 Codex, or Hermes itself. This page is written for that agent.
 
 **Copy the prompt below and paste it into your agent.** It tells the agent how to read
-this repo, how to choose what fits *your* setup, and — importantly — what to leave
+this repo, how to choose what fits _your_ setup, and — importantly — what to leave
 alone. It is deliberately conservative: it installs the things that work with zero
-configuration, and it *asks* before anything that needs a credential or a running
+configuration, and it _asks_ before anything that needs a credential or a running
 service.
 
 ---
 
 ## The prompt
 
-````text
+```text
 You are setting up my Hermes agent using the hermes-config starter kit.
 
 REPO: https://github.com/TechNickAI/hermes-config
@@ -99,7 +99,7 @@ RULES THAT OVERRIDE EVERYTHING ABOVE:
     accidental commit against this repo.
   - Fewer, well-chosen skills beat a full sweep. If you are unsure whether I need
     something, leave it out and mention it.
-````
+```
 
 ---
 
@@ -125,5 +125,5 @@ python scripts/check_updates.py      # compares ~/.hermes/skills versions agains
 ```
 
 It only reports; it never overwrites. Hermes rewrites its own skills as it learns, so
-your local copy having *diverged* is usually a feature — this just tells you where you
+your local copy having _diverged_ is usually a feature — this just tells you where you
 stand.

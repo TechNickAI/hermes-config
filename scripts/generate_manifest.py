@@ -155,7 +155,12 @@ def render(manifest: dict) -> str:
         "#   works_out_of_the_box  true = copy it and it runs, no setup\n"
         "#   use_when              the trigger conditions, for selective installation\n"
     )
-    return header + yaml.safe_dump(manifest, sort_keys=False, width=100, allow_unicode=True)
+    # width=1000 keeps every scalar on one line. Prettier reflows wrapped YAML scalars,
+    # which would rewrite this file after generation and leave `--check` permanently
+    # failing in CI — the generator and the formatter must agree on one canonical form.
+    return header + yaml.safe_dump(
+        manifest, sort_keys=False, width=1000, allow_unicode=True, default_flow_style=False
+    )
 
 
 def main() -> int:
