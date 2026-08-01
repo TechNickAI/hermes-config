@@ -130,6 +130,10 @@ class ReviewQueue:
                 if it["status"] in ("expired", "resolved"):
                     it["status"] = "open"
                     it["reopened"] = _today()
+                    it["resolution"] = None
+                    # Clear the old escalation stamp: a recurrence is new news,
+                    # and a stale timestamp would silence it for the cooldown.
+                    it["escalated_at"] = None
                 # Refresh mutable context.
                 it["detail"] = detail or it.get("detail", "")
                 it["recommendation"] = recommendation or it.get("recommendation", "")

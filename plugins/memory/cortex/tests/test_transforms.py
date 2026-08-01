@@ -377,3 +377,60 @@ class TestSplitRelinking:
 
         apply_split(tmp_path, plan_split(tmp_path))
         assert "[[big-page/index|the big page]]" in (tmp_path / "topics/ref.md").read_text()
+
+
+class TestSplitSafety:
+    def _oversized(self) -> str:
+        sections = "".join(
+            "## 2026-05-%02d — Section %d\n\n%s\n\n" % (day, day, "word " * 2000)
+            for day in range(1, 9)
+        )
+        return "---\ntitle: Big Page\ntype: person\n---\n\nintro\n\n" + sections
+
+    def test_existing_sibling_folder_is_never_clobbered(self, tmp_path):
+        """`note.md` alongside `note/` is a valid layout, not a split target."""
+        write(tmp_path, "people/big-page.md", self._oversized())
+        write(tmp_path, "people/big-page/index.md", "existing index content\n")
+
+        assert plan_split(tmp_path) == []
+        assert "existing index content" in (tmp_path / "people/big-page/index.md").read_text()
+        assert (tmp_path / "people/big-page.md").exists()
+
+
+class TestLinkPathSafety:
+    def test_link_proposal_cannot_escape_the_store(self, tmp_path):
+        store = tmp_path / "store"
+        store.mkdir()
+        outside = tmp_path / "outside.md"
+        outside.write_text("---\ntitle: Outside\n---\n\nmust not change\n")
+
+        apply_links(store, [{"page": "../outside.md",
+                             "links": [{"name": "x", "target": "victim"}]}])
+        assert "must not change" in outside.read_text()
+
+
+class TestTemporalSubjects:
+    def test_distinct_subjects_are_not_a_conflict(self, tmp_path):
+        """An api host and a db host on both dates is stable, not drift."""
+        write(
+            tmp_path,
+            "projects/svc.md",
+            "---\ntitle: Svc\n---\n\n"
+            "## 2026-01-01 — Initial\n\n"
+            "The api host is alpha.example.com. The db host is db.example.com.\n\n"
+            "## 2026-06-01 — Later\n\n"
+            "The api host is alpha.example.com. The db host is db.example.com.\n",
+        )
+        assert plan_temporal(tmp_path) == []
+
+    def test_same_subject_change_is_still_detected(self, tmp_path):
+        write(
+            tmp_path,
+            "projects/svc.md",
+            "---\ntitle: Svc\n---\n\n"
+            "## 2026-01-01 — Initial\n\nThe api host is alpha.example.com.\n\n"
+            "## 2026-06-01 — Migration\n\nThe api host is beta.example.com.\n",
+        )
+        findings = plan_temporal(tmp_path)
+        assert findings
+        assert findings[0]["conflicts"][0]["newest"]["value"] == "beta.example.com"

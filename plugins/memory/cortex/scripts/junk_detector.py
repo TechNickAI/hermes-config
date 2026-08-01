@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """Detect files that do not belong in a Cortex knowledge store.
 
-Motivating case: a fleet member's store grew to **8.2GB / 46,699 files** because a
-project dumped multiple fully-unzipped copies of a macOS ``.app`` bundle into
-a ``projects/<project>/artifacts/`` tree -- ~25k ``.strings`` files,
-~7k TIFFs, ~2.7k ``.pyc``, ~900 ``.nib``. A knowledge base should be markdown
-measured in megabytes.
-
 A knowledge store should contain prose (``.md``) plus a modest number of
-supporting assets. Anything else is either build output, a vendored
-application, a downloaded archive, or a scratch artifact -- and it degrades
-retrieval, bloats backups, and hides real content.
+supporting assets, measured in megabytes. Stores drift when a project drops
+build output, a vendored application bundle, a downloaded archive, or a request
+cache inside the store directory. Those files degrade retrieval, bloat backups,
+and hide the real content.
 
 This reports; it does NOT delete. Cleanup is a human decision, surfaced through
 the review queue.
 
 Usage:
-    cortex_junk_detector.py --store PATH [--json] [--min-cluster 25]
+    junk_detector.py --store PATH [--json] [--min-cluster 25]
 """
 from __future__ import annotations
 

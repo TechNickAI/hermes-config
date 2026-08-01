@@ -31,6 +31,7 @@ import collections
 import datetime
 import difflib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -123,17 +124,45 @@ def iter_pages(store: Path):
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
-    if not text.startswith("---"):
+    """Split and parse frontmatter using the same fence rules as ``transforms``.
+
+    Delimiters must be exact ``---`` lines and the block must parse as a
+    mapping; otherwise a page that merely opens with a horizontal rule yields a
+    bogus frontmatter slice and a truncated body, skewing the duplicate and
+    contradiction heuristics that read it.
+    """
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n") != "---":
         return {}, text
-    end = text.find("\n---", 3)
-    if end == -1:
+    for index in range(1, len(lines)):
+        if lines[index].rstrip("\r\n") == "---":
+            block = "".join(lines[1:index])
+            body = "".join(lines[index + 1:]).lstrip("\n")
+            try:
+                import yaml
+
+                data = yaml.safe_load(block)
+                if isinstance(data, dict):
+                    return data, body
+                return {}, text
+            except ImportError:
+                break
+            except Exception:
+                return {}, body
+    else:
         return {}, text
-    fm_raw, body = text[3:end], text[end + 4:]
+
     fm = {}
-    for line in fm_raw.splitlines():
-        if ":" in line and not line.startswith((" ", "-")):
+    key = None
+    for line in block.splitlines():
+        if line.startswith(("  - ", "- ")) and key:
+            fm.setdefault(key, [])
+            if isinstance(fm[key], list):
+                fm[key].append(line.split("- ", 1)[1].strip().strip("'\""))
+        elif ":" in line and not line.startswith(" "):
             k, v = line.split(":", 1)
-            fm[k.strip()] = v.strip().strip("'\"")
+            key = k.strip()
+            fm[key] = v.strip().strip("'\"") if v.strip() else []
     return fm, body
 
 
@@ -170,14 +199,23 @@ def link_graph(pages: dict) -> tuple[collections.Counter, list[str]]:
     every candidate.
     """
     stems: dict[str, list[str]] = collections.defaultdict(list)
+    by_relpath: dict[str, str] = {}
     for rel in pages:
         stems[Path(rel).stem].append(rel)
+        by_relpath[rel[:-3] if rel.endswith(".md") else rel] = rel
 
     inbound: collections.Counter = collections.Counter()
     for rel, pg in pages.items():
         for target in pg["links"]:
-            key = Path(target.strip()).stem
-            for candidate in stems.get(key, []):
+            t = target.strip()
+            # A path-qualified link (`[[big-page/index]]`) must resolve to that
+            # exact page, not to every `index.md` in the store.
+            if "/" in t:
+                exact = by_relpath.get(t)
+                if exact and exact != rel:
+                    inbound[exact] += 1
+                continue
+            for candidate in stems.get(Path(t).stem, []):
                 if candidate != rel:
                     inbound[candidate] += 1
     orphans = [r for r in pages if inbound.get(r, 0) == 0]
@@ -309,6 +347,46 @@ def build_brief(store: Path, days: int) -> dict:
 # --------------------------------------------------------------------- apply
 
 
+def deliver_escalations(
+    store: Path,
+    chat_id: str | None,
+    token: str | None,
+    cache_path: str | Path,
+    limit: int = 5,
+) -> dict:
+    """Post due ``needs_human`` items to the Memory Management topic.
+
+    Without this the queue is write-only again: items would be filed and then
+    sit in the store forever, which is the exact failure this toolkit replaces.
+    Only items successfully posted are marked escalated, so a delivery failure
+    retries next run rather than silently swallowing the item.
+    """
+    q = ReviewQueue(store)
+    due = q.pending_escalations(limit=limit)
+    if not due:
+        return {"posted": 0, "pending": 0, "skipped_reason": None}
+    if not (chat_id and token):
+        return {"posted": 0, "pending": len(due),
+                "skipped_reason": "no owner chat or bot token configured"}
+
+    try:
+        from memory_channel import MemoryChannel, format_escalation
+    except ImportError as exc:
+        return {"posted": 0, "pending": len(due), "skipped_reason": str(exc)}
+
+    channel = MemoryChannel(token, chat_id, cache_path)
+    posted, failures = 0, []
+    for item in due:
+        result = channel.post(format_escalation(item))
+        if result.get("ok"):
+            q.mark_escalated(item["id"])
+            posted += 1
+        else:
+            failures.append(result.get("reason", "unknown"))
+    q.save()
+    return {"posted": posted, "pending": len(due) - posted, "failures": failures}
+
+
 def apply_decisions(store: Path, decisions: dict) -> dict:
     """Apply the agent's curation decisions to the queue + checkpoint.
 
@@ -373,6 +451,11 @@ def main() -> int:
     ap.add_argument("--brief", action="store_true", help="emit curation brief as JSON")
     ap.add_argument("--apply", help="path to decisions JSON")
     ap.add_argument("--status", action="store_true", help="show queue + checkpoint status")
+    ap.add_argument("--deliver", action="store_true",
+                    help="post due needs_human escalations to the Memory Management topic")
+    ap.add_argument("--chat-id", help="owner chat id for escalations")
+    ap.add_argument("--token", help="bot token (falls back to TELEGRAM_BOT_TOKEN)")
+    ap.add_argument("--channel-cache", default=None, help="path for the topic-id cache")
     args = ap.parse_args()
 
     store = Path(args.store)
@@ -392,7 +475,26 @@ def main() -> int:
 
     if args.apply:
         decisions = json.loads(Path(args.apply).read_text())
-        print(json.dumps(apply_decisions(store, decisions), indent=2))
+        result = apply_decisions(store, decisions)
+        # Filing an escalation without delivering it recreates the write-only
+        # queue this toolkit exists to replace, so deliver in the same pass.
+        if args.deliver:
+            result["delivery"] = deliver_escalations(
+                store,
+                args.chat_id,
+                args.token or os.environ.get("TELEGRAM_BOT_TOKEN"),
+                args.channel_cache or (store / ".memory-channel.json"),
+            )
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if args.deliver:
+        print(json.dumps(deliver_escalations(
+            store,
+            args.chat_id,
+            args.token or os.environ.get("TELEGRAM_BOT_TOKEN"),
+            args.channel_cache or (store / ".memory-channel.json"),
+        ), indent=2))
         return 0
 
     brief = build_brief(store, args.days)

@@ -182,3 +182,17 @@ class TestSeverityRatchet:
         queue.add("conflict", "people/x.md", "routine", severity="info")
 
         assert queue.items[0]["severity"] == "needs_human"
+
+
+class TestReopenEscalation:
+    def test_reopened_item_is_immediately_eligible_again(self, tmp_path):
+        """A recurrence is new news; a stale stamp must not silence it."""
+        queue = ReviewQueue(tmp_path)
+        item = queue.add("c", "k", "t", severity="needs_human")
+        queue.mark_escalated(item["id"])
+        queue.resolve(item["id"], "handled")
+
+        queue.add("c", "k", "t", severity="needs_human")
+        assert queue.items[0]["status"] == "open"
+        assert queue.items[0]["escalated_at"] is None
+        assert len(queue.pending_escalations()) == 1

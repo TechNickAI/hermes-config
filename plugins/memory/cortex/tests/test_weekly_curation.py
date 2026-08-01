@@ -214,3 +214,77 @@ class TestLinkGraph:
         structure = build_brief(store, days=7)["structure"]
         # Only the hub itself is an orphan; both foo pages are linked.
         assert structure["orphans"] == 1
+
+
+class TestEscalationDelivery:
+    """Filing without delivering recreates the write-only queue this replaces."""
+
+    def test_items_are_marked_escalated_only_after_a_successful_post(self, tmp_path, monkeypatch):
+        import weekly_curation
+
+        store = make_store(tmp_path)
+        queue = ReviewQueue(store)
+        queue.add("contradiction", "people/x.md", "needs a decision", severity="needs_human")
+        queue.save()
+
+        posted = []
+
+        class FakeChannel:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def post(self, text, **kwargs):
+                posted.append(text)
+                return {"ok": True}
+
+        monkeypatch.setitem(
+            sys.modules, "memory_channel",
+            type(sys)("memory_channel"),
+        )
+        sys.modules["memory_channel"].MemoryChannel = FakeChannel
+        sys.modules["memory_channel"].format_escalation = lambda item: item["title"]
+
+        result = weekly_curation.deliver_escalations(
+            store, "-100123", "token", tmp_path / "cache.json"
+        )
+        assert result["posted"] == 1
+        assert posted == ["needs a decision"]
+        assert ReviewQueue(store).items[0]["status"] == "escalated"
+
+    def test_failed_delivery_leaves_the_item_pending(self, tmp_path, monkeypatch):
+        import weekly_curation
+
+        store = make_store(tmp_path)
+        queue = ReviewQueue(store)
+        queue.add("contradiction", "people/x.md", "needs a decision", severity="needs_human")
+        queue.save()
+
+        class FailingChannel:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def post(self, text, **kwargs):
+                return {"ok": False, "reason": "network down"}
+
+        sys.modules["memory_channel"] = type(sys)("memory_channel")
+        sys.modules["memory_channel"].MemoryChannel = FailingChannel
+        sys.modules["memory_channel"].format_escalation = lambda item: item["title"]
+
+        result = weekly_curation.deliver_escalations(
+            store, "-100123", "token", tmp_path / "cache.json"
+        )
+        assert result["posted"] == 0
+        assert ReviewQueue(store).items[0]["status"] == "open"
+
+    def test_missing_credentials_skip_rather_than_drop(self, tmp_path):
+        import weekly_curation
+
+        store = make_store(tmp_path)
+        queue = ReviewQueue(store)
+        queue.add("contradiction", "people/x.md", "needs a decision", severity="needs_human")
+        queue.save()
+
+        result = weekly_curation.deliver_escalations(store, None, None, tmp_path / "c.json")
+        assert result["posted"] == 0
+        assert result["pending"] == 1
+        assert ReviewQueue(store).items[0]["status"] == "open"

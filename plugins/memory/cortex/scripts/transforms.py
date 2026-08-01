@@ -449,8 +449,8 @@ def apply_links(store: Path, proposals: list[dict]) -> dict:
     linked_pages = 0
     links_added = 0
     for prop in proposals:
-        p = store / prop["page"]
-        if not p.exists():
+        p = safe_path(store, prop["page"])
+        if p is None or not p.exists():
             continue
         try:
             block, body = split_frontmatter(p.read_text(errors="replace"))
@@ -479,7 +479,12 @@ def apply_links(store: Path, proposals: list[dict]) -> dict:
 
 
 def plan_split(store: Path, limit_bytes: int = 40000) -> list[dict]:
-    """Oversized pages that should become a folder of sections."""
+    """Oversized pages that should become a folder of sections.
+
+    A page with an existing sibling folder (``note.md`` alongside ``note/``) is
+    skipped: that is a valid layout, and splitting would overwrite whatever the
+    folder already contains.
+    """
     out = []
     for p in iter_pages(store):
         try:
@@ -487,6 +492,9 @@ def plan_split(store: Path, limit_bytes: int = 40000) -> list[dict]:
         except OSError:
             continue
         if len(text) <= limit_bytes:
+            continue
+        target_dir = p.with_suffix("")
+        if target_dir.exists():
             continue
         block, body = split_frontmatter(text)
         sections = re.findall(r"^##\s+(.+)$", body, re.M)
@@ -532,6 +540,10 @@ def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
             continue
 
         folder = store / item["page"].replace(".md", "")
+        if folder.exists():
+            # Defence in depth: plan_split already skips these, but apply must
+            # never clobber an existing folder's index.
+            continue
         folder.mkdir(parents=True, exist_ok=True)
         index_links = []
         for heading, content in chunks:
@@ -600,12 +612,15 @@ CLAIM_PATTERNS = [
     # Deliberately narrow. An earlier looser version matched prose fragments and
     # produced junk like "state: its" / "state: llama" -- worse than useless,
     # because a bogus "current state" banner is actively misleading.
-    (re.compile(r"\b(?:host|server|endpoint|url)\s*(?:is|=|:)\s*"
+    # Group 1 is the SUBJECT, group 2 the VALUE: claims are keyed by subject so
+    # two different hosts mentioned on the same page are not read as a conflict.
+    (re.compile(r"\b(?:the\s+)?(\w[\w -]{0,24}?)\s*(?:host|server|endpoint|url)\s*(?:is|=|:)\s*"
                 r"(https?://[\w./:-]+|[\w.-]+\.[\w.-]+|\d{1,3}(?:\.\d{1,3}){3})", re.I), "endpoint"),
-    (re.compile(r"\b(?:lives?|located|based)\s+in\s+([A-Z][\w .,-]{2,38})"), "location"),
-    (re.compile(r"\b(?:works?|employed)\s+(?:at|for)\s+([A-Z][\w .,&-]{2,38})"), "employer"),
-    (re.compile(r"\b(?:model|provider)\s*(?:is|=|:)\s*([\w./-]{3,50})", re.I), "model"),
-    (re.compile(r"\b(?:port)\s*(?:is|=|:)\s*(\d{2,5})\b", re.I), "port"),
+    (re.compile(r"\b(?:the\s+)?(\w[\w -]{0,24}?)\s*port\s*(?:is|=|:)\s*(\d{2,5})\b", re.I), "port"),
+    (re.compile(r"\b(?:the\s+)?(\w[\w -]{0,24}?)\s*(?:model|provider)\s*(?:is|=|:)\s*"
+                r"([\w./-]{3,50})", re.I), "model"),
+    (re.compile(r"\b(?:lives?|located|based)\s+in\s+()([A-Z][\w .,-]{2,38})"), "location"),
+    (re.compile(r"\b(?:works?|employed)\s+(?:at|for)\s+()([A-Z][\w .,&-]{2,38})"), "employer"),
 ]
 
 # A claim value must look like a real identifier, not a stray word.
@@ -643,25 +658,34 @@ def plan_temporal(store: Path) -> list[dict]:
         if len(dated) < 2:
             continue
 
-        by_claim: dict[str, list] = collections.defaultdict(list)
+        by_claim: dict[tuple[str, str], list] = collections.defaultdict(list)
         for date, heading, content in dated:
             for pattern, label in CLAIM_PATTERNS:
                 for m in pattern.finditer(content):
-                    val = m.group(1).strip().rstrip(".,;:").strip()[:60]
+                    subject = (m.group(1) or "").strip().lower()
+                    val = m.group(2).strip().rstrip(".,;:").strip()[:60]
                     if val.lower() in NOISE_VALUES or not VALUE_OK.match(val):
                         continue
-                    by_claim[label].append((date, val, heading))
+                    by_claim[(label, subject)].append((date, val, heading))
 
         conflicts = []
-        for label, entries in by_claim.items():
+        for (label, subject), entries in by_claim.items():
             values = {v for _, v, _ in entries}
             # Require conflicting values on DIFFERENT dates: the same page
             # listing two values on one day is usually enumeration, not drift.
             dates = {d for d, _, _ in entries}
             if len(values) > 1 and len(dates) > 1:
                 entries.sort()
+                # An ambiguous newest date (two different values on the same
+                # latest date) is not a resolvable conflict -- skip rather than
+                # asserting a lexicographically chosen winner.
+                newest_date = entries[-1][0]
+                newest_values = {v for d, v, _ in entries if d == newest_date}
+                if len(newest_values) > 1:
+                    continue
                 conflicts.append({
                     "claim_type": label,
+                    "subject": subject,
                     "oldest": {"date": entries[0][0], "value": entries[0][1]},
                     "newest": {"date": entries[-1][0], "value": entries[-1][1]},
                     "distinct_values": len(values),
@@ -700,8 +724,9 @@ def apply_temporal(store: Path, findings: list[dict], max_pages: int = 20) -> di
         fm = parse_fm(block) if block else {}
         lines = ["## Current state", ""]
         for c in f["conflicts"]:
+            label = ("%s %s" % (c.get("subject", ""), c["claim_type"])).strip()
             lines.append("- **%s:** %s _(as of %s; earlier entry said %s on %s)_"
-                         % (c["claim_type"], c["newest"]["value"], c["newest"]["date"],
+                         % (label, c["newest"]["value"], c["newest"]["date"],
                             c["oldest"]["value"], c["oldest"]["date"]))
         lines.append("")
         lines.append("_Auto-derived by recency from dated sections below; "

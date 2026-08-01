@@ -36,8 +36,15 @@ def measure(store: Path) -> dict:
     dated_names = 0
     total_bytes = 0
     inbound: collections.Counter = collections.Counter()
-    stems = {p.stem: p for p in pages}
     tag_count = 0
+
+    # Stems collide across categories; credit every candidate so the orphan rate
+    # is not overstated. Path-qualified links resolve exactly.
+    stems: dict[str, list[Path]] = collections.defaultdict(list)
+    by_relpath: dict[str, Path] = {}
+    for p in pages:
+        stems[p.stem].append(p)
+        by_relpath[str(p.relative_to(store))[:-3]] = p
 
     for p in pages:
         try:
@@ -62,10 +69,16 @@ def measure(store: Path) -> dict:
             linked += 1
         for r in refs:
             t = r.strip()
-            if t in stems and stems[t] != p:
-                inbound[t] += 1
+            if "/" in t:
+                exact = by_relpath.get(t)
+                if exact and exact != p:
+                    inbound[exact] += 1
+                continue
+            for candidate in stems.get(t, []):
+                if candidate != p:
+                    inbound[candidate] += 1
 
-    orphans = sum(1 for p in pages if inbound.get(p.stem, 0) == 0)
+    orphans = sum(1 for p in pages if inbound.get(p, 0) == 0)
     return {
         "pages": len(pages),
         "bytes": total_bytes,
@@ -87,8 +100,17 @@ def main() -> int:
     ap.add_argument("--samples", type=int, default=4)
     args = ap.parse_args()
 
-    live = Path(args.store)
-    ws = Path(args.workspace) / args.label
+    live = Path(args.store).resolve()
+    ws = (Path(args.workspace) / args.label).resolve()
+
+    # The whole premise is that the live store is never touched, and the next
+    # statement is an rmtree. An overlapping --workspace/--label (or an absolute
+    # --label, which discards the workspace prefix) would delete the very store
+    # being audited.
+    if ws == live or ws in live.parents or live in ws.parents:
+        print("refusing to run: workspace %s overlaps the live store %s" % (ws, live))
+        return 2
+
     if ws.exists():
         shutil.rmtree(ws)
     ws.parent.mkdir(parents=True, exist_ok=True)
