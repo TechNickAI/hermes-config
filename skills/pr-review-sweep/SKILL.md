@@ -7,8 +7,12 @@ version: 0.1.0
 license: MIT
 metadata:
   hermes:
+    requires:
+      - gh CLI, authenticated
+      - Hermes delegation toolset enabled
     tags: [github, code-review, automation, claude-code, cron]
-    related_skills: [claude-code, github-pr-workflow]
+    related_skills: []
+    # referenced but not shipped here (Hermes core / another source): claude-code, github-pr-workflow
 ---
 
 # PR Review Sweep

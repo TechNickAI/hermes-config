@@ -16,7 +16,8 @@ license: MIT
 metadata:
   hermes:
     tags: [orchestration, multi-model, moa, synthesis, problem-solving]
-    related_skills: [multi-review, create-great-prompts]
+    related_skills: [multi-review]
+    # referenced but not shipped here (Hermes core / another source): create-great-prompts
 ---
 
 # MOA-Solve — Mixture-of-Agents for hard problems

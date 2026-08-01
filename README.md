@@ -10,7 +10,7 @@
 
 <p align="center">
   <strong>A starter kit and reference architecture for the Hermes Agent.</strong><br>
-  Personality presets, a hybrid-retrieval memory plugin, ten battle-tested skills,
+  Personality presets, a hybrid-retrieval memory plugin, a library of procedural skills,
   infrastructure patterns, and a researched migration path from OpenClaw.
 </p>
 
@@ -39,6 +39,7 @@ pieces you like into `~/.hermes/` and delete the rest.
 
 | You are...                            | Start here                                                                                                                      |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Working with a coding agent**       | **[`SETUP.md`](SETUP.md) — a prompt to paste into Claude Code / Cursor / Codex**                                                |
 | New to Hermes, want a good agent fast | [Quick start](#quick-start) → copy a SOUL preset and a skill or two                                                             |
 | Coming from OpenClaw                  | [`knowledge/hermes-vs-openclaw.md`](knowledge/hermes-vs-openclaw.md), then [`docs/migration-guide.md`](docs/migration-guide.md) |
 | Here to understand how Hermes works   | [`knowledge/hermes-architecture.md`](knowledge/hermes-architecture.md)                                                          |
@@ -79,6 +80,29 @@ Start a session and the changes are live:
 hermes
 ```
 
+### Verify it actually worked
+
+Copy commands fail quietly — a missing directory, a skill copied without its dependency,
+a plugin copied but never selected in config. Nothing errors, and the gap only surfaces
+later when something silently no-ops:
+
+```bash
+./scripts/verify_setup.sh
+```
+
+It reads state and changes nothing. It checks that Hermes is installed, that `SOUL.md`
+loaded, that every installed skill is a complete copy, that skills needing a credential
+actually have one, and that a copied memory plugin is actually selected in
+`config.yaml`.
+
+### Using a coding agent?
+
+**[`SETUP.md`](SETUP.md) has a prompt to paste into Claude Code, Cursor, or Codex.** It
+tells your agent to read [`skills/MANIFEST.yaml`](skills/MANIFEST.yaml) rather than
+nineteen skill files, to filter by whether you run one machine or a fleet, to install
+only what needs no configuration, and to _ask_ before anything requiring a credential —
+rather than copying everything and reporting success.
+
 ## What's in here
 
 ### `templates/` — personality presets
@@ -88,34 +112,69 @@ Four `SOUL.md` starters: `personal-assistant`, `engineer`, `it-admin`,
 the single highest-leverage file in your setup. Copy one, then make it yours. See
 [`templates/soul/README.md`](templates/soul/README.md).
 
-### `skills/` — nineteen procedural skills
+### `skills/` — 19 procedural skills
 
-Skills are markdown procedures the agent loads on demand. These are the ones that earned
-their keep in daily use:
+Skills are markdown procedures the agent loads on demand. **A skill is just a
+directory** — `cp -r` it into `~/.hermes/skills/` and it works.
 
-| Skill                  | What it does                                                         |
-| ---------------------- | -------------------------------------------------------------------- |
-| `recall`               | Restore context after `/new` — sessions, memories, transcripts       |
-| `keep-going`           | `/keep_going` — restart an agent that stopped short of the goal      |
-| `trust-framework`      | Govern your own autonomy: when to act, when to ask, how to earn more |
-| `project-steward`      | Run a portfolio of long-running projects as a chief of staff         |
-| `moa-solve`            | Throw multiple models at one hard problem, extract the best answer   |
-| `multi-review`         | Review any artifact through a panel of diverse lenses across models  |
-| `address-pr-comments`  | Triage PR bot feedback, fix what's valid, push back on what isn't    |
-| `pr-review-sweep`      | Nightly sweep of merged PRs for unhandled review comments            |
-| `cron-healthcheck`     | Detect broken cron jobs; triage cheap, fix expensive                 |
-| `memory-cleanup`       | Shrink a bloated `MEMORY.md` / `USER.md` without losing signal       |
-| `mob-check`            | What real people are saying right now — Reddit, X, HN, YouTube       |
-| `grok-search`          | Real-time web and X search via xAI's Grok                            |
-| `report`               | File a bug or piece of feedback from any platform session            |
-| `google-docs`          | Create, format, and export Google Docs from markdown                 |
-| `google-sheets`        | Build and populate Sheets from CSV, JSON, or computed tables         |
-| `google-slides`        | Markdown to a Slides deck via PPTX conversion and Drive import       |
-| `mini-app`             | Add/protect/troubleshoot an app on the mini-app router               |
-| `omnirouter`           | Operate a self-hosted multi-provider LLM router                      |
-| `recall-from-openclaw` | One-time bridge to find your OpenClaw transcript mid-migration       |
+> Grouped by what you're trying to do. Anything marked **needs setup** requires a
+> credential or a running service before it will do anything — check the `requires`
+> field in [`skills/MANIFEST.yaml`](skills/MANIFEST.yaml), the machine-readable index
+> your agent should read instead of this table.
 
-A skill is just a directory — `cp -r` it into `~/.hermes/skills/` and it works.
+**Start here — no setup, useful immediately**
+
+| Skill             | What it does                                                         |     |
+| ----------------- | -------------------------------------------------------------------- | --- |
+| `recall`          | Restore context after `/new` — sessions, memories, transcripts       |     |
+| `multi-review`    | Review any artifact through a panel of diverse lenses across models  |     |
+| `trust-framework` | Govern your own autonomy: when to act, when to ask, how to earn more |     |
+
+**Everyday agent hygiene**
+
+| Skill             | What it does                                                       |                 |
+| ----------------- | ------------------------------------------------------------------ | --------------- |
+| `keep-going`      | `/keep_going` — restart an agent that stopped short of the goal    |                 |
+| `memory-cleanup`  | Shrink a bloated `MEMORY.md` / `USER.md` without losing signal     |                 |
+| `moa-solve`       | Throw multiple models at one hard problem, extract the best answer |                 |
+| `project-steward` | Run a portfolio of long-running projects as a chief of staff       | **needs setup** |
+| `mob-check`       | What real people are saying right now — Reddit, X, HN, YouTube     |                 |
+
+**Code review & GitHub**
+
+| Skill                 | What it does                                                      |                 |
+| --------------------- | ----------------------------------------------------------------- | --------------- |
+| `address-pr-comments` | Triage PR bot feedback, fix what's valid, push back on what isn't | **needs setup** |
+| `pr-review-sweep`     | Nightly sweep of merged PRs for unhandled review comments         | **needs setup** |
+
+**Google Workspace**
+
+| Skill           | What it does                                                   |                 |
+| --------------- | -------------------------------------------------------------- | --------------- |
+| `google-docs`   | Create, format, and export Google Docs from markdown           | **needs setup** |
+| `google-sheets` | Build and populate Sheets from CSV, JSON, or computed tables   | **needs setup** |
+| `google-slides` | Markdown to a Slides deck via PPTX conversion and Drive import | **needs setup** |
+
+**Research**
+
+| Skill         | What it does                              |                 |
+| ------------- | ----------------------------------------- | --------------- |
+| `grok-search` | Real-time web and X search via xAI's Grok | **needs setup** |
+
+**Fleet / infrastructure — for multi-host setups**
+
+| Skill              | What it does                                              |                 |
+| ------------------ | --------------------------------------------------------- | --------------- |
+| `cron-healthcheck` | Detect broken cron jobs; triage cheap, fix expensive      | **needs setup** |
+| `mini-app`         | Add/protect/troubleshoot an app on the mini-app router    | **needs setup** |
+| `omnirouter`       | Operate a self-hosted multi-provider LLM router           | **needs setup** |
+| `report`           | File a bug or piece of feedback from any platform session |                 |
+
+**Migration**
+
+| Skill                  | What it does                                                   |     |
+| ---------------------- | -------------------------------------------------------------- | --- |
+| `recall-from-openclaw` | One-time bridge to find your OpenClaw transcript mid-migration |     |
 
 > **These are seeds, not the destination.** Hermes writes its own skills from successful
 > problem-solving. Start with a few good ones and let the agent grow the rest.

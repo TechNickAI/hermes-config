@@ -7,8 +7,12 @@ version: 0.1.0
 license: MIT
 metadata:
   hermes:
+    requires:
+      - "env: CRON_HEALTH_ADMIN_TARGET"
+      - Hermes cron + delegation toolsets enabled
     tags: [cron, monitoring, self-healing, fleet, observability]
-    related_skills: [fleet-management, kanban-orchestrator]
+    related_skills: []
+    # referenced but not shipped here (Hermes core / another source): fleet-management, kanban-orchestrator
 ---
 
 # Cron Healthcheck

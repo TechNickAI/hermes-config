@@ -15,8 +15,11 @@ version: 1.0.0
 license: MIT
 metadata:
   hermes:
+    requires:
+      - a self-hosted OmniRoute LLM router
     tags: [omniroute, router, llm, providers, oauth, migration, model-routing, devops]
-    related_skills: [hermes-agent, native-mcp]
+    related_skills: []
+    # referenced but not shipped here (Hermes core / another source): hermes-agent, native-mcp
 ---
 
 # OmniRoute

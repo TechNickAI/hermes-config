@@ -15,6 +15,8 @@ version: 1.0.0
 license: MIT
 metadata:
   hermes:
+    requires:
+      - "env: TELEGRAM_BOT_TOKEN (for the living board)"
     tags: [orchestration, cron, portfolio, notifications, cost-control, delegation]
     related_skills: [multi-review, cron-healthcheck, trust-framework, keep-going]
 ---

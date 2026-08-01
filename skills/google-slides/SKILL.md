@@ -9,6 +9,9 @@ license: MIT
 platforms: [macos, linux]
 metadata:
   hermes:
+    requires:
+      - gog CLI, authorized via `gog auth login`
+      - pandoc (for markdown conversion)
     tags: [google, slides, drive, markdown, pptx, presentation, productivity]
     related_skills: [google-docs, google-sheets]
 ---

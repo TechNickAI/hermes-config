@@ -1,0 +1,315 @@
+# Machine-readable index of every skill in this repo.
+#
+# GENERATED FILE — do not edit by hand.
+#   regenerate:  python scripts/generate_manifest.py
+#   verify:      python scripts/generate_manifest.py --check
+#
+# Fields an installing agent should read:
+#   scope                 solo | fleet | migration — is this relevant to this user?
+#   requires              external deps that must exist BEFORE the skill works
+#   works_out_of_the_box  true = copy it and it runs, no setup
+#   use_when              the trigger conditions, for selective installation
+_generated_by: scripts/generate_manifest.py
+_do_not_edit: Regenerate with `python scripts/generate_manifest.py`; CI checks it.
+count: 19
+skills:
+- name: address-pr-comments
+  version: 1.0.0
+  scope: solo
+  summary: Use when a pull request has feedback from code-review bots (Cursor Bugbot, Codex, Claude Code Review, Greptile, CodeRabbit) or humans and you need to triage it, fix what is valid, push back on what is wrong, react and reply to every comment, and drive the PR to a clean, mergeable state.
+  use_when: 'a pull request has feedback from code-review bots (Cursor Bugbot, Codex, Claude Code Review, Greptile, CodeRabbit) or humans and you need to triage it, fix what is valid, push back on what is wrong, react and reply to every comment, and drive the PR to a clean, mergeable state. Trigger phrases: "add…'
+  requires:
+  - gh CLI, authenticated
+  works_out_of_the_box: false
+  tags:
+  - github
+  - code-review
+  - pull-requests
+  - bots
+  - triage
+  - automation
+  path: skills/address-pr-comments
+- name: cron-healthcheck
+  version: 0.1.0
+  scope: fleet
+  summary: Detect broken Hermes cron jobs and escalate to a remediation sub-agent.
+  use_when: ''
+  requires:
+  - 'env: CRON_HEALTH_ADMIN_TARGET'
+  - Hermes cron + delegation toolsets enabled
+  works_out_of_the_box: false
+  tags:
+  - cron
+  - monitoring
+  - self-healing
+  - fleet
+  - observability
+  path: skills/cron-healthcheck
+- name: google-docs
+  version: 1.0.0
+  scope: solo
+  summary: Use when creating, importing, formatting, editing, exporting, or quality-checking Google Docs from agent-generated markdown or local files.
+  use_when: creating, importing, formatting, editing, exporting, or quality-checking Google Docs from agent-generated markdown or local files.
+  requires:
+  - gog CLI, authorized via `gog auth login`
+  works_out_of_the_box: false
+  tags:
+  - google
+  - docs
+  - drive
+  - markdown
+  - formatting
+  - productivity
+  path: skills/google-docs
+- name: google-sheets
+  version: 1.0.0
+  scope: solo
+  summary: Use when creating, populating, formatting, importing, exporting, or quality-checking Google Sheets from CSV, JSON arrays, or computed tabular data.
+  use_when: creating, populating, formatting, importing, exporting, or quality-checking Google Sheets from CSV, JSON arrays, or computed tabular data.
+  requires:
+  - gog CLI, authorized via `gog auth login`
+  works_out_of_the_box: false
+  tags:
+  - google
+  - sheets
+  - drive
+  - csv
+  - formatting
+  - productivity
+  path: skills/google-sheets
+- name: google-slides
+  version: 1.0.0
+  scope: solo
+  summary: Use when creating, importing, exporting, or quality-checking Google Slides decks via markdown-to-PPTX conversion and Drive import.
+  use_when: creating, importing, exporting, or quality-checking Google Slides decks via markdown-to-PPTX conversion and Drive import.
+  requires:
+  - gog CLI, authorized via `gog auth login`
+  - pandoc (for markdown conversion)
+  works_out_of_the_box: false
+  tags:
+  - google
+  - slides
+  - drive
+  - markdown
+  - pptx
+  - presentation
+  - productivity
+  path: skills/google-slides
+- name: grok-search
+  version: 0.1.0
+  scope: solo
+  summary: On-demand real-time web and X (Twitter) search via xAI's Grok.
+  use_when: ''
+  requires:
+  - 'env: XAI_API_KEY (xAI console)'
+  works_out_of_the_box: false
+  tags:
+  - grok
+  - xai
+  - real-time
+  - twitter
+  - x
+  path: skills/grok-search
+- name: keep-going
+  version: 1.0.0
+  scope: solo
+  summary: Invoked as /keep_going (or /keep-going) when the agent has stopped short — asked "which option?", narrated a plan instead of executing it, or claimed a blocker that is not real — while the user has already given clear direction.
+  use_when: the user says "keep going", "continue", "you got stuck, unstuck yourself", "why did you stop", or runs the /keep_going slash command.
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - workflow
+  - continuation
+  - autonomy
+  - anti-premature-stop
+  - nudge
+  path: skills/keep-going
+- name: memory-cleanup
+  version: 0.1.0
+  scope: solo
+  summary: Use when a Hermes MEMORY.md or USER.md file is too large, bloated, stale, or over the recommended cap and you need to reduce prompt footprint without losing important facts.
+  use_when: 'a Hermes MEMORY.md or USER.md file is too large, bloated, stale, or over the recommended cap and you need to reduce prompt footprint without losing important facts. Applies a lossless memory diet: compress, relocate to SOUL.md/USER.md/AGENTS.md/context files, offload long-tail facts to the memory pr…'
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - memory
+  - cleanup
+  - prompt-budget
+  - curation
+  - skills
+  path: skills/memory-cleanup
+- name: mini-app
+  version: 0.3.0
+  scope: fleet
+  summary: Use when adding, removing, password-protecting, or troubleshooting a mini-app served by the Hermes app-router (Caddy + PM2 + an Express auth sidecar + Tailscale Serve/Funnel) on a host.
+  use_when: adding, removing, password-protecting, or troubleshooting a mini-app served by the Hermes app-router (Caddy + PM2 + an Express auth sidecar + Tailscale Serve/Funnel) on a host. Covers install, the Caddy route pattern, the auth sidecar conventions, exposing Hermes dashboards behind a password, the we…
+  requires:
+  - 'host services: Caddy + PM2'
+  - Tailscale Serve/Funnel
+  works_out_of_the_box: false
+  tags:
+  - devops
+  - app-router
+  - caddy
+  - pm2
+  - tailscale
+  - funnel
+  - mini-app
+  - fleet
+  path: skills/mini-app
+- name: moa-solve
+  version: 2.0.0
+  scope: solo
+  summary: Use when you have a HARD, open-ended, high-stakes problem worth throwing multiple AI models at and pulling the best solution out — architecture decisions, strategy design, thorny debugging, research synthesis, "what am I missing", tool/system design.
+  use_when: you have a HARD, open-ended, high-stakes problem worth throwing multiple AI models at and pulling the best solution out — architecture decisions, strategy design, thorny debugging, research synthesis, "what am I missing", tool/system design. This is the SOLVE counterpart to multi-review (which criti…
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - orchestration
+  - multi-model
+  - moa
+  - synthesis
+  - problem-solving
+  path: skills/moa-solve
+- name: mob-check
+  version: 1.0.0
+  scope: solo
+  summary: Use when the user wants to know what real people are actually saying about a topic right now, not the SEO/editorial version.
+  use_when: the user wants to know what real people are actually saying about a topic right now, not the SEO/editorial version. Pulls recent posts and engagement from Reddit, X, YouTube, Hacker News, Polymarket, GitHub, and the web, ranks by engagement and recency with a deterministic scorer, and writes one syn…
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - research
+  - social
+  - reddit
+  - x
+  - youtube
+  - recency
+  - engagement
+  - sentiment
+  - multi-source
+  path: skills/mob-check
+- name: multi-review
+  version: 1.1.0
+  scope: solo
+  summary: Use when reviewing almost any meaningful artifact, decision, action, plan, code change, prompt, skill, research summary, outbound message, or public-facing content.
+  use_when: reviewing almost any meaningful artifact, decision, action, plan, code change, prompt, skill, research summary, outbound message, or public-facing content. Runs a small panel of diverse review lenses across model families when available, synthesizes findings into fix/ask/defer/wontfix decisions, and…
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - review
+  - quality
+  - multi-model
+  - synthesis
+  - safety
+  path: skills/multi-review
+- name: omnirouter
+  version: 1.0.0
+  scope: fleet
+  summary: Use when operating, configuring, migrating to, or auditing OmniRoute — the self-hosted multi-provider LLM router that fronts Claude, OpenAI/Codex, Gemini, OpenRouter, and local models behind one OpenAI-compatible (and Anthropic Messages-compatible) endpoint.
+  use_when: operating, configuring, migrating to, or auditing OmniRoute — the self-hosted multi-provider LLM router that fronts Claude, OpenAI/Codex, Gemini, OpenRouter, and local models behind one OpenAI-compatible (and Anthropic Messages-compatible) endpoint. Covers pointing a Hermes agent at OmniRoute, impor…
+  requires:
+  - a self-hosted OmniRoute LLM router
+  works_out_of_the_box: false
+  tags:
+  - omniroute
+  - router
+  - llm
+  - providers
+  - oauth
+  - migration
+  - model-routing
+  - devops
+  path: skills/omnirouter
+- name: pr-review-sweep
+  version: 0.1.0
+  scope: fleet
+  summary: Nightly sweep of recently-merged PRs to address unhandled review comments via a Claude Code sub-agent.
+  use_when: ''
+  requires:
+  - gh CLI, authenticated
+  - Hermes delegation toolset enabled
+  works_out_of_the_box: false
+  tags:
+  - github
+  - code-review
+  - automation
+  - claude-code
+  - cron
+  path: skills/pr-review-sweep
+- name: project-steward
+  version: 1.0.0
+  scope: solo
+  summary: Run a portfolio of long-running projects as a chief of staff rather than a task runner.
+  use_when: you have several open-ended efforts that each need periodic attention, when scheduled agent runs are producing activity without progress, when a notification channel has become an unreadable wall of updates, or when you want an agent to direct specialist agents instead of doing their work. Covers th…
+  requires:
+  - 'env: TELEGRAM_BOT_TOKEN (for the living board)'
+  works_out_of_the_box: false
+  tags:
+  - orchestration
+  - cron
+  - portfolio
+  - notifications
+  - cost-control
+  - delegation
+  path: skills/project-steward
+- name: recall
+  version: 0.2.1
+  scope: solo
+  summary: Restore context from prior sessions, memories, and transcripts.
+  use_when: a bare-pronoun follow-up like "ship it", "do it", or "send that" likely points at a prior-session artifact. Designed to never dead-end — if one source has nothing, keep searching others until you have a useful picture.
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - context
+  - session
+  - recovery
+  - telegram
+  - gateway
+  - productivity
+  path: skills/recall
+- name: recall-from-openclaw
+  version: 0.2.0
+  scope: migration
+  summary: One-time bridge for fleet members migrating from OpenClaw to Hermes.
+  use_when: ''
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - context
+  - migration
+  - openclaw
+  - telegram
+  - gateway
+  - recovery
+  path: skills/recall-from-openclaw
+- name: report
+  version: 0.2.0
+  scope: fleet
+  summary: File a report or piece of feedback from any Hermes platform session.
+  use_when: ''
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - bugs
+  - feedback
+  - kanban
+  - triage
+  - fleet
+  - reporting
+  path: skills/report
+- name: trust-framework
+  version: 2.0.0
+  scope: solo
+  summary: Use to govern your own autonomy, deciding when to act on your own versus ask for approval, and earning more freedom over time the way a new employee earns trust through training and repetition.
+  use_when: ''
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - governance
+  - autonomy
+  - safety
+  - delegation
+  - trust
+  - oversight
+  path: skills/trust-framework

@@ -9,6 +9,8 @@ license: MIT
 platforms: [macos, linux]
 metadata:
   hermes:
+    requires:
+      - gog CLI, authorized via `gog auth login`
     tags: [google, docs, drive, markdown, formatting, productivity]
     related_skills: [google-sheets, google-slides]
 ---

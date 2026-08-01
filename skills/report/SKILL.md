@@ -12,7 +12,8 @@ license: MIT
 metadata:
   hermes:
     tags: [bugs, feedback, kanban, triage, fleet, reporting]
-    related_skills: [kanban-worker, kanban-orchestrator]
+    related_skills: []
+    # referenced but not shipped here (Hermes core / another source): kanban-worker, kanban-orchestrator
 ---
 
 # Report
