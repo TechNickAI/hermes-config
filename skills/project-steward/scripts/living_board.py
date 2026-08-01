@@ -55,9 +55,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -79,6 +83,8 @@ STATE_DIR = Path(os.environ.get("BOARD_STATE_DIR", Path.home() / ".hermes/state/
 
 TG_LIMIT = 3900  # platform hard cap is 4096; leave room for the footer
 ITEM_LIMIT = 600
+LOCK_TIMEOUT = 30  # seconds to wait for another run to release a board
+LOCK_STALE_SECONDS = 300  # a lock older than this is assumed abandoned by a crashed run
 
 # A board item is a HEADLINE plus the one thing that changed, not an essay. Measured on the
 # first real pass after deployment: a single item ran 3,287 characters and pushed the board to
@@ -166,6 +172,12 @@ def api(cfg: dict, method: str, **params):
             return json.load(resp)
     except urllib.error.HTTPError as exc:
         return json.loads(exc.read())
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        # A transient network fault is not a bug in the board, and a raw traceback tells a
+        # cron log nothing useful. Report it in the same shape as an API error so callers
+        # take the normal failure path: state is not saved, so nothing claims a change the
+        # board never received, and the next run simply retries.
+        return {"ok": False, "description": f"network error calling {method}: {exc}"}
 
 
 def now_local(cfg: dict) -> str:
@@ -175,7 +187,11 @@ def now_local(cfg: dict) -> str:
             tz = ZoneInfo(cfg["timezone"])
         except Exception:
             pass
-    return datetime.now(tz).strftime("%a %-I:%M %p")
+    stamp = datetime.now(tz)
+    # %-I is POSIX-only: Windows strftime rejects it with ValueError, which would crash
+    # every render on that platform despite the skill advertising Python 3.9+ generally.
+    hour = stamp.hour % 12 or 12
+    return f"{stamp.strftime('%a')} {hour}:{stamp.strftime('%M %p')}"
 
 
 def state_path(topic: str) -> Path:
@@ -211,17 +227,27 @@ def save_state(topic: str, state: dict) -> None:
 
 
 def escape_md(text: str) -> str:
-    """Neutralize Telegram legacy-Markdown control characters in user content.
+    """Neutralize Telegram MarkdownV2 control characters in user content.
 
-    The board is sent with parse_mode="Markdown", and the template supplies its own
-    emphasis (**bold** headers, _italic_ timestamp). Item titles and bodies are
-    arbitrary text: a single unmatched `_`, `*`, `[`, or backtick in a title makes
-    Telegram reject the ENTIRE message with "can't parse entities", so one stray
-    underscore in one item silently blanks the whole board. Escaping content — but
-    not the template's own markup — keeps the board sendable no matter what a pass
-    writes into it.
+    The board is sent with parse_mode="MarkdownV2", and the template supplies its own
+    emphasis (*bold* headers, _italic_ timestamp). Item titles and bodies are arbitrary
+    text: a single unmatched `_`, `*`, `[`, or backtick in a title makes Telegram reject
+    the ENTIRE message with "can't parse entities", so one stray underscore in one item
+    silently blanks the whole board. Escaping content, but not the template's own markup,
+    keeps the board sendable no matter what a pass writes into it.
+
+    V2 rather than legacy Markdown, verified against the live API:
+
+    - Legacy bold is a SINGLE asterisk. `**text**` is not a delimiter there; it renders as
+      literal text with zero bold entities, so a board using `**` silently loses ALL
+      formatting while appearing to succeed.
+    - Legacy only honours a backslash before a handful of characters. `\\[` is passed
+      through as a literal backslash-bracket, and an escaped bracket inside a bold span
+      still breaks entity parsing outright ("Can't find end of the entity").
+    - V2 defines the full escape set below, renders every one of them literally, and keeps
+      the surrounding emphasis intact.
     """
-    for ch in ("\\", "_", "*", "[", "`"):
+    for ch in "\\_*[]()~`>#+-=|{}.!":
         text = text.replace(ch, "\\" + ch)
     return text
 
@@ -245,11 +271,34 @@ def truncate_escaped(text: str, budget: int) -> str:
     return "".join(out).rstrip() + " […]"
 
 
-def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
+def _assemble(header: str, items: list, footer: str) -> str:
+    parts = [header, ""]
+    for idx, item in enumerate(items, 1):
+        parts.append(f"*{idx}\\. {escape_md(item.get('title', '').strip())}*")
+        body = item.get("body", "").strip()
+        if body:
+            parts.append(escape_md(body))
+        parts.append("")
+    parts.append(footer)
+    return "\n".join(parts)
+
+
+def render(cfg: dict, topic: str, state: dict) -> str:
     """Render open items only. Resolved items are GONE, not struck through.
 
     A resolved item left visible is still something the reader has to process and dismiss,
     which is the exact cost this tool exists to remove.
+
+    Overflow drops whole trailing items, MEASURING the assembled text each time rather than
+    estimating per-item sizes. An estimate has to guess at markdown, indices and newlines, so
+    it kept too many items and fell through to a hard slice that cut inside an item, breaking
+    the no-mid-item rule it existed to enforce. Measuring also removes the need for the final
+    slice entirely, so a dangling escape can no longer reach Telegram.
+
+    Rendering is a single pass rather than a recursive re-render. Recursing recomputed the
+    timestamp, so the drop note was appended by replacing a footer string that no longer
+    matched and silently vanished; and it rebuilt the header from the TRIMMED list, letting a
+    decision board report fewer items waiting than there really were.
     """
     items = [i for i in state.get("items", []) if not i.get("resolved")]
     stamp = now_local(cfg)
@@ -260,71 +309,63 @@ def render(cfg: dict, topic: str, state: dict, _depth: int = 0) -> str:
 
     if not items:
         empty = "Nothing needs you." if decision else "Nothing material since your last look."
-        return f"{'✅' if decision else '🧭'} **{empty}**\n\n_as of {stamp}_"
+        return f"{'✅' if decision else '🧭'} *{escape_md(empty)}*\n\n_as of {escape_md(stamp)}_"
 
-    if decision:
-        header = f"🚦 **{len(items)} waiting on you**"
-    else:
-        header = "🧭 **What changed**"
+    # The header always reflects the TRUE number of open items, never the trimmed subset.
+    header = f"🚦 *{len(items)} waiting on you*" if decision else "🧭 *What changed*"
+    footer = f"_as of {escape_md(stamp)}_"
 
-    parts = [header, ""]
-    for idx, item in enumerate(items, 1):
-        parts.append(f"**{idx}. {escape_md(item.get('title', '').strip())}**")
-        body = item.get("body", "").strip()
-        if body:
-            parts.append(escape_md(body))
-        parts.append("")
-    parts.append(f"_as of {stamp}_")
-    out = "\n".join(parts)
+    out = _assemble(header, items, footer)
+    if len(out) <= TG_LIMIT:
+        return out
 
-    if len(out) > TG_LIMIT and _depth == 0:
-        # Never truncate mid-item; drop whole trailing items and say how many.
-        keep, running = [], len(header) + 60
-        for item in items:
-            # Estimate against the ESCAPED length: escaping can only grow the text,
-            # so measuring the raw string would under-count and keep too many rows.
-            size = (
-                len(escape_md(item.get("title", "")))
-                + len(escape_md(item.get("body", "")))
-                + 12
-            )
-            if running + size > TG_LIMIT - 120:
-                break
-            keep.append(item)
-            running += size
-
-        # If not even ONE item fits, keeping the first anyway is mandatory. Rendering an empty
-        # list here would print "Nothing needs you" while items are actually waiting, which is
-        # the worst possible failure for a board whose entire job is to be trusted when empty.
-        # A single over-long item gets hard-truncated instead, with the cut marked.
-        if not keep:
-            first = dict(items[0])
-            # Budget against ESCAPED lengths, matching the multi-item estimate above.
-            # A raw-length budget under-counts (escaping only grows text), so a body of
-            # mostly Markdown-sensitive characters would blow past the cap and fall
-            # through to the hard slice.
-            budget = TG_LIMIT - len(header) - len(escape_md(first.get("title", ""))) - 220
-            first["body"] = truncate_escaped(first.get("body", ""), max(budget, 0))
-            keep = [first]
-
+    keep = list(items)
+    while keep:
         dropped = len(items) - len(keep)
-        trimmed = render(cfg, topic, {**state, "items": keep}, _depth=1)
-        if dropped:
-            trimmed = trimmed.replace(
-                f"_as of {stamp}_", f"_+{dropped} more in the project log · as of {stamp}_"
-            )
-        # Final belt-and-braces guard: the platform rejects the whole message if it is over
-        # the hard cap, so a board that cannot be shortened must still be sendable.
-        # The slice must not land between a backslash and the character it escapes —
-        # a dangling escape makes Telegram reject the message outright, which is the
-        # exact failure this guard exists to prevent.
-        if len(trimmed) > TG_LIMIT:
-            cut = trimmed[: TG_LIMIT - 4]
-            if len(cut) - len(cut.rstrip("\\")) & 1:  # odd trailing backslashes = dangling
-                cut = cut[:-1]
-            trimmed = cut.rstrip() + " […]"
-        out = trimmed
-    return out
+        candidate = _assemble(
+            header,
+            keep,
+            f"_\\+{dropped} more in the project log · as of {escape_md(stamp)}_" if dropped else footer,
+        )
+        if len(candidate) <= TG_LIMIT:
+            return candidate
+        keep.pop()
+
+    # Not even one whole item fits. Rendering an empty list here would print "Nothing needs
+    # you" while items are waiting, the worst possible failure for a board whose value is
+    # being trusted when it says empty. Keep the first item and shrink it to fit instead.
+    #
+    # The TITLE has to be bounded too, not just the body. cmd_set caps body length but not
+    # title length, so a single very long title assembles past the cap on its own and the
+    # platform rejects the whole message. Give the title at most half the budget, then let
+    # the body use whatever is left.
+    first = dict(items[0])
+    dropped = len(items) - 1
+    tail = f"_\\+{dropped} more in the project log · as of {escape_md(stamp)}_" if dropped else footer
+
+    frame = len(_assemble(header, [{"title": "", "body": ""}], tail))
+    budget = max(TG_LIMIT - frame - 8, 0)
+
+    title = first.get("title", "").strip()
+    if len(escape_md(title)) > budget // 2:
+        title = truncate_escaped(title, budget // 2)
+    first["title"] = title
+
+    body_budget = max(budget - len(escape_md(title)), 0)
+    first["body"] = truncate_escaped(first.get("body", ""), body_budget)
+
+    out = _assemble(header, [first], tail)
+    if len(out) <= TG_LIMIT:
+        return out
+
+    # Belt and braces. Every branch above budgets against escaped lengths, so this should be
+    # unreachable, but a board that cannot be shortened must still be SENDABLE: the platform
+    # rejects an oversized message outright, which would blank the board entirely. Drop the
+    # body rather than slicing the assembled text, since a slice can land inside an escape
+    # sequence and leave a dangling backslash that also gets the message rejected.
+    first["body"] = ""
+    out = _assemble(header, [first], tail)
+    return out if len(out) <= TG_LIMIT else _assemble(header, [], tail)
 
 
 def try_pin(cfg: dict, topic: str, state: dict) -> None:
@@ -334,7 +375,7 @@ def try_pin(cfg: dict, topic: str, state: dict) -> None:
     permission yet, or Telegram had a blip). Since later runs edit the existing
     message rather than re-posting, a failure here would otherwise never be retried
     and the board would scroll out of view forever. A board that is merely unpinned
-    still works, so warn rather than fail the run — but never report success silently.
+    still works, so warn rather than fail the run, but never report success silently.
     """
     pin = api(cfg, "pinChatMessage", chat_id=cfg["chat_id"],
               message_id=state["message_id"], disable_notification=True)
@@ -355,7 +396,7 @@ def push(cfg: dict, topic: str, state: dict) -> None:
 
     if mid:
         res = api(cfg, "editMessageText", chat_id=cfg["chat_id"], message_id=mid,
-                  text=text, parse_mode="Markdown")
+                  text=text, parse_mode="MarkdownV2")
         if res.get("ok") or "not modified" in res.get("description", ""):
             # An earlier run posted the board but couldn't pin it (no permission yet, or
             # a transient failure). Edits keep succeeding forever, so without this retry
@@ -364,8 +405,13 @@ def push(cfg: dict, topic: str, state: dict) -> None:
                 try_pin(cfg, topic, state)
             return
         # Board was deleted or is too old to edit; fall through and create a new one.
+        # But a NETWORK failure is not evidence the board is gone. Falling through on a
+        # timeout would post a duplicate board and orphan the real one, so fail instead
+        # and let the next run retry the edit.
+        if "network error" in res.get("description", ""):
+            raise SystemExit(f"board update failed: {res.get('description')}")
 
-    params = {"chat_id": cfg["chat_id"], "text": text, "parse_mode": "Markdown"}
+    params = {"chat_id": cfg["chat_id"], "text": text, "parse_mode": "MarkdownV2"}
     thread = cfg["topics"].get(topic)
     if thread:
         params["message_thread_id"] = thread
@@ -379,6 +425,123 @@ def push(cfg: dict, topic: str, state: dict) -> None:
     # pinning fails. Losing it here would orphan the board and post a duplicate next run.
     save_state(topic, state)
     try_pin(cfg, topic, state)
+
+
+@contextmanager
+def board_lock(topic: str):
+    """Serialize the whole read-modify-push cycle for one board.
+
+    Two scheduled passes calling `set` on the same board can otherwise both load the same
+    snapshot, each append their own item, and the second write silently erases the first.
+    Atomic file replacement prevents a half-written file, not a lost update.
+
+    An exclusive-create lock directory is atomic on every POSIX filesystem and on Windows.
+    A lock older than LOCK_STALE_SECONDS is assumed abandoned by a crashed run.
+
+    Reclaiming a stale lock is done by RENAMING it aside rather than deleting it in place.
+    Two runs can observe the same stale mtime; if both then deleted the path, the second
+    delete would destroy the first run's freshly acquired lock and let both enter the
+    critical section, which is the exact lost update the lock exists to prevent. os.replace
+    onto a uniquely named path has exactly one winner, and the loser's rename fails or moves
+    an already-moved directory, so it simply retries.
+
+    Acquisition publishes a fully-formed lock with a single atomic rename, so exactly one
+    racer can win and the token is never visible in a half-built state.
+
+    Reclaiming a STALE lock is the subtle part. Several runs can observe the same stale
+    mtime. If each then deleted the directory, a later delete would destroy an earlier run's
+    freshly acquired lock and put two runs inside the critical section, which is the lost
+    update this exists to prevent.
+
+    Reclaim therefore takes a separate, exclusive BREAK lock first. Only the run holding the
+    break lock may move the stale directory aside, and it re-checks staleness while holding
+    it, so a lock that another run already refreshed is never stolen. Without that, the gap
+    between "observe stale" and "rename aside" is wide enough to lose an update: measured at
+    roughly one violation per 40 rounds of 6 contending runs.
+
+    Ownership is recorded in a token file, and a holder deletes the lock on exit only while
+    the on-disk token is still its own.
+    """
+    path = state_path(topic).with_suffix(".lock")
+    token = f"{os.getpid()}-{threading.get_ident()}-{time.time()}-{os.urandom(6).hex()}"
+    owner = path / "owner"
+    deadline = time.time() + LOCK_TIMEOUT
+
+    def publish() -> bool:
+        """Atomically install a fully-formed lock. True if we won it."""
+        staging = path.with_name(path.name + f".new-{token}")
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
+        (staging / "owner").write_text(token)
+        try:
+            # rename onto an existing directory fails, which is what makes this atomic.
+            os.rename(str(staging), str(path))
+            return True
+        except OSError:
+            shutil.rmtree(staging, ignore_errors=True)
+            return False
+
+    def reclaim_stale() -> None:
+        """Break one abandoned lock, serialized so only one run can do it at a time."""
+        breaker = path.with_name(path.name + ".break")
+        try:
+            breaker.mkdir(parents=True)
+        except FileExistsError:
+            # Another run is already breaking it, or crashed mid-break. Clear an abandoned
+            # breaker so a crash here cannot wedge the board forever.
+            try:
+                if time.time() - breaker.stat().st_mtime > LOCK_STALE_SECONDS:
+                    shutil.rmtree(breaker, ignore_errors=True)
+            except OSError:
+                pass
+            return
+        try:
+            # Re-check while holding the break lock. If a racer already reclaimed and
+            # refreshed the lock, its mtime is recent and it must be left alone.
+            try:
+                if time.time() - path.stat().st_mtime <= LOCK_STALE_SECONDS:
+                    return
+            except FileNotFoundError:
+                return
+            aside = f"{path}.stale-{token}"
+            try:
+                os.replace(str(path), aside)
+            except OSError:
+                return
+            shutil.rmtree(aside, ignore_errors=True)
+        finally:
+            shutil.rmtree(breaker, ignore_errors=True)
+
+    while True:
+        if publish():
+            break
+
+        try:
+            age = time.time() - path.stat().st_mtime
+        except FileNotFoundError:
+            continue  # released between our failed publish and the stat
+
+        if age > LOCK_STALE_SECONDS:
+            reclaim_stale()
+            continue
+
+        if time.time() > deadline:
+            raise SystemExit(
+                f"Board {topic!r} is locked by another run ({int(age)}s old).\n"
+                f"If nothing else is running, remove {path}"
+            )
+        time.sleep(0.2)
+
+    try:
+        yield
+    finally:
+        # Remove the lock ONLY if it is still ours. If a stale-reclaim handed it to another
+        # run while we were working, the token differs and deleting would free their lock.
+        try:
+            if owner.read_text() == token:
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def cmd_set(cfg: dict, args) -> int:
@@ -401,20 +564,25 @@ def cmd_set(cfg: dict, args) -> int:
             "If it genuinely needs the length, pass --long."
         )
 
-    state = load_state(args.topic)
-    stamp = datetime.now(timezone.utc).isoformat()
-    for item in state["items"]:
-        if item["title"].lower() == args.title.lower():
-            item.update(body=body, resolved=False, updated=stamp)
-            break
-    else:
-        state["items"].append(
-            {"title": args.title, "body": body, "resolved": False,
-             "created": stamp, "updated": stamp}
-        )
+    with board_lock(args.topic):
+        state = load_state(args.topic)
+        stamp = datetime.now(timezone.utc).isoformat()
+        for item in state["items"]:
+            if item["title"].lower() == args.title.lower():
+                item.update(body=body, resolved=False, updated=stamp)
+                break
+        else:
+            state["items"].append(
+                {"title": args.title, "body": body, "resolved": False,
+                 "created": stamp, "updated": stamp}
+            )
 
-    save_state(args.topic, state)
-    push(cfg, args.topic, state)
+        # Push BEFORE saving: if the platform rejects the update, on-disk state must not
+        # claim a change the pinned board never received. push() persists the message id
+        # itself when it has to create a new board.
+        push(cfg, args.topic, state)
+        save_state(args.topic, state)
+
     open_n = len([i for i in state["items"] if not i.get("resolved")])
     print(f"board updated: {args.topic} ({open_n} open)")
     return 0
@@ -422,15 +590,16 @@ def cmd_set(cfg: dict, args) -> int:
 
 def cmd_resolve(cfg: dict, args) -> int:
     """Mark an item resolved so it leaves the board. Substring match on title."""
-    state = load_state(args.topic)
-    for item in state["items"]:
-        if args.item.lower() in item["title"].lower() and not item.get("resolved"):
-            item["resolved"] = True
-            item["resolved_at"] = datetime.now(timezone.utc).isoformat()
-            save_state(args.topic, state)
-            push(cfg, args.topic, state)
-            print(f"resolved: {item['title']}")
-            return 0
+    with board_lock(args.topic):
+        state = load_state(args.topic)
+        for item in state["items"]:
+            if args.item.lower() in item["title"].lower() and not item.get("resolved"):
+                item["resolved"] = True
+                item["resolved_at"] = datetime.now(timezone.utc).isoformat()
+                push(cfg, args.topic, state)
+                save_state(args.topic, state)
+                print(f"resolved: {item['title']}")
+                return 0
     print(f"no open item matching {args.item!r}")
     return 1
 
