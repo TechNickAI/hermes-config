@@ -367,8 +367,26 @@ class TestSplitRelinking:
         assert result["inbound_links_repointed"] == 1
 
         text = (tmp_path / "topics/ref.md").read_text()
-        assert "[[big-page/index]]" in text
+        assert "[[people/big-page/index]]" in text
         assert "[[big-page]]" not in text
+
+    def test_path_qualified_links_are_repointed(self, tmp_path):
+        write(tmp_path, "people/big-page.md", self._oversized())
+        write(tmp_path, "topics/ref.md",
+              "---\ntitle: Ref\n---\n\nSee [[people/big-page]] for detail.\n")
+
+        apply_split(tmp_path, plan_split(tmp_path))
+        text = (tmp_path / "topics/ref.md").read_text()
+        assert "[[people/big-page/index]]" in text
+
+    def test_bare_link_is_left_alone_when_the_stem_is_ambiguous(self, tmp_path):
+        """A same-named page elsewhere means [[stem]] must not be hijacked."""
+        write(tmp_path, "people/big-page.md", self._oversized())
+        write(tmp_path, "topics/big-page.md", "---\ntitle: Other\n---\n\nunrelated\n")
+        write(tmp_path, "notes/ref.md", "---\ntitle: Ref\n---\n\nSee [[big-page]].\n")
+
+        apply_split(tmp_path, plan_split(tmp_path))
+        assert "[[big-page]]" in (tmp_path / "notes/ref.md").read_text()
 
     def test_aliased_links_are_also_repointed(self, tmp_path):
         write(tmp_path, "people/big-page.md", self._oversized())
@@ -376,7 +394,7 @@ class TestSplitRelinking:
               "---\ntitle: Ref\n---\n\nSee [[big-page|the big page]].\n")
 
         apply_split(tmp_path, plan_split(tmp_path))
-        assert "[[big-page/index|the big page]]" in (tmp_path / "topics/ref.md").read_text()
+        assert "[[people/big-page/index|the big page]]" in (tmp_path / "topics/ref.md").read_text()
 
 
 class TestSplitSafety:

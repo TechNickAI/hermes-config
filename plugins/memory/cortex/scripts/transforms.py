@@ -517,7 +517,7 @@ def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
     """
     split_count = 0
     files_created = 0
-    split_stems: list[str] = []
+    split_pages: list[str] = []
     for item in plan[:max_pages]:
         p = safe_path(store, item["page"])
         if p is None or not p.exists():
@@ -557,7 +557,8 @@ def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
             child_fm = {
                 "title": (heading_nodate or heading)[:120],
                 "type": fm.get("type", "note"),
-                "parent": "[[%s/index]]" % Path(item["page"]).stem,
+                "parent": "[[%s/index]]" % (item["page"][:-3] if item["page"].endswith(".md")
+                                            else item["page"]),
                 "tags": fm.get("tags") or [],
             }
             if dm:
@@ -580,23 +581,38 @@ def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
         files_created += 1
         p.unlink()
         split_count += 1
-        split_stems.append(p.stem)
+        split_pages.append(item["page"])
 
     # Repoint inbound links at the new index pages.
     relinked = 0
-    if split_stems:
-        for page in iter_pages(store):
+    if split_pages:
+        remaining = list(iter_pages(store))
+        # A bare `[[stem]]` is only safe to rewrite when that stem is unique in
+        # the store; otherwise a link meant for a different same-named page
+        # would be hijacked to the split index.
+        stem_counts: collections.Counter = collections.Counter()
+        for page in remaining:
+            stem_counts[page.stem] += 1
+        for rel in split_pages:
+            stem_counts[Path(rel).stem] += 1  # the removed source still counts
+
+        for page in remaining:
             try:
                 text = page.read_text(errors="replace")
             except OSError:
                 continue
             updated = text
-            for stem in split_stems:
-                # `[[stem]]` -> `[[stem/index]]`, preserving any alias form.
-                updated = re.sub(r"\[\[%s\]\]" % re.escape(stem),
-                                 "[[%s/index]]" % stem, updated)
-                updated = re.sub(r"\[\[%s\|" % re.escape(stem),
-                                 "[[%s/index|" % stem, updated)
+            for rel in split_pages:
+                stem = Path(rel).stem
+                base = rel[:-3] if rel.endswith(".md") else rel
+                # Path-qualified links always resolve unambiguously.
+                for target in (base, stem if stem_counts[stem] == 1 else None):
+                    if not target:
+                        continue
+                    updated = re.sub(r"\[\[%s\]\]" % re.escape(target),
+                                     "[[%s/index]]" % base, updated)
+                    updated = re.sub(r"\[\[%s\|" % re.escape(target),
+                                     "[[%s/index|" % base, updated)
             if updated != text:
                 page.write_text(updated)
                 relinked += 1
@@ -619,8 +635,13 @@ CLAIM_PATTERNS = [
     (re.compile(r"\b(?:the\s+)?(\w[\w -]{0,24}?)\s*port\s*(?:is|=|:)\s*(\d{2,5})\b", re.I), "port"),
     (re.compile(r"\b(?:the\s+)?(\w[\w -]{0,24}?)\s*(?:model|provider)\s*(?:is|=|:)\s*"
                 r"([\w./-]{3,50})", re.I), "model"),
-    (re.compile(r"\b(?:lives?|located|based)\s+in\s+()([A-Z][\w .,-]{2,38})"), "location"),
-    (re.compile(r"\b(?:works?|employed)\s+(?:at|for)\s+()([A-Z][\w .,&-]{2,38})"), "employer"),
+    # Subject-bearing forms: "<Name> lives in <Place>", "<Name> works at <Org>".
+    # Without a real subject every person on a page collapses into one bucket
+    # and unrelated facts read as drift.
+    (re.compile(r"\b([A-Z][\w.-]+(?:\s+[A-Z][\w.-]+)?)\s+(?:lives?|is\s+based|is\s+located)"
+                r"\s+in\s+([A-Z][\w .,-]{2,38})"), "location"),
+    (re.compile(r"\b([A-Z][\w.-]+(?:\s+[A-Z][\w.-]+)?)\s+(?:works?|is\s+employed)"
+                r"\s+(?:at|for)\s+([A-Z][\w .,&-]{2,38})"), "employer"),
 ]
 
 # A claim value must look like a real identifier, not a stray word.

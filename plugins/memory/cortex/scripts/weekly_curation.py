@@ -148,7 +148,10 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             except ImportError:
                 break
             except Exception:
-                return {}, body
+                # Malformed YAML in a real frontmatter block: fall through to
+                # the line parser rather than reporting the page as having no
+                # frontmatter at all, which would skew the brief's counts.
+                break
     else:
         return {}, text
 
