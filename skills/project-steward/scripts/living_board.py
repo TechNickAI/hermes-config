@@ -260,15 +260,19 @@ def truncate_escaped(text: str, budget: int) -> str:
     a backslash and the character it escapes, leaving a dangling escape that makes
     Telegram reject the message. Building up character by character against the escaped
     cost avoids both.
+
+    The cut marker is only appended when text is actually truncated. Appending it
+    unconditionally turns an empty body into a spurious "\[…\]" entry and makes a body
+    that fits the budget look clipped when it isn't.
     """
     out, used = [], 0
     for ch in text:
         cost = len(escape_md(ch))
         if used + cost > budget:
-            break
+            return "".join(out).rstrip() + " […]"
         out.append(ch)
         used += cost
-    return "".join(out).rstrip() + " […]"
+    return "".join(out)
 
 
 def _assemble(header: str, items: list, footer: str) -> str:

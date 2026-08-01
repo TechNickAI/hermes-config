@@ -342,6 +342,24 @@ check("reclaim re-checks staleness while holding the break lock",
 shutil.rmtree(lock_path, ignore_errors=True)
 lb.LOCK_STALE_SECONDS, lb.LOCK_TIMEOUT = 300, 30
 
+# --- truncate_escaped cut-marker accuracy -------------------------------------------
+# The marker must appear at an actual cut, not unconditionally. An empty body became
+# " [...]", and a short body that fit the budget appeared clipped when it wasn't.
+print("\n== truncate_escaped marker accuracy ==")
+check("truncate_escaped: no marker when text fits",
+      "…" not in lb.truncate_escaped("hello", 100))
+check("truncate_escaped: no marker on empty string", lb.truncate_escaped("", 100) == "")
+check("truncate_escaped: marker appears at the cut", "…" in lb.truncate_escaped("_" * 200, 10))
+# An oversized title with no body must not render a spurious body line.
+r_title_only = lb.render(cfg, "needs-me", {"items": [{"title": "T" * 8000, "body": ""}]})
+check("oversized title + empty body: under cap", len(r_title_only) <= lb.TG_LIMIT)
+check("oversized title + empty body: item survives", "T" in r_title_only)
+# Each … in the output should belong to the title cut, not a phantom body line.
+# Two or more would mean a spurious marker was inserted.
+import re as _re2
+check("oversized title + empty body: no spurious body marker",
+      len(_re2.findall(r"…", r_title_only)) <= 1)
+
 # If a deployed copy exists elsewhere (a profile that vendored this script), check it too.
 # A fix applied to the repo but not back-ported to the running copy is the failure mode this
 # catches. Pass the path as argv[1]; skipped silently when not given.
