@@ -62,11 +62,17 @@ def iso(d: datetime.date) -> str:
 
 
 class Checkpoint:
-    """Tracks incremental progress so a timeout resumes instead of restarting."""
+    """Tracks incremental progress so a timeout resumes instead of restarting.
+
+    Resumption works through ``processed`` (rel_path -> mtime): a page is
+    re-curated only if it has never been seen or has changed since. There is no
+    positional cursor -- an mtime comparison is more robust, because pages can be
+    added, deleted or edited between runs.
+    """
 
     def __init__(self, store: Path):
         self.path = store / CHECKPOINT_NAME
-        self.data = {"last_run": None, "last_completed_run": None, "processed": {}, "cursor": None}
+        self.data = {"last_run": None, "last_completed_run": None, "processed": {}}
         if self.path.exists():
             try:
                 self.data.update(json.loads(self.path.read_text()))
@@ -85,13 +91,17 @@ class Checkpoint:
     def mark(self, rel: str, mtime: float) -> None:
         self.processed[rel] = mtime
 
-    def save(self, completed: bool, cursor: str | None = None) -> None:
+    def prune(self, existing: set[str]) -> int:
+        """Drop entries for pages that no longer exist, so the file stays bounded."""
+        stale = [rel for rel in self.processed if rel not in existing]
+        for rel in stale:
+            del self.processed[rel]
+        return len(stale)
+
+    def save(self, completed: bool) -> None:
         self.data["last_run"] = datetime.datetime.now().isoformat(timespec="seconds")
         if completed:
             self.data["last_completed_run"] = self.data["last_run"]
-            self.data["cursor"] = None
-        else:
-            self.data["cursor"] = cursor
         try:
             self.path.write_text(json.dumps(self.data, indent=2))
         except OSError:
@@ -152,13 +162,24 @@ def load_pages(store: Path) -> dict[str, dict]:
 
 
 def link_graph(pages: dict) -> tuple[collections.Counter, list[str]]:
-    stems = {Path(r).stem: r for r in pages}
-    inbound = collections.Counter()
+    """Count inbound wikilinks per page and identify orphans.
+
+    Stems can collide across categories (``topics/foo.md`` and
+    ``projects/foo.md``). Mapping stem -> single page would silently drop the
+    other's inbound links and inflate the orphan count, so collisions credit
+    every candidate.
+    """
+    stems: dict[str, list[str]] = collections.defaultdict(list)
+    for rel in pages:
+        stems[Path(rel).stem].append(rel)
+
+    inbound: collections.Counter = collections.Counter()
     for rel, pg in pages.items():
-        for t in pg["links"]:
-            tgt = stems.get(Path(t.strip()).stem)
-            if tgt and tgt != rel:
-                inbound[tgt] += 1
+        for target in pg["links"]:
+            key = Path(target.strip()).stem
+            for candidate in stems.get(key, []):
+                if candidate != rel:
+                    inbound[candidate] += 1
     orphans = [r for r in pages if inbound.get(r, 0) == 0]
     return inbound, orphans
 
@@ -328,6 +349,7 @@ def apply_decisions(store: Path, decisions: dict) -> dict:
     expired = q.expire_stale()
     pruned = q.prune_resolved()
     q.save()
+    stale_checkpoint = cp.prune(set(pages))
     cp.save(completed=bool(decisions.get("completed")))
 
     return {
@@ -335,6 +357,7 @@ def apply_decisions(store: Path, decisions: dict) -> dict:
         "resolved": resolved,
         "expired": expired,
         "pruned": pruned,
+        "checkpoint_entries_pruned": stale_checkpoint,
         "pages_marked_curated": len(decisions.get("curated_pages", [])),
         "queue_stats": q.stats(),
     }

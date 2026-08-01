@@ -182,3 +182,35 @@ class TestCommandLine:
 
     def test_missing_store_exits_non_zero(self, tmp_path):
         assert self._run("--store", str(tmp_path / "absent")).returncode != 0
+
+
+class TestCheckpointHygiene:
+    def test_entries_for_deleted_pages_are_pruned(self, tmp_path):
+        store = make_store(tmp_path)
+        apply_decisions(store, {
+            "curated_pages": build_brief(store, days=7)["work_set"],
+            "completed": True,
+        })
+        assert len(Checkpoint(store).processed) == 20
+
+        (store / "topics" / "page01.md").unlink()
+        result = apply_decisions(store, {"curated_pages": [], "completed": True})
+
+        assert result["checkpoint_entries_pruned"] == 1
+        assert len(Checkpoint(store).processed) == 19
+
+
+class TestLinkGraph:
+    def test_stem_collisions_do_not_inflate_orphan_count(self, tmp_path):
+        """topics/foo.md and projects/foo.md must both receive [[foo]] credit."""
+        store = tmp_path / "cortex"
+        for category in ("topics", "projects"):
+            path = store / category / "foo.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("---\ntitle: Foo\n---\n\nbody\n")
+        hub = store / "topics" / "hub.md"
+        hub.write_text("---\ntitle: Hub\n---\n\nSee [[foo]].\n")
+
+        structure = build_brief(store, days=7)["structure"]
+        # Only the hub itself is an orphan; both foo pages are linked.
+        assert structure["orphans"] == 1

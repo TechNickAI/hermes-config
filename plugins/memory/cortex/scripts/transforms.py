@@ -37,21 +37,106 @@ DATE_IDENTITY_DIRS = {"daily", "journal"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "artifacts"}
 
 
+def safe_path(store: Path, rel: str) -> Path | None:
+    """Resolve ``rel`` inside ``store``, or return None if it escapes.
+
+    Plan entries are data. A malformed or hostile entry containing ``..`` or an
+    absolute path would otherwise let a transform rewrite files outside the
+    knowledge store. Symlinked components are refused for the same reason.
+    """
+    if not rel or Path(rel).is_absolute():
+        return None
+    root = store.resolve()
+    candidate = (root / rel).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    # Refuse to follow symlinks out of the store.
+    probe = root
+    for part in Path(rel).parts:
+        probe = probe / part
+        if probe.is_symlink():
+            return None
+    return candidate
+
+
 # ----------------------------------------------------------------- frontmatter
 
 
 def split_frontmatter(text: str) -> tuple[str, str]:
-    """Return (frontmatter_block_without_fences, body)."""
-    if not text.startswith("---"):
+    """Return (frontmatter_block_without_fences, body).
+
+    Delimiters must be exact ``---`` lines. A looser check treats an ordinary
+    Markdown horizontal rule as a frontmatter fence, which silently swallows the
+    prose between two rules when the page is rewritten.
+    """
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n") != "---":
         return "", text
-    end = text.find("\n---", 3)
-    if end == -1:
-        return "", text
-    return text[3:end].strip("\n"), text[end + 4:].lstrip("\n")
+    for index in range(1, len(lines)):
+        if lines[index].rstrip("\r\n") == "---":
+            block = "".join(lines[1:index]).strip("\n")
+            body = "".join(lines[index + 1:]).lstrip("\n")
+            # Frontmatter must be a YAML mapping. A document that merely opens
+            # with a horizontal rule ("---\n\nprose\n\n---") would otherwise
+            # have its prose captured as metadata and dropped on rewrite.
+            if not _looks_like_mapping(block):
+                return "", text
+            return block, body
+    # Unterminated fence: treat the whole document as body rather than
+    # consuming it as metadata.
+    return "", text
+
+
+def _looks_like_mapping(block: str) -> bool:
+    if not block.strip():
+        return False
+    try:
+        import yaml
+
+        return isinstance(yaml.safe_load(block), dict)
+    except ImportError:
+        first = block.strip().splitlines()[0]
+        return ":" in first
+    except Exception:
+        # Malformed YAML in a real frontmatter block still counts as
+        # frontmatter; the parser degrades separately.
+        return ":" in block.strip().splitlines()[0]
 
 
 def parse_fm(block: str) -> dict:
-    """Minimal YAML subset parser: scalars and simple lists."""
+    """Parse a frontmatter block into a dict.
+
+    Uses PyYAML when available (the Cortex store already depends on it) so that
+    block scalars, nested maps and lists-of-dicts survive a round trip. The
+    hand-rolled fallback below only runs if PyYAML is missing, and is documented
+    as lossy for those shapes.
+    """
+    if not block.strip():
+        return {}
+    try:
+        import yaml
+
+        data = yaml.safe_load(block)
+        if isinstance(data, dict):
+            return data
+        # A non-mapping frontmatter block is malformed; fall through rather than
+        # silently returning something the callers cannot use.
+    except ImportError:
+        pass
+    except Exception:
+        # Malformed YAML must not take down a whole curation run.
+        return _parse_fm_fallback(block)
+    return _parse_fm_fallback(block)
+
+
+def _parse_fm_fallback(block: str) -> dict:
+    """Minimal YAML subset parser: scalars and simple lists only.
+
+    Lossy for block scalars (``|``/``>``), nested maps, and lists of dicts.
+    Only used when PyYAML is unavailable.
+    """
     fm: dict = {}
     key = None
     for line in block.splitlines():
@@ -71,34 +156,57 @@ def parse_fm(block: str) -> dict:
 
 
 def render_fm(fm: dict) -> str:
-    """Render frontmatter with a stable key order (Obsidian-friendly)."""
+    """Render frontmatter with a stable key order (Obsidian-friendly).
+
+    Values that the simple renderer cannot represent losslessly (nested maps,
+    lists of dicts, multi-line strings) are delegated to PyYAML so no content is
+    dropped on rewrite.
+    """
     order = ["title", "type", "subtype", "status", "date", "created", "updated",
              "tags", "aliases", "related", "sources", "confidence"]
+
+    def scalar(value) -> str:
+        """Render one scalar, quoting anything YAML would reinterpret."""
+        sv = str(value)
+        needs_quote = (
+            "#" in sv
+            or re.match(r"^\d{4}-\d{2}-\d{2}", sv)
+            # `[[wikilink]]` is the important case: unquoted, YAML reads it as a
+            # nested sequence and the link is destroyed on the next read.
+            or sv[:1] in "!&*?|>%@`[]{},"
+            or sv.strip() != sv
+            or sv == ""
+        )
+        return "'%s'" % sv.replace("'", "''") if needs_quote else sv
+
+    def emit(key: str, value) -> list[str]:
+        # Drop keys with no value rather than emitting a bare `key:` that
+        # re-parses as None and then stringifies to "None" on the next pass.
+        if value is None or value == [] or value == {}:
+            return []
+        # Simple scalars and flat string lists keep the readable inline form.
+        if isinstance(value, list):
+            if all(isinstance(v, (str, int, float)) for v in value):
+                return ["%s:" % key] + ["  - %s" % scalar(v) for v in value]
+        elif not isinstance(value, (dict, list)) and "\n" not in str(value):
+            return ["%s: %s" % (key, scalar(value))]
+        # Anything structured or multi-line: let YAML handle it losslessly.
+        try:
+            import yaml
+
+            dumped = yaml.safe_dump({key: value}, default_flow_style=False,
+                                    allow_unicode=True, sort_keys=False)
+            return dumped.rstrip("\n").splitlines()
+        except ImportError:
+            return ["%s: %s" % (key, value)]
+
     lines = ["---"]
     for k in order:
-        if k not in fm:
-            continue
-        v = fm[k]
-        if isinstance(v, list):
-            if not v:
-                continue
-            lines.append("%s:" % k)
-            lines.extend("  - %s" % item for item in v)
-        else:
-            sv = str(v)
-            if re.match(r"^\d{4}-\d{2}-\d{2}", sv):
-                sv = "'%s'" % sv
-            lines.append("%s: %s" % (k, sv))
+        if k in fm:
+            lines.extend(emit(k, fm[k]))
     for k, v in fm.items():
-        if k in order:
-            continue
-        if isinstance(v, list):
-            if not v:
-                continue
-            lines.append("%s:" % k)
-            lines.extend("  - %s" % item for item in v)
-        else:
-            lines.append("%s: %s" % (k, v))
+        if k not in order:
+            lines.extend(emit(k, v))
     lines.append("---")
     return "\n".join(lines)
 
@@ -168,8 +276,13 @@ def plan_derename(store: Path) -> list[dict]:
 def apply_derename(store: Path, plan: list[dict]) -> dict:
     """Rename files and preserve the extracted date in frontmatter."""
     renamed = 0
+    skipped = 0
     for item in plan:
-        src, dst = store / item["from"], store / item["to"]
+        src = safe_path(store, item["from"])
+        dst = safe_path(store, item["to"])
+        if src is None or dst is None:
+            skipped += 1
+            continue
         if not src.exists() or dst.exists():
             continue
         try:
@@ -186,7 +299,7 @@ def apply_derename(store: Path, plan: list[dict]) -> dict:
         dst.write_text(render_fm(fm) + "\n\n" + body.lstrip("\n"))
         src.unlink()
         renamed += 1
-    return {"renamed": renamed}
+    return {"renamed": renamed, "skipped_unsafe": skipped}
 
 
 def rewrite_references(store: Path, plan: list[dict]) -> dict:
@@ -245,8 +358,8 @@ def infer_type(rel: str) -> str:
 def apply_enrich(store: Path, plan: list[dict]) -> dict:
     fixed = 0
     for item in plan:
-        p = store / item["page"]
-        if not p.exists():
+        p = safe_path(store, item["page"])
+        if p is None or not p.exists():
             continue
         try:
             text = p.read_text(errors="replace")
@@ -389,12 +502,17 @@ def plan_split(store: Path, limit_bytes: int = 40000) -> list[dict]:
 
 
 def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
-    """Split an oversized page into `<name>/index.md` + one file per section."""
+    """Split an oversized page into `<name>/index.md` + one file per section.
+
+    Inbound ``[[stem]]`` links are repointed at the new index so splitting never
+    leaves dangling references.
+    """
     split_count = 0
     files_created = 0
+    split_stems: list[str] = []
     for item in plan[:max_pages]:
-        p = store / item["page"]
-        if not p.exists():
+        p = safe_path(store, item["page"])
+        if p is None or not p.exists():
             continue
         try:
             text = p.read_text(errors="replace")
@@ -427,7 +545,7 @@ def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
             child_fm = {
                 "title": (heading_nodate or heading)[:120],
                 "type": fm.get("type", "note"),
-                "parent": "[[%s]]" % Path(item["page"]).stem,
+                "parent": "[[%s/index]]" % Path(item["page"]).stem,
                 "tags": fm.get("tags") or [],
             }
             if dm:
@@ -450,7 +568,29 @@ def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
         files_created += 1
         p.unlink()
         split_count += 1
-    return {"pages_split": split_count, "files_created": files_created}
+        split_stems.append(p.stem)
+
+    # Repoint inbound links at the new index pages.
+    relinked = 0
+    if split_stems:
+        for page in iter_pages(store):
+            try:
+                text = page.read_text(errors="replace")
+            except OSError:
+                continue
+            updated = text
+            for stem in split_stems:
+                # `[[stem]]` -> `[[stem/index]]`, preserving any alias form.
+                updated = re.sub(r"\[\[%s\]\]" % re.escape(stem),
+                                 "[[%s/index]]" % stem, updated)
+                updated = re.sub(r"\[\[%s\|" % re.escape(stem),
+                                 "[[%s/index|" % stem, updated)
+            if updated != text:
+                page.write_text(updated)
+                relinked += 1
+
+    return {"pages_split": split_count, "files_created": files_created,
+            "inbound_links_repointed": relinked}
 
 
 # ------------------------------------------------------------------- temporal
@@ -548,8 +688,8 @@ def apply_temporal(store: Path, findings: list[dict], max_pages: int = 20) -> di
     """
     annotated = 0
     for f in findings[:max_pages]:
-        p = store / f["page"]
-        if not p.exists():
+        p = safe_path(store, f["page"])
+        if p is None or not p.exists():
             continue
         try:
             block, body = split_frontmatter(p.read_text(errors="replace"))

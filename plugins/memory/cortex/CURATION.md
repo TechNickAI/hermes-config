@@ -55,6 +55,27 @@ run was against a copy.
 **Report, don't delete.** The junk detector has no delete path. Cleanup is a human
 decision.
 
+**Path containment.** Plan entries are treated as untrusted data: absolute paths, `..`
+traversal, and symlinked components are refused, so a malformed plan cannot rewrite
+files outside the store.
+
+## Known limits
+
+Stated plainly, because the previous system's failure was overclaiming:
+
+- **Contradiction detection is a keyword pre-filter, not a detector.** It matches
+  supersession language ("previously", "moved to", "instead") to narrow hundreds of
+  pages to a readable handful. Precision is low by design; the LLM pass makes the actual
+  judgment. It does not understand claims.
+- **The temporal transform only handles narrow, well-formed claims** (endpoints, ports,
+  models, locations, employers) appearing in dated sections, and requires conflicting
+  values on different dates. It will miss most real contradictions. It is tuned to
+  produce no false "Current state" banners rather than to catch everything.
+- **Frontmatter round-trips through PyYAML** when available. Comments and anchors in
+  frontmatter are not preserved.
+- **No concurrency control.** Two curation passes against the same store at the same
+  time can interleave writes. Run one at a time.
+
 ## Usage
 
 Dry-run the full suite against a copy (live store untouched):

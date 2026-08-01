@@ -150,3 +150,35 @@ class TestPersistence:
         queue.add("lint", "x", "y", severity="info")
         queue.save()
         assert json.loads((tmp_path / ".review-queue.json").read_text())["items"]
+
+
+class TestCorruptionSafety:
+    def test_corrupt_file_is_quarantined_not_silently_replaced(self, tmp_path):
+        """A corrupt queue may hold unresolved human decisions."""
+        queue = ReviewQueue(tmp_path)
+        queue.add("contradiction", "people/x.md", "human decision", severity="needs_human")
+        queue.save()
+
+        (tmp_path / ".review-queue.json").write_text('{"items": [ {"id": "trunc"')
+        reopened = ReviewQueue(tmp_path)
+
+        assert reopened.load_error
+        assert (tmp_path / ".review-queue.json.corrupt").exists()
+
+
+class TestSeverityRatchet:
+    def test_severity_upgrades_when_an_issue_proves_serious(self, tmp_path):
+        """An item first logged as info must not stay trapped below needs_human."""
+        queue = ReviewQueue(tmp_path)
+        queue.add("conflict", "people/x.md", "maybe an issue", severity="info")
+        queue.add("conflict", "people/x.md", "actually needs a human", severity="needs_human")
+
+        assert queue.items[0]["severity"] == "needs_human"
+        assert len(queue.pending_escalations()) == 1
+
+    def test_severity_never_downgrades(self, tmp_path):
+        queue = ReviewQueue(tmp_path)
+        queue.add("conflict", "people/x.md", "human decision", severity="needs_human")
+        queue.add("conflict", "people/x.md", "routine", severity="info")
+
+        assert queue.items[0]["severity"] == "needs_human"

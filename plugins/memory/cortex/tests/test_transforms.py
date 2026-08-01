@@ -58,6 +58,77 @@ class TestFrontmatterRoundTrip:
         assert block == ""
         assert body.startswith("# Heading")
 
+    def test_wikilinks_survive_a_round_trip(self):
+        """Unquoted `[[link]]` parses as a nested YAML sequence and is destroyed."""
+        data = {"title": "X", "related": ["[[some-page]]", "[[other-page]]"]}
+        reparsed = parse_fm(split_frontmatter(render_fm(data) + "\n\nbody\n")[0])
+        assert reparsed["related"] == ["[[some-page]]", "[[other-page]]"]
+
+    def test_block_scalar_content_is_not_lost(self):
+        block = "title: X\nsummary: |\n  line one\n  line two\n"
+        data = parse_fm(block)
+        assert "line one" in data["summary"] and "line two" in data["summary"]
+
+        reparsed = parse_fm(split_frontmatter(render_fm(data) + "\n\nbody\n")[0])
+        assert reparsed["summary"] == data["summary"]
+
+    def test_nested_structures_survive(self):
+        block = "title: X\nmeta:\n  author: jane\n  version: 2\nrefs:\n  - name: a\n    url: b\n"
+        data = parse_fm(block)
+        assert data["meta"] == {"author": "jane", "version": 2}
+        assert data["refs"] == [{"name": "a", "url": "b"}]
+
+        reparsed = parse_fm(split_frontmatter(render_fm(data) + "\n\nbody\n")[0])
+        assert reparsed["meta"] == data["meta"]
+        assert reparsed["refs"] == data["refs"]
+
+    def test_hash_in_value_is_not_truncated_as_a_comment(self):
+        data = {"title": "C# and #hashtag"}
+        reparsed = parse_fm(split_frontmatter(render_fm(data) + "\n\nbody\n")[0])
+        assert reparsed["title"] == "C# and #hashtag"
+
+    def test_malformed_yaml_does_not_raise(self):
+        assert isinstance(parse_fm("title: [unclosed\n  bad: : :\n"), dict)
+
+    def test_horizontal_rule_is_not_mistaken_for_frontmatter(self):
+        """`---\\n\\nprose\\n\\n---` is Markdown, not metadata; prose must survive."""
+        doc = "---\n\nSome intro prose.\n\n---\n\nMore prose.\n"
+        block, body = split_frontmatter(doc)
+        assert block == ""
+        assert "Some intro prose." in body
+
+    def test_unterminated_fence_keeps_the_document_as_body(self):
+        doc = "---\ntitle: X\n\nnever closed\n"
+        block, body = split_frontmatter(doc)
+        assert block == ""
+        assert "never closed" in body
+
+
+class TestPathSafety:
+    def test_plan_entry_cannot_escape_the_store(self, tmp_path):
+        store = tmp_path / "store"
+        store.mkdir()
+        outside = tmp_path / "outside.md"
+        outside.write_text("---\ntitle: Outside\n---\n\nmust not be touched\n")
+
+        apply_derename(store, [
+            {"from": "../outside.md", "to": "captured.md", "date": "2026-01-01"},
+        ])
+        assert outside.exists()
+        assert "must not be touched" in outside.read_text()
+
+    def test_absolute_paths_are_refused(self, tmp_path):
+        store = tmp_path / "store"
+        store.mkdir()
+        outside = tmp_path / "outside.md"
+        outside.write_text("keep\n")
+
+        result = apply_derename(store, [
+            {"from": str(outside), "to": "captured.md", "date": "2026-01-01"},
+        ])
+        assert result["renamed"] == 0
+        assert outside.exists()
+
 
 class TestDerename:
     def test_date_prefix_moves_from_filename_into_frontmatter(self, tmp_path):
@@ -276,3 +347,33 @@ class TestTemporal:
         apply_temporal(tmp_path, plan_temporal(tmp_path))
         assert (tmp_path / "projects/service.md").read_text().count("## Current state") == 1
         assert (tmp_path / "projects/service.md").read_text() == first
+
+
+class TestSplitRelinking:
+    def _oversized(self) -> str:
+        sections = "".join(
+            "## 2026-05-%02d — Section %d\n\n%s\n\n" % (day, day, "word " * 2000)
+            for day in range(1, 9)
+        )
+        return "---\ntitle: Big Page\ntype: person\n---\n\nintro\n\n" + sections
+
+    def test_inbound_links_are_repointed_at_the_new_index(self, tmp_path):
+        """Splitting a page must not leave [[stem]] links dangling."""
+        write(tmp_path, "people/big-page.md", self._oversized())
+        write(tmp_path, "topics/ref.md", "---\ntitle: Ref\n---\n\nSee [[big-page]] for detail.\n")
+
+        result = apply_split(tmp_path, plan_split(tmp_path))
+        assert result["pages_split"] == 1
+        assert result["inbound_links_repointed"] == 1
+
+        text = (tmp_path / "topics/ref.md").read_text()
+        assert "[[big-page/index]]" in text
+        assert "[[big-page]]" not in text
+
+    def test_aliased_links_are_also_repointed(self, tmp_path):
+        write(tmp_path, "people/big-page.md", self._oversized())
+        write(tmp_path, "topics/ref.md",
+              "---\ntitle: Ref\n---\n\nSee [[big-page|the big page]].\n")
+
+        apply_split(tmp_path, plan_split(tmp_path))
+        assert "[[big-page/index|the big page]]" in (tmp_path / "topics/ref.md").read_text()

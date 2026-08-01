@@ -69,13 +69,22 @@ class ReviewQueue:
     # -- persistence -------------------------------------------------------
 
     def _load(self) -> None:
+        self.load_error: str | None = None
         if self.json_path.exists():
             try:
                 data = json.loads(self.json_path.read_text())
                 self.items = data.get("items", [])
                 return
-            except (json.JSONDecodeError, OSError):
-                # Corrupt queue must not take the curation pass down.
+            except (json.JSONDecodeError, OSError) as exc:
+                # A corrupt queue must not be silently replaced: it may hold
+                # unresolved human decisions. Quarantine the file so the next
+                # save cannot overwrite the only copy, and surface the error.
+                self.load_error = str(exc)
+                try:
+                    quarantine = self.json_path.with_suffix(".json.corrupt")
+                    self.json_path.replace(quarantine)
+                except OSError:
+                    pass
                 self.items = []
         self.items = []
 
@@ -112,6 +121,11 @@ class ReviewQueue:
             if it["id"] == item_id:
                 it["last_seen"] = _today()
                 it["seen_count"] = it.get("seen_count", 1) + 1
+                # Severity may only ratchet UP. A later pass that recognizes an
+                # item as needing a human must not leave it at `info`, where it
+                # would expire silently without ever being escalated.
+                if SEVERITIES.index(severity) < SEVERITIES.index(it["severity"]):
+                    it["severity"] = severity
                 # A previously expired/resolved issue that recurs re-opens.
                 if it["status"] in ("expired", "resolved"):
                     it["status"] = "open"
