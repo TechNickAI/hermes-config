@@ -272,7 +272,7 @@ Every handler now declares how its upstream is protected:
 
 | `Gate`       | Meaning                                        | Allowed on a funnel'd port |
 | ------------ | ---------------------------------------------- | -------------------------- |
-| `"password"` | Caddy `forward_auth` against the auth sidecar   | yes                        |
+| `"password"` | Caddy `forward_auth` against the auth sidecar  | yes                        |
 | `"token"`    | upstream requires a bearer token on every call | yes                        |
 | `"none"`     | no auth in front of the upstream               | no                         |
 | _(omitted)_  | nobody has said                                | no                         |
