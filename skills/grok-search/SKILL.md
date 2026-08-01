@@ -9,8 +9,11 @@ version: 0.1.0
 license: MIT
 metadata:
   hermes:
+    requires:
+      - "env: XAI_API_KEY (xAI console)"
     tags: [grok, xai, real-time, twitter, x]
-    related_skills: [xurl]
+    related_skills: []
+    # referenced but not shipped here (Hermes core / another source): xurl
 ---
 
 # Grok Search

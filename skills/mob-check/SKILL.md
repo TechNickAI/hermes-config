@@ -24,7 +24,8 @@ metadata:
         sentiment,
         multi-source,
       ]
-    related_skills: [polymarket, youtube-content, xurl]
+    related_skills: []
+    # referenced but not shipped here (Hermes core / another source): polymarket, youtube-content, xurl
 ---
 
 # mob-check

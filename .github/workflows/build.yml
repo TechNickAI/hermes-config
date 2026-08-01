@@ -46,6 +46,11 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
+      - name: Check the generated skills manifest is current
+        # skills/MANIFEST.yaml is what an installing agent reads instead of nineteen
+        # SKILL.md files. A stale manifest is worse than none, so regenerate and diff.
+        run: python scripts/generate_manifest.py --check
+
       - name: Run skill self-checks
         # Some skills ship executable helpers with their own verification suites.
         # Run them here so a shipped script can't silently rot.

@@ -11,6 +11,9 @@ version: 0.3.0
 license: MIT
 metadata:
   hermes:
+    requires:
+      - "host services: Caddy + PM2"
+      - Tailscale Serve/Funnel
     tags: [devops, app-router, caddy, pm2, tailscale, funnel, mini-app, fleet]
     related_skills: [cron-healthcheck]
 ---

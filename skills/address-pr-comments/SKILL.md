@@ -10,6 +10,8 @@ version: 1.0.0
 license: MIT
 metadata:
   hermes:
+    requires:
+      - gh CLI, authenticated
     tags: [github, code-review, pull-requests, bots, triage, automation]
     related_skills: [pr-review-sweep, multi-review]
 ---

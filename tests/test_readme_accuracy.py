@@ -63,7 +63,11 @@ def test_skill_count_in_heading_matches_reality() -> None:
     match = re.search(r"### `skills/` — ([\w-]+) procedural skills", _readme())
     assert match, "could not find the skills heading in README.md"
     claimed_word = match.group(1).lower()
+    # The heading may spell the count ("nineteen") or use a numeral ("19"); both are
+    # legitimate prose choices and neither should fail this test for style reasons.
     claimed = words.get(claimed_word)
+    if claimed is None and claimed_word.isdigit():
+        claimed = int(claimed_word)
     assert claimed is not None, f"unrecognised count word in skills heading: {claimed_word!r}"
     actual = len(_actual_skills())
     assert claimed == actual, (

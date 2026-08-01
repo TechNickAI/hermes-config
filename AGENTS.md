@@ -18,6 +18,27 @@ into every sub-agent prompt:
 > PII rule for this repo: zero PII, zero fleet specifics. Use placeholders for any real
 > name, path, port, or personal context. See the substitution table in CONTRIBUTING.md.
 
+## If you are here to INSTALL this repo, not contribute to it
+
+Most of this file is about contributing. If your human asked you to _set this up for
+them_, you want **[`SETUP.md`](SETUP.md)** instead — it has a complete prompt and the
+decision rules. The short version:
+
+1. **Read [`skills/MANIFEST.yaml`](skills/MANIFEST.yaml) first.** It is the generated,
+   machine-readable index: `scope`, `requires`, `works_out_of_the_box`, and `use_when`
+   for every skill. Do not open nineteen `SKILL.md` files to answer questions this file
+   already answers.
+2. **Filter by `scope` before anything else.** One machine → install `solo` only.
+   `fleet` skills assume multiple hosts, a cron fleet, Caddy/PM2, or a self-hosted LLM
+   router; on a laptop they are dead weight.
+3. **Install `works_out_of_the_box: true` freely. Everything else is a question.** A
+   skill copied without its credential fails silently the first time it is used — verify
+   the dependency exists, or tell your human what is missing and skip it.
+4. **Never overwrite `~/.hermes/SOUL.md`, `config.yaml`, or `memories/`** without
+   showing a diff and getting a yes. Those hold accumulated personal state.
+5. **Verify with `./scripts/verify_setup.sh`** and report honestly what you could not
+   confirm.
+
 ## Project overview
 
 `hermes-config` is a shareable configuration starter kit for the
