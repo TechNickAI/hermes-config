@@ -71,25 +71,54 @@ if [ -d "$HERMES_HOME/skills" ]; then
     fi
   done < <(find "$HERMES_HOME/skills" -maxdepth 1 -mindepth 1 -type d)
 
-  # Dependency checks for skills that cannot work without external tooling. A skill
-  # installed without its dependency is the silent failure this script exists to catch.
-  check_dep() {  # check_dep <skill> <test-command> <fix-hint>
-    if [ -d "$HERMES_HOME/skills/$1" ]; then
-      if eval "$2" >/dev/null 2>&1; then
-        ok "$1 dependency satisfied"
+  # Dependency checks are driven by skills/MANIFEST.yaml rather than hardcoded here.
+  # Hardcoding meant a skill could declare a dependency this script never checked —
+  # google-slides declares pandoc, and the first version of this script silently
+  # ignored it and reported healthy. Reading the manifest keeps one source of truth,
+  # so declaring a new requirement automatically gets it verified.
+  manifest="$(dirname "$0")/../skills/MANIFEST.yaml"
+  if [ -f "$manifest" ] && command -v python3 >/dev/null 2>&1; then
+    while IFS=$'\t' read -r skill requirement; do
+      [ -n "$skill" ] || continue
+      [ -d "$HERMES_HOME/skills/$skill" ] || continue
+
+      # Map a declared requirement to a concrete probe. Unrecognised requirements are
+      # reported as unverifiable rather than silently passed — claiming a dependency
+      # is satisfied when it was never checked is the failure this script exists for.
+      case "$requirement" in
+        *"gog CLI"*)  probe="command -v gog"; hint="install the gog CLI, then: gog auth login" ;;
+        *"gh CLI"*)   probe="command -v gh";  hint="install the gh CLI, then: gh auth login" ;;
+        *pandoc*)     probe="command -v pandoc"; hint="install pandoc (brew install pandoc / apt install pandoc)" ;;
+        "env: "*)
+          var="${requirement#env: }"; var="${var%% *}"
+          probe="[ -n \"\${$var:-}\" ] || grep -q '$var' '$HERMES_HOME/.env' 2>/dev/null"
+          hint="set $var in the environment or $HERMES_HOME/.env" ;;
+        *)
+          warn "$skill requires '$requirement' — cannot verify automatically"
+          note "confirm it yourself before relying on this skill"
+          continue ;;
+      esac
+
+      if eval "$probe" >/dev/null 2>&1; then
+        ok "$skill: $requirement"
       else
-        bad "$1 is installed but its dependency is missing"
-        note "$3"
+        bad "$skill is installed but requires: $requirement"
+        note "$hint"
       fi
-    fi
-  }
-  check_dep google-docs        "command -v gog" "install the gog CLI, then: gog auth login"
-  check_dep google-sheets      "command -v gog" "install the gog CLI, then: gog auth login"
-  check_dep google-slides      "command -v gog" "install the gog CLI, then: gog auth login"
-  check_dep address-pr-comments "command -v gh" "install the gh CLI, then: gh auth login"
-  check_dep pr-review-sweep    "command -v gh"  "install the gh CLI, then: gh auth login"
-  check_dep grok-search        '[ -n "${XAI_API_KEY:-}" ] || grep -q XAI_API_KEY "'"$HERMES_HOME"'/.env" 2>/dev/null' \
-    "set XAI_API_KEY in $HERMES_HOME/.env (get one at https://console.x.ai)"
+    done < <(python3 - "$manifest" <<'PYEOF'
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)  # no PyYAML: skip dependency checks rather than fail the whole run
+with open(sys.argv[1]) as handle:
+    data = yaml.safe_load(handle) or {}
+for skill in data.get("skills", []):
+    for requirement in skill.get("requires") or []:
+        print(f"{skill['name']}\t{requirement}")
+PYEOF
+)
+  fi
 else
   warn "no skills directory — nothing installed yet"
   note "mkdir -p $HERMES_HOME/skills && cp -r skills/recall $HERMES_HOME/skills/"
@@ -99,7 +128,10 @@ fi
 if [ -d "$HERMES_HOME/plugins/cortex" ] || [ -d "$HERMES_HOME/plugins/memory/cortex" ]; then
   ok "cortex plugin present"
   # Copying the plugin without pointing config at it is a no-op that looks like success.
-  if [ -f "$HERMES_HOME/config.yaml" ] && grep -qE '^\s*provider:\s*cortex' "$HERMES_HOME/config.yaml"; then
+  # Accept quoted forms too: provider: cortex / "cortex" / 'cortex' are all valid YAML,
+  # and failing a correctly-configured setup is worse than not checking at all.
+  if [ -f "$HERMES_HOME/config.yaml" ] \
+    && grep -qE "^[[:space:]]*provider:[[:space:]]*[\"']?cortex[\"']?[[:space:]]*$" "$HERMES_HOME/config.yaml"; then
     ok "config.yaml selects the cortex memory provider"
   else
     bad "cortex is copied but config.yaml does not select it — the plugin is inert"
