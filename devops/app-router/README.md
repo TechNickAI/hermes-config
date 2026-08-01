@@ -257,6 +257,40 @@ ports 443, 8443, and 10000.
 > **tailnet-only** port (e.g. `:8443`) by adding a `Web` entry _without_ a matching
 > `AllowFunnel` entry.
 
+### The `Gate` field: the security rule, enforced
+
+That rule used to live only in a comment, which meant it held exactly as long as
+everyone editing the file happened to read it. Adding one passwordless site under
+`AllowFunnel` compiled cleanly and published it to the open internet, and the launchd
+agent replayed that on every login.
+
+Every handler now declares how its upstream is protected:
+
+```json
+"/": { "Proxy": "http://127.0.0.1:8080", "Gate": "password" }
+```
+
+| `Gate`       | Meaning                                        | Allowed on a funnel'd port |
+| ------------ | ---------------------------------------------- | -------------------------- |
+| `"password"` | Caddy `forward_auth` against the auth sidecar   | yes                        |
+| `"token"`    | upstream requires a bearer token on every call | yes                        |
+| `"none"`     | no auth in front of the upstream               | no                         |
+| _(omitted)_  | nobody has said                                | no                         |
+
+`apply-tailscale-serve.sh` checks this while compiling, before it emits a single
+command, so a rejected config never reaches the preflight replay or `serve reset` and
+the running router is left exactly as it was. A missing `Gate` on a funnel'd handler is
+a hard failure rather than a default-allow: a handler nobody annotated is a handler
+nobody reasoned about, and the right answer for something about to become publicly
+reachable is refusal. Tailnet-only handlers are unaffected and need no `Gate`.
+
+What this does not do: `Gate` is an author-declared assertion, not a probe. The script
+cannot reach out and test whether an upstream really asks for a password, so a wrong
+value still gets through. What it buys is that publishing something passwordless now
+takes a deliberate written claim that it is gated, rather than silence.
+
+Covered by `tests/test_app_router_funnel_gate.py`.
+
 ## Troubleshooting
 
 **`tailscale serve status` shows the wrong routes, or apps return blank pages, or the
