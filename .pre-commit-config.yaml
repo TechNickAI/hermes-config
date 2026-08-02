@@ -13,6 +13,8 @@ repos:
         name: Validate symlinks
       - id: check-yaml
         name: Validate YAML syntax
+      - id: detect-private-key
+        name: Detect private keys (security)
       - id: file-contents-sorter
         name: Sort .gitignore
         files: \.gitignore
