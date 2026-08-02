@@ -87,6 +87,18 @@ class TestFrontmatterRoundTrip:
         reparsed = parse_fm(split_frontmatter(render_fm(data) + "\n\nbody\n")[0])
         assert reparsed["title"] == "C# and #hashtag"
 
+    def test_colon_space_in_title_is_quoted(self):
+        """Session-style titles otherwise make the entire frontmatter invalid YAML."""
+        data = {"title": "Session: 2026-05-24 12:26:40 CDT"}
+        rendered = render_fm(data)
+        reparsed = parse_fm(split_frontmatter(rendered + "\n\nbody\n")[0])
+        assert reparsed["title"] == data["title"]
+
+    def test_string_scalars_do_not_change_yaml_type(self):
+        data = {"title": "true", "status": "null", "confidence": "3.14"}
+        reparsed = parse_fm(split_frontmatter(render_fm(data) + "\n\nbody\n")[0])
+        assert reparsed == data
+
     def test_malformed_yaml_does_not_raise(self):
         assert isinstance(parse_fm("title: [unclosed\n  bad: : :\n"), dict)
 

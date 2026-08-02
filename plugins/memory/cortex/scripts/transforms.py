@@ -166,18 +166,20 @@ def render_fm(fm: dict) -> str:
              "tags", "aliases", "related", "sources", "confidence"]
 
     def scalar(value) -> str:
-        """Render one scalar, quoting anything YAML would reinterpret."""
-        sv = str(value)
-        needs_quote = (
-            "#" in sv
-            or re.match(r"^\d{4}-\d{2}-\d{2}", sv)
-            # `[[wikilink]]` is the important case: unquoted, YAML reads it as a
-            # nested sequence and the link is destroyed on the next read.
-            or sv[:1] in "!&*?|>%@`[]{},"
-            or sv.strip() != sv
-            or sv == ""
-        )
-        return "'%s'" % sv.replace("'", "''") if needs_quote else sv
+        """Render one scalar without changing its YAML type or meaning.
+
+        Strings are always single-quoted. Selective quoting is easy to get wrong:
+        an ordinary title such as ``Session: 12:26`` parses as a mapping value
+        error when left bare, while ``true``, ``null``, and numeric-looking strings
+        silently change type. Non-strings retain their native YAML representation.
+        """
+        if isinstance(value, str):
+            return "'%s'" % value.replace("'", "''")
+        if value is True:
+            return "true"
+        if value is False:
+            return "false"
+        return str(value)
 
     def emit(key: str, value) -> list[str]:
         # Drop keys with no value rather than emitting a bare `key:` that
