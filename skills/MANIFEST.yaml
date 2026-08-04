@@ -238,7 +238,7 @@ skills:
   - cron
   path: skills/pr-review-sweep
 - name: project-steward
-  version: 1.0.0
+  version: 1.1.0
   scope: solo
   summary: Run a portfolio of long-running projects as a chief of staff rather than a task runner.
   use_when: you have several open-ended efforts that each need periodic attention, when scheduled agent runs are producing activity without progress, when a notification channel has become an unreadable wall of updates, or when you want an agent to direct specialist agents instead of doing their work. Covers th…
