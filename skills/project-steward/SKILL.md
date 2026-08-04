@@ -53,15 +53,16 @@ single project had absorbed eight of the 31 passes.
 more machinery around the same flaw.
 
 So the lanes stopped being jobs and became lenses, rotation solved once by the
-dispatcher. That fixed the arithmetic and left a deeper problem in place, described next.
+dispatcher. That fixed the arithmetic and left a deeper problem in place, described
+next.
 
 ### Why the lens menu was removed
 
 Lenses were a fixed menu, and a menu guarantees the answer is one of its entries.
-Measured over 40 consecutive passes: **33 chose ADVANCE, 7 chose zoom-out, and creativity
-chose itself exactly zero times.** Creativity was gated on exhaustion, so the option set
-could only widen after everything in it had already died, which made a kill the cheapest
-route to permission to think.
+Measured over 40 consecutive passes: **33 chose ADVANCE, 7 chose zoom-out, and
+creativity chose itself exactly zero times.** Creativity was gated on exhaustion, so the
+option set could only widen after everything in it had already died, which made a kill
+the cheapest route to permission to think.
 
 A menu also degrades the reasoning that precedes it. Faced with labelled boxes, a pass
 classifies instead of thinking, and classification is a weaker operation than judgment.
@@ -75,19 +76,19 @@ outside input, so it is the only work that always succeeds.** A pass that verifi
 number can always find something. A pass that needs a new data source, a budget, or a
 fact only the principal holds can be blocked. Under any procedure that rewards a
 completed pass, auditing wins by default, forever. One project ran six consecutive work
-orders that measured a system and zero that fed it; the pass that diagnosed this named it
-correctly and then dispatched a seventh measurement order.
+orders that measured a system and zero that fed it; the pass that diagnosed this named
+it correctly and then dispatched a seventh measurement order.
 
 ### The one question
 
 **What is the single best thing I could do in this pass to move this project toward what
-The principal actually wants?**
+the principal actually wants?**
 
 Answer it in four written steps.
 
 **1. State the gap in plain English.** Where the project actually is, and what winning
-looks like per the charter. Not a status summary: the DISTANCE, in one or two sentences a
-smart friend would understand at dinner.
+looks like per the charter. Not a status summary: the DISTANCE, in one or two sentences
+a smart friend would understand at dinner.
 
 **2. Name what is actually in the way.** The kind of obstacle determines the move. These
 are examples of the kinds that exist, offered to prime thinking:
@@ -100,12 +101,12 @@ are examples of the kinds that exist, offered to prime thinking:
 - too many open threads and nothing closing, so close something
 - the frame itself is wrong, so the next move is not inside this frame
 
-**3. Generate at least three candidate moves, freely.** The list above is NOT a menu, and
-a pass whose answer merely names one of those labels has not finished thinking. Real
-candidates are concrete and specific: "buy one month of the vendor feed and check whether
-the candidate set survives our screens," "merge this with the other project, it is the
-same question," "ask whether that capital has a lockup," "ship what works and stop,"
-"this is finished, retire it."
+**3. Generate at least three candidate moves, freely.** The list above is NOT a menu,
+and a pass whose answer merely names one of those labels has not finished thinking. Real
+candidates are concrete and specific: "buy one month of the vendor feed and check
+whether the candidate set survives our screens," "merge this with the other project, it
+is the same question," "ask whether that capital has a lockup," "ship what works and
+stop," "this is finished, retire it."
 
 **4. Choose by decision-delta, then defend the choice against the runner-up.** For each
 candidate: if this succeeds perfectly, what changes? What can the principal do that they
@@ -118,49 +119,51 @@ to survive being written next to "or we could have bought the data."
 
 Then **execute it in the same pass.** Not a plan to act later.
 
-**WAIT is an illegal chosen move.** If the honest answer is "nothing to do until the agent
-reports," skip this project and pick another. A pass that logs "await WO-X" consumes a
-slot, produces a log line that looks like work, and leaves the project untouched. Silence
-is already a success state; a status page is not.
+**WAIT is an illegal chosen move.** If the honest answer is "nothing to do until the
+agent reports," skip this project and pick another. A pass that logs "await WO-X"
+consumes a slot, produces a log line that looks like work, and leaves the project
+untouched. Silence is already a success state; a status page is not.
 
 ### Three constraints that keep free reasoning honest
 
 Reasoning freely is what makes this work and also what makes it capturable.
 
-1. **Auditing must earn its slot against a named alternative.** Verification is genuinely
-   right when money is at risk or an unread deliverable carries a load-bearing number. It
-   simply no longer wins by default.
-2. **Every chosen move is scored INWARD or OUTWARD by a mechanical test, never by intent.**
-   A move is OUTWARD only if it does at least one of: introduces information that did not
-   exist inside the project's files; creates a capability or artifact that did not exist;
-   or makes an external commitment (a person is asked, money is spent, an order carries a
-   genuinely new question). **Reconciling, re-scoring, re-labelling, rewriting state files,
-   closing your own open loops, and waiting are INWARD by definition**, however valuable
-   they feel. Inward moves are sometimes correct; they are never *progress*.
+1. **Auditing must earn its slot against a named alternative.** Verification is
+   genuinely right when money is at risk or an unread deliverable carries a load-bearing
+   number. It simply no longer wins by default.
+2. **Every chosen move is scored INWARD or OUTWARD by a mechanical test, never by
+   intent.** A move is OUTWARD only if it does at least one of: introduces information
+   that did not exist inside the project's files; creates a capability or artifact that
+   did not exist; or makes an external commitment (a person is asked, money is spent, an
+   order carries a genuinely new question). **Reconciling, re-scoring, re-labelling,
+   rewriting state files, closing your own open loops, and waiting are INWARD by
+   definition**, however valuable they feel. Inward moves are sometimes correct; they
+   are never _progress_.
 3. **Fourteen days is the maximum a project may go without its option set being
    questioned.** Not a mandated creativity pass: a hard requirement that at least once a
    fortnight the pass asks whether the current frame is right, and records the answer.
 
-**One candidate must be of a different KIND.** Not different content, different kind: spend
-money, ask a person, merge two projects, retire it, ship it, or change the charter. Three
-variations on "resolve existing uncertainty" is a failed step 3, and a strawman inserted to
-reach three candidates is worse than two honest ones.
+**One candidate must be of a different KIND.** Not different content, different kind:
+spend money, ask a person, merge two projects, retire it, ship it, or change the
+charter. Three variations on "resolve existing uncertainty" is a failed step 3, and a
+strawman inserted to reach three candidates is worse than two honest ones.
 
 **A pass may not have the last word on its own INWARD verdict.** The nightly meta-review
-recomputes it from the log against the mechanical test and reports disagreements. Measured
-on the first full-portfolio run of this procedure: **17 of 17 projects self-scored OUTWARD**,
-and an independent three-family panel found at least five were inward in substance. A metric
-that never fires is either measuring nothing or is being graded by the party it judges. **No
-metric may be graded by the same pass that produces the work it grades.**
+recomputes it from the log against the mechanical test and reports disagreements.
+Measured on the first full-portfolio run of this procedure: **17 of 17 projects
+self-scored OUTWARD**, and an independent three-family panel found at least five were
+inward in substance. A metric that never fires is either measuring nothing or is being
+graded by the party it judges. **No metric may be graded by the same pass that produces
+the work it grades.**
 
 **This test is a better proxy, not an unhackable one.** Skalse et al. (arXiv:2209.13085)
 prove two reward functions can only be mutually unhackable if one is constant, so any
 non-constant test — including this one — is gameable in principle. Hold it accordingly:
 three ways to satisfy it nominally are citing a source you did not read, emitting a
 trivial artifact, and sending a ceremonial message. Two known holes are recorded in
-`references/choosing-the-best-move.md`: the nightly re-check is the same system re-reading
-its own log (not genuinely independent), and there is no outcome controller tying passes
-to whether projects actually advanced.
+`references/choosing-the-best-move.md`: the nightly re-check is the same system
+re-reading its own log (not genuinely independent), and there is no outcome controller
+tying passes to whether projects actually advanced.
 
 Log the chosen move and the runner-up on every pass. The realized distribution of move
 kinds is an OUTPUT to inspect, never a quota to enforce. If it reads 90% verification,
@@ -189,17 +192,17 @@ Not blockers: anything findable by reading a file or running a query, "I'd like 
 opinion" when a reasonable call could be made and reported, something already answered,
 or a question manufactured so a pass has a tidy ending.
 
-**The PHANTOM BLOCKER is the dangerous version of "already answered," because it survives
-good behavior.** A project's `now.md` claimed the principal's direction call was "still
-open, still the one real blocker" for four days, while the SAME FILE four paragraphs below
-recorded his verbatim approval and `decisions.md` carried it with a message id and
-timestamp. Every pass read the blocker line, correctly declined to re-ask an answered
-question, and moved on. The contradiction survived every pass **because each pass behaved
-well.** A phantom blocker is worse than a real one: it makes a decided project look stalled
-on the principal, and it PROTECTS the project from being worked, since "waiting on him" is
-a legitimate state nobody challenges. **Grep `decisions.md` for the question before writing
-or preserving any blocker line** — an answer with a date discharges it, so delete the line
-and record what the answer authorizes.
+**The PHANTOM BLOCKER is the dangerous version of "already answered," because it
+survives good behavior.** A project's `now.md` claimed the principal's direction call
+was "still open, still the one real blocker" for four days, while the SAME FILE four
+paragraphs below recorded his verbatim approval and `decisions.md` carried it with a
+message id and timestamp. Every pass read the blocker line, correctly declined to re-ask
+an answered question, and moved on. The contradiction survived every pass **because each
+pass behaved well.** A phantom blocker is worse than a real one: it makes a decided
+project look stalled on the principal, and it PROTECTS the project from being worked,
+since "waiting on him" is a legitimate state nobody challenges. **Grep `decisions.md`
+for the question before writing or preserving any blocker line** — an answer with a date
+discharges it, so delete the line and record what the answer authorizes.
 
 ## Direct the specialists. Do not replicate their work.
 
@@ -417,8 +420,8 @@ next action, because that handles edge cases a lookup table cannot.
 
 - `references/choosing-the-best-move.md`, worked examples of the four-step decision,
   including one where the procedure it replaced was already right
-- `references/the-means-ledger.md`, the inventory of what a project can actually use, and
-  why constraint deletion is retroactive
+- `references/the-means-ledger.md`, the inventory of what a project can actually use,
+  and why constraint deletion is retroactive
 - `references/portfolio-dispatch.md`, slot allocation, claim locks, starvation floor
 - `references/project-state.md`, the markdown files each project carries, with templates
 - `templates/board.toml`, living board configuration
