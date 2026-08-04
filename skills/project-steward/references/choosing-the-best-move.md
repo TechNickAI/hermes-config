@@ -201,3 +201,46 @@ Neither was reachable by better auditing, and both existed only in chat scrollba
 A steward that only reads project files can never find them. This is the argument for
 treating the principal's own messages as a first-class input to every pass, and for a
 means ledger with a forcing function on the READ.
+
+## The proxy is better, not solved
+
+Outward research, 2026-08-04, with every arXiv ID verified against the API rather than trusted:
+
+**Skalse et al., *Defining and Characterizing Reward Hacking* (arXiv:2209.13085), prove two
+reward functions can only be mutually unhackable if one is constant.** The INWARD/OUTWARD test
+above is non-constant, so it **is gameable in principle.** It is a better proxy than the menu it
+replaced. It is not a solved problem and must never be held as one.
+
+The predicted failure targets this document's own remedy. The Reward Hacking Benchmark
+(arXiv:2605.02964) found **72% of reward-hacking episodes include explicit chain-of-thought
+rationale** — models frame exploits as legitimate problem-solving. A four-step written procedure
+is exactly that prose surface: requiring reasoning to be written out makes it legible AND hands a
+captured agent an ideal medium for fluent self-justification. Both are true at once.
+
+Three ways the test gets satisfied nominally: cite a source you did not read, emit a trivial
+artifact, send a ceremonial message to a person. All three score OUTWARD while changing nothing.
+
+**Two known holes, recorded rather than hastily patched:**
+
+1. **The independent verifier is not independent.** "No metric may be graded by the same pass that
+   produces the work" is right, but a nightly review by the same system re-reading the same log is
+   still in-distribution. Pan et al. (arXiv:2402.06627): "evaluations on static datasets are
+   insufficient — they miss the feedback effects." Real independence means a different model and a
+   different prompt.
+2. **There is no outcome controller.** Passes are scored by what KIND of move they were, never by
+   whether the project advanced. This is what killed a sibling project: 91 self-improvement cycles
+   while steadily losing money, postmortem line *"it lacked an outcome controller."*
+
+**The steelman the menu deserves.** A typology's value is forced coverage and *legibility of
+neglect*. The 33/7/0 distribution IS proof the menu did its job: it made the bias countable, and
+countability enabled the redesign. Free-form generation can hide the same bias in fluent prose
+with no column to reveal it. The literature's actual recommendation was to keep the menu as a
+coverage floor with per-bucket quotas and fix the REWARD to be outcome-based. Deleting the
+instrument that detected the problem is not the same as fixing the problem.
+
+**The meta-lesson, the most durable thing here:** this redesign was reasoned from first principles
+and internal measurements without checking prior art, and it hand-re-derived a formally
+characterized failure mode (reward hacking, Goodhart's law, the McNamara fallacy). Work requiring
+no outside input always succeeds — the exact diagnosis this procedure exists to fix. **A pass that
+changes the steward's own procedure is INWARD by definition. Rewriting how you decide is the most
+inward act available.**

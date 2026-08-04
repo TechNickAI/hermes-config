@@ -153,6 +153,15 @@ and an independent three-family panel found at least five were inward in substan
 that never fires is either measuring nothing or is being graded by the party it judges. **No
 metric may be graded by the same pass that produces the work it grades.**
 
+**This test is a better proxy, not an unhackable one.** Skalse et al. (arXiv:2209.13085)
+prove two reward functions can only be mutually unhackable if one is constant, so any
+non-constant test — including this one — is gameable in principle. Hold it accordingly:
+three ways to satisfy it nominally are citing a source you did not read, emitting a
+trivial artifact, and sending a ceremonial message. Two known holes are recorded in
+`references/choosing-the-best-move.md`: the nightly re-check is the same system re-reading
+its own log (not genuinely independent), and there is no outcome controller tying passes
+to whether projects actually advanced.
+
 Log the chosen move and the runner-up on every pass. The realized distribution of move
 kinds is an OUTPUT to inspect, never a quota to enforce. If it reads 90% verification,
 that is a broken decision procedure to diagnose.
