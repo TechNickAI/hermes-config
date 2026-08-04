@@ -213,6 +213,7 @@ def frontmatter_audit(store: dict[str, str]) -> dict:
         return {"skipped": "PyYAML unavailable"}
 
     invalid, types, missing_title = [], collections.Counter(), 0
+    invalid_total = 0
     for rel, text in store.items():
         if not text.startswith("---"):
             continue
@@ -223,6 +224,10 @@ def frontmatter_audit(store: dict[str, str]) -> dict:
         try:
             data = yaml.safe_load("\n".join(lines[1:end]))
         except Exception as exc:
+            # Count every failure; keep only a few examples. Reporting the
+            # example count as the total would have understated the 142-page
+            # rollout failure this audit exists to catch.
+            invalid_total += 1
             if len(invalid) < 8:
                 invalid.append({"page": rel, "error": str(exc).splitlines()[0]})
             continue
@@ -231,7 +236,7 @@ def frontmatter_audit(store: dict[str, str]) -> dict:
             if not data.get("title"):
                 missing_title += 1
     return {
-        "invalid_yaml": len(invalid),
+        "invalid_yaml": invalid_total,
         "invalid_examples": invalid,
         "missing_title": missing_title,
         "type_distribution": types.most_common(12),

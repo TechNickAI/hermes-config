@@ -635,3 +635,20 @@ class TestTagPhrases:
         from transforms import discriminating_tags
         tags = discriminating_tags([], "Recent updates late night")
         assert not {"recent", "late", "updates"} & set(tags)
+
+
+class TestTagWholeWordMatching:
+    def test_parent_tag_does_not_match_inside_a_longer_word(self):
+        """`session` must not match `obsession`, or dilution returns."""
+        from transforms import discriminating_tags
+        tags = discriminating_tags(["session", "call"], "An obsession with total recall")
+        assert "session" not in tags
+        assert "call" not in tags
+
+    def test_hyphenated_parent_tag_still_matches_its_phrase(self):
+        from transforms import discriminating_tags
+        assert "costa-rica" in discriminating_tags(["costa-rica"], "Trip to Costa Rica")
+
+    def test_exact_parent_tag_is_still_kept(self):
+        from transforms import discriminating_tags
+        assert "comedy" in discriminating_tags(["comedy"], "Comedy show in October")

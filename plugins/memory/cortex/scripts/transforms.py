@@ -577,8 +577,14 @@ def discriminating_tags(parent_tags, heading: str, limit: int = 4) -> list:
         parent_tags = [parent_tags]
     parent_tags = [str(t) for t in (parent_tags or [])]
     text = heading.lower()
-    kept = [t for t in parent_tags if t.lower().replace("-", " ") in text
-            or t.lower() in text]
+    # Whole-word match only. A substring test lets `session` match `obsession`
+    # and `call` match `recall`, so children inherit tags their section never
+    # discusses -- the dilution this function exists to prevent.
+    def mentions(tag: str) -> bool:
+        phrase = tag.lower().replace("-", r"[\s\-]+")
+        return re.search(r"(?<![a-z0-9])%s(?![a-z0-9])" % phrase, text) is not None
+
+    kept = [t for t in parent_tags if mentions(t)]
 
     stop = {"the", "and", "for", "with", "from", "her", "his", "our", "their",
             "this", "that", "was", "were", "has", "have", "about", "into",
