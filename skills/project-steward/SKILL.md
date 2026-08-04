@@ -118,6 +118,11 @@ to survive being written next to "or we could have bought the data."
 
 Then **execute it in the same pass.** Not a plan to act later.
 
+**WAIT is an illegal chosen move.** If the honest answer is "nothing to do until the agent
+reports," skip this project and pick another. A pass that logs "await WO-X" consumes a
+slot, produces a log line that looks like work, and leaves the project untouched. Silence
+is already a success state; a status page is not.
+
 ### Three constraints that keep free reasoning honest
 
 Reasoning freely is what makes this work and also what makes it capturable.
@@ -125,11 +130,28 @@ Reasoning freely is what makes this work and also what makes it capturable.
 1. **Auditing must earn its slot against a named alternative.** Verification is genuinely
    right when money is at risk or an unread deliverable carries a load-bearing number. It
    simply no longer wins by default.
-2. **A move that only improves a number about a question already asked, with no new
-   input, is scored INWARD and does not count as progress.**
+2. **Every chosen move is scored INWARD or OUTWARD by a mechanical test, never by intent.**
+   A move is OUTWARD only if it does at least one of: introduces information that did not
+   exist inside the project's files; creates a capability or artifact that did not exist;
+   or makes an external commitment (a person is asked, money is spent, an order carries a
+   genuinely new question). **Reconciling, re-scoring, re-labelling, rewriting state files,
+   closing your own open loops, and waiting are INWARD by definition**, however valuable
+   they feel. Inward moves are sometimes correct; they are never *progress*.
 3. **Fourteen days is the maximum a project may go without its option set being
    questioned.** Not a mandated creativity pass: a hard requirement that at least once a
    fortnight the pass asks whether the current frame is right, and records the answer.
+
+**One candidate must be of a different KIND.** Not different content, different kind: spend
+money, ask a person, merge two projects, retire it, ship it, or change the charter. Three
+variations on "resolve existing uncertainty" is a failed step 3, and a strawman inserted to
+reach three candidates is worse than two honest ones.
+
+**A pass may not have the last word on its own INWARD verdict.** The nightly meta-review
+recomputes it from the log against the mechanical test and reports disagreements. Measured
+on the first full-portfolio run of this procedure: **17 of 17 projects self-scored OUTWARD**,
+and an independent three-family panel found at least five were inward in substance. A metric
+that never fires is either measuring nothing or is being graded by the party it judges. **No
+metric may be graded by the same pass that produces the work it grades.**
 
 Log the chosen move and the runner-up on every pass. The realized distribution of move
 kinds is an OUTPUT to inspect, never a quota to enforce. If it reads 90% verification,

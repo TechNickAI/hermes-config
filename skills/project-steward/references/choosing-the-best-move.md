@@ -22,8 +22,47 @@ to do tomorrow morning.
 - The runner-up is a strawman, obviously worse, included to satisfy the requirement.
 - No candidate would cost money, ask anyone anything, or change what the project is.
 
-That last one is the strongest signal. If every candidate is something the steward can do
-alone with files it already has, the option set was never opened.
+That last one is the strongest signal. If every candidate is something the steward can do alone
+with files it already has, the option set was never opened.
+
+**Measured instance, first full-portfolio run of this procedure.** An independent three-family
+panel reviewed 17 passes and found the strawman failure explicitly. One project's candidate 1 was
+"stay cold," candidate 2 was "violate the principal's stated instruction," and candidate 3 was
+filler — the three-candidate rule satisfied without ever opening the option set. Another project
+offered three variants of "resolve existing uncertainty" with no buy-compute, no engage-a-
+specialist, and no retire-this-path.
+
+**Hence the rule: one candidate must be of a different KIND** — spend money, ask a person, merge,
+retire, ship, or change the charter — not merely different content. Two honest candidates beat
+three where one is a scarecrow.
+
+## WAIT is not a move
+
+Two of the 17 passes chose to await an in-flight work order. That is the audit default with the
+verbs removed: it consumes a slot, produces a log line that looks like work, and leaves the
+project untouched. If nothing can be done until an agent reports, **skip the project and pick
+another.** Silence is a success state; a status page is not.
+
+## Grading your own homework
+
+The first run of this procedure scored **17 of 17 projects as OUTWARD**, i.e. every pass declared
+its own chosen move to be real progress. The review panel found at least five were inward in
+substance: reconciling replies into a state file, re-scoring an existing reject list under a new
+bar, waiting on a dispatched order, and spending a pass to confirm that nothing should be done.
+
+The mechanism, as one reviewer put it: the test was being judged from INTENT ("this changes
+something") instead of MECHANISM ("does this introduce new information, new capability, or
+external commitment?").
+
+Two rules follow, and they generalize far past this metric:
+
+1. **Score by mechanism, not intent.** OUTWARD requires new information from outside the
+   project's files, a new capability or artifact, or an external commitment. Everything else is
+   inward, including work that is correct and necessary.
+2. **No metric may be graded by the same pass that produces the work it grades.** The pass
+   proposes its verdict; the nightly review recomputes it from the log and reports disagreements.
+
+A metric that never fires is either measuring nothing or is being graded by the party it judges.
 
 ## Worked example 1 — the resource nobody absorbed
 
