@@ -180,6 +180,18 @@ Not blockers: anything findable by reading a file or running a query, "I'd like 
 opinion" when a reasonable call could be made and reported, something already answered,
 or a question manufactured so a pass has a tidy ending.
 
+**The PHANTOM BLOCKER is the dangerous version of "already answered," because it survives
+good behavior.** A project's `now.md` claimed the principal's direction call was "still
+open, still the one real blocker" for four days, while the SAME FILE four paragraphs below
+recorded his verbatim approval and `decisions.md` carried it with a message id and
+timestamp. Every pass read the blocker line, correctly declined to re-ask an answered
+question, and moved on. The contradiction survived every pass **because each pass behaved
+well.** A phantom blocker is worse than a real one: it makes a decided project look stalled
+on the principal, and it PROTECTS the project from being worked, since "waiting on him" is
+a legitimate state nobody challenges. **Grep `decisions.md` for the question before writing
+or preserving any blocker line** — an answer with a date discharges it, so delete the line
+and record what the answer authorizes.
+
 ## Direct the specialists. Do not replicate their work.
 
 Each project has a domain agent who owns it. My job is to write work orders, verify what
