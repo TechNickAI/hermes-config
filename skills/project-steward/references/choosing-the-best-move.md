@@ -43,7 +43,31 @@ verbs removed: it consumes a slot, produces a log line that looks like work, and
 project untouched. If nothing can be done until an agent reports, **skip the project and pick
 another.** Silence is a success state; a status page is not.
 
-## Grading your own homework
+## The phantom blocker
+
+A project's `now.md` said, for four days: *"Nick's call on direction — still open, still the one
+real blocker."* Four paragraphs below, the same file said: *"Nick approved A only, verbatim."*
+`decisions.md` carried the approval with a message id and a UTC timestamp.
+
+The decision had been made. The file said it was blocked. Every pass read the blocker line,
+correctly declined to re-ask a question already answered, and moved on — so the contradiction
+survived every pass that could have caught it, precisely because each pass behaved well.
+
+**A phantom blocker is worse than a real one.** It makes a decided project look stalled on the
+principal, it protects the project from being worked, and it is invisible to the agent holding it
+because "waiting on Nick" is a legitimate state.
+
+Two checks, cheap:
+
+1. **Before writing or preserving any blocker line, grep `decisions.md` for that question.** If
+   an answer exists with a date, the blocker is discharged; delete the line and record what the
+   answer authorizes.
+2. **A blocker must name what changes per answer.** "Nick's call on direction" names no options
+   and no consequences. If you cannot write "if he says A I do X, if he says B I do Y," it is not
+   a blocker — it is a project that has not been thought about recently.
+
+The same pass that found this had also, in the same file, correctly listed the approved capability
+as unbuilt. Both facts were present. Nobody had put them next to each other.
 
 The first run of this procedure scored **17 of 17 projects as OUTWARD**, i.e. every pass declared
 its own chosen move to be real progress. The review panel found at least five were inward in
