@@ -581,7 +581,12 @@ def discriminating_tags(parent_tags, heading: str, limit: int = 4) -> list:
     # and `call` match `recall`, so children inherit tags their section never
     # discusses -- the dilution this function exists to prevent.
     def mentions(tag: str) -> bool:
-        phrase = tag.lower().replace("-", r"[\s\-]+")
+        # Escape the tag before it becomes a pattern. A tag is arbitrary user
+        # text: `c++` would otherwise match a bare "C" via the quantifiers,
+        # `a.b` would match "axb", and `a(b` raises and aborts the whole run.
+        phrase = r"[\s\-]+".join(re.escape(part) for part in tag.lower().split("-") if part)
+        if not phrase:
+            return False
         return re.search(r"(?<![a-z0-9])%s(?![a-z0-9])" % phrase, text) is not None
 
     kept = [t for t in parent_tags if mentions(t)]

@@ -652,3 +652,22 @@ class TestTagWholeWordMatching:
     def test_exact_parent_tag_is_still_kept(self):
         from transforms import discriminating_tags
         assert "comedy" in discriminating_tags(["comedy"], "Comedy show in October")
+
+
+class TestTagRegexSafety:
+    """A tag is arbitrary user text, never a pattern."""
+
+    def test_regex_metacharacters_do_not_match_loosely(self):
+        from transforms import discriminating_tags
+        assert "c++" not in discriminating_tags(["c++"], "Notes on C and memory")
+        assert "a.b" not in discriminating_tags(["a.b"], "About axb config")
+
+    def test_literal_occurrence_still_matches(self):
+        from transforms import discriminating_tags
+        assert "c++" in discriminating_tags(["c++"], "Notes on C++ and memory")
+
+    def test_unbalanced_metacharacters_do_not_raise(self):
+        """An unescaped `a(b` aborts the entire curation run."""
+        from transforms import discriminating_tags
+        for tag in ["a(b", "x[y", "*star", "-", "+", ""]:
+            assert isinstance(discriminating_tags([tag], "some heading"), list)
