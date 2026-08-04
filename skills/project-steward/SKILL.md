@@ -6,12 +6,12 @@ description: >
   attention, when scheduled agent runs are producing activity without progress, when a
   notification channel has become an unreadable wall of updates, or when you want an
   agent to direct specialist agents instead of doing their work. Covers the
-  single-dispatcher pattern, applying advance / zoom-out / creativity lenses on a
-  per-project progress clock, spend gating on cluster health, and the living board that
+  single-dispatcher pattern, reasoning out the single best move per project instead of
+  picking from a fixed menu, spend gating on cluster health, and the living board that
   collapses a chat channel into one self-updating message. Triggers on "steward my
   projects", "the agent is busy but nothing is moving", "too many notifications to
   read", "stop it from redoing the specialist's work".
-version: 1.0.0
+version: 1.1.0
 license: MIT
 metadata:
   hermes:
@@ -33,10 +33,10 @@ Every rule below replaced something that failed in a measurable way, and the
 measurements are kept because they are what makes the rule persuasive rather than
 arbitrary.
 
-## The shape: one dispatcher, several lenses
+## The shape: one dispatcher, one question
 
-**One scheduled job picks a project, then picks a lens to apply to it.** Not one job per
-project, and not one job per kind of thinking.
+**One scheduled job picks a project, then reasons out the single best thing to do for
+it.** Not one job per project, and not one job per kind of thinking.
 
 The version before this had three scheduled lanes: a tactical "advance" lane every 90
 minutes, a daily "zoom-out" lane asking whether a project still pointed at its goal, and
@@ -52,30 +52,91 @@ single project had absorbed eight of the 31 passes.
 **Any global clock divided by the number of projects breaks.** Adding more lane jobs is
 more machinery around the same flaw.
 
-So the lanes stopped being jobs and became lenses. Rotation is solved exactly once, by
-the dispatcher, and every lens inherits it. Cadence becomes per-project and gated on
-that project's own progress rather than on the calendar.
+So the lanes stopped being jobs and became lenses, rotation solved once by the
+dispatcher. That fixed the arithmetic and left a deeper problem in place, described next.
 
-### Choosing the lens
+### Why the lens menu was removed
 
-Pick the project first, then ask in this order:
+Lenses were a fixed menu, and a menu guarantees the answer is one of its entries.
+Measured over 40 consecutive passes: **33 chose ADVANCE, 7 chose zoom-out, and creativity
+chose itself exactly zero times.** Creativity was gated on exhaustion, so the option set
+could only widen after everything in it had already died, which made a kill the cheapest
+route to permission to think.
 
-1. **Creativity**, if this project's frame looks exhausted. It outranks the others
-   because a project whose frame is dead will burn an advance pass executing a roadmap
-   that inherits the dead assumption.
-2. **Zoom-out**, if this project is due: five or more of its own passes since the last
-   one, or seven days, or it has never had one, or two consecutive passes produced no
-   decision-relevant answer.
-3. **Advance** otherwise. This should be the common case.
+A menu also degrades the reasoning that precedes it. Faced with labelled boxes, a pass
+classifies instead of thinking, and classification is a weaker operation than judgment.
+The best move on a given day is frequently something no taxonomy contains: merge two
+projects, buy a dataset, ask one person one question, ship the working half and stop,
+retire a workstream nobody has the heart to retire, or rewrite the charter because the
+goal itself moved.
 
-A pass may switch lenses mid-flight. If an advance pass discovers drift, do the zoom-out
-then and there rather than logging "should zoom out later." Deferring a lens to a future
-pass is exactly the failure this design removed.
+The deepest version of the failure is that **auditing is the only work that requires no
+outside input, so it is the only work that always succeeds.** A pass that verifies a
+number can always find something. A pass that needs a new data source, a budget, or a
+fact only the principal holds can be blocked. Under any procedure that rewards a
+completed pass, auditing wins by default, forever. One project ran six consecutive work
+orders that measured a system and zero that fed it; the pass that diagnosed this named it
+correctly and then dispatched a seventh measurement order.
 
-Tag every log line with the lens used. Rotation is tracked by reading that log, so an
-untagged line makes a project look like it has never been zoomed out.
+### The one question
 
-Full lens definitions: `references/lenses.md`.
+**What is the single best thing I could do in this pass to move this project toward what
+the principal actually wants?**
+
+Answer it in four written steps.
+
+**1. State the gap in plain English.** Where the project actually is, and what winning
+looks like per the charter. Not a status summary: the DISTANCE, in one or two sentences a
+smart friend would understand at dinner.
+
+**2. Name what is actually in the way.** The kind of obstacle determines the move. These
+are examples of the kinds that exist, offered to prime thinking:
+
+- we believe something that might not be true, so checking it is worth a pass
+- we know what to do and nobody has done it, so the move is to dispatch, not to think
+- we lack a thing that exists in the world, so get the thing
+- we lack a thing only the principal has, so ask, in one line
+- we are pointed at the wrong target, so re-aim before doing anything else
+- too many open threads and nothing closing, so close something
+- the frame itself is wrong, so the next move is not inside this frame
+
+**3. Generate at least three candidate moves, freely.** The list above is NOT a menu, and
+a pass whose answer merely names one of those labels has not finished thinking. Real
+candidates are concrete and specific: "buy one month of the vendor feed and check whether
+the candidate set survives our screens," "merge this with the other project, it is the
+same question," "ask whether that capital has a lockup," "ship what works and stop,"
+"this is finished, retire it."
+
+**4. Choose by decision-delta, then defend the choice against the runner-up.** For each
+candidate: if this succeeds perfectly, what changes? What can the principal do that they
+could not do before? The winner has the largest decision-delta per dollar and per day.
+**Then state the strongest candidate not chosen, and why it lost.**
+
+That last line is the anti-capture mechanism, and it is the load-bearing part of the
+design. It forces the alternative into the permanent log, so choosing to audit again has
+to survive being written next to "or we could have bought the data."
+
+Then **execute it in the same pass.** Not a plan to act later.
+
+### Three constraints that keep free reasoning honest
+
+Reasoning freely is what makes this work and also what makes it capturable.
+
+1. **Auditing must earn its slot against a named alternative.** Verification is genuinely
+   right when money is at risk or an unread deliverable carries a load-bearing number. It
+   simply no longer wins by default.
+2. **A move that only improves a number about a question already asked, with no new
+   input, is scored INWARD and does not count as progress.**
+3. **Fourteen days is the maximum a project may go without its option set being
+   questioned.** Not a mandated creativity pass: a hard requirement that at least once a
+   fortnight the pass asks whether the current frame is right, and records the answer.
+
+Log the chosen move and the runner-up on every pass. The realized distribution of move
+kinds is an OUTPUT to inspect, never a quota to enforce. If it reads 90% verification,
+that is a broken decision procedure to diagnose.
+
+Worked examples, including three side-by-side against the procedure they replaced:
+`references/choosing-the-best-move.md`.
 
 ## Cadence is gated on progress, not the clock
 
@@ -311,7 +372,10 @@ next action, because that handles edge cases a lookup table cannot.
 
 ## Reference files
 
-- `references/lenses.md`, full advance / zoom-out / creativity definitions and triggers
+- `references/choosing-the-best-move.md`, worked examples of the four-step decision,
+  including one where the procedure it replaced was already right
+- `references/the-means-ledger.md`, the inventory of what a project can actually use, and
+  why constraint deletion is retroactive
 - `references/portfolio-dispatch.md`, slot allocation, claim locks, starvation floor
 - `references/project-state.md`, the markdown files each project carries, with templates
 - `templates/board.toml`, living board configuration
