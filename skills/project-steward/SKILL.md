@@ -81,7 +81,7 @@ correctly and then dispatched a seventh measurement order.
 ### The one question
 
 **What is the single best thing I could do in this pass to move this project toward what
-the principal actually wants?**
+The principal actually wants?**
 
 Answer it in four written steps.
 
