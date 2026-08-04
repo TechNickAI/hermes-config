@@ -45,8 +45,8 @@ another.** Silence is a success state; a status page is not.
 
 ## The phantom blocker
 
-A project's `now.md` said, for four days: *"Nick's call on direction — still open, still the one
-real blocker."* Four paragraphs below, the same file said: *"Nick approved A only, verbatim."*
+A project's `now.md` said, for four days: *"the principal's call on direction — still open, still the one
+real blocker."* Four paragraphs below, the same file said: *"the principal approved A only, verbatim."*
 `decisions.md` carried the approval with a message id and a UTC timestamp.
 
 The decision had been made. The file said it was blocked. Every pass read the blocker line,
@@ -55,14 +55,14 @@ survived every pass that could have caught it, precisely because each pass behav
 
 **A phantom blocker is worse than a real one.** It makes a decided project look stalled on the
 principal, it protects the project from being worked, and it is invisible to the agent holding it
-because "waiting on Nick" is a legitimate state.
+because "waiting on the principal" is a legitimate state.
 
 Two checks, cheap:
 
 1. **Before writing or preserving any blocker line, grep `decisions.md` for that question.** If
    an answer exists with a date, the blocker is discharged; delete the line and record what the
    answer authorizes.
-2. **A blocker must name what changes per answer.** "Nick's call on direction" names no options
+2. **A blocker must name what changes per answer.** "the principal's call on direction" names no options
    and no consequences. If you cannot write "if he says A I do X, if he says B I do Y," it is not
    a blocker — it is a project that has not been thought about recently.
 
