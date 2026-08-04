@@ -464,3 +464,174 @@ class TestTemporalSubjects:
         findings = plan_temporal(tmp_path)
         assert findings
         assert findings[0]["conflicts"][0]["newest"]["value"] == "beta.example.com"
+
+
+class TestFallbackQuoting:
+    """The fallback parser must reverse exactly what the renderer emits."""
+
+    def _fallback_round_trip(self, data: dict) -> dict:
+        from transforms import _parse_fm_fallback
+        return _parse_fm_fallback(render_fm(data))
+
+    def test_apostrophes_survive_the_fallback_parser(self):
+        data = {"title": "Today's plan"}
+        assert self._fallback_round_trip(data)["title"] == "Today's plan"
+
+    def test_apostrophes_do_not_multiply_across_passes(self):
+        """Curation re-renders what it parses, so drift compounds every run."""
+        data = {"title": "Today's plan for Sam's review"}
+        for _ in range(5):
+            data = self._fallback_round_trip(data)
+        assert data["title"] == "Today's plan for Sam's review"
+
+    def test_list_items_with_apostrophes_survive(self):
+        data = {"title": "T", "tags": ["sam's", "today's"]}
+        assert self._fallback_round_trip(data)["tags"] == ["sam's", "today's"]
+
+    def test_wikilinks_survive_the_fallback_parser(self):
+        data = {"title": "T", "related": ["[[alpha]]", "[[beta]]"]}
+        assert self._fallback_round_trip(data)["related"] == ["[[alpha]]", "[[beta]]"]
+
+
+class TestRenderIdempotence:
+    """A second curation pass must be a no-op, or stores drift every week."""
+
+    def test_frontmatter_is_stable_across_repeated_renders(self):
+        data = {
+            "title": "Session: 2026-05-24 12:26:40 CDT — Sam's review",
+            "type": "note",
+            "tags": ["c#", "today's"],
+            "related": ["[[alpha]]", "[[beta/index]]"],
+            "confidence": "medium",
+        }
+        first = render_fm(data)
+        second = render_fm(parse_fm(split_frontmatter(first + "\n\nbody\n")[0]))
+        third = render_fm(parse_fm(split_frontmatter(second + "\n\nbody\n")[0]))
+        assert first == second == third
+
+    def test_every_rendered_block_is_valid_yaml(self):
+        import yaml
+        data = {
+            "title": "Session: 12:26 — a: b",
+            "tags": ["a#b", "it's"],
+            "related": ["[[x]]"],
+        }
+        block, _ = split_frontmatter(render_fm(data) + "\n\nbody\n")
+        parsed = yaml.safe_load(block)
+        assert isinstance(parsed, dict)
+        assert parsed == data
+
+
+class TestSplitIndexLinks:
+    def _oversized(self, label: str) -> str:
+        sections = "".join(
+            "## 2026-05-%02d — %s update %d\n\n%s\n\n" % (day, label, day, "word " * 2000)
+            for day in range(1, 9)
+        )
+        return "---\ntitle: %s\ntype: person\n---\n\nintro\n\n" % label + sections
+
+    def test_index_links_are_path_qualified(self, tmp_path):
+        """A bare stem collides across split folders and resolves arbitrarily."""
+        write(tmp_path, "people/alice.md", self._oversized("Alice"))
+        apply_split(tmp_path, plan_split(tmp_path))
+
+        index = (tmp_path / "people/alice/index.md").read_text()
+        assert "[[people/alice/" in index
+        # No bare-stem section links.
+        for line in index.splitlines():
+            if line.startswith("- [["):
+                assert "/" in line.split("[[")[1].split("]]")[0]
+
+    def test_two_split_people_do_not_share_ambiguous_targets(self, tmp_path):
+        write(tmp_path, "people/alice.md", self._oversized("Alice"))
+        write(tmp_path, "people/bob.md", self._oversized("Bob"))
+        apply_split(tmp_path, plan_split(tmp_path))
+
+        alice = (tmp_path / "people/alice/index.md").read_text()
+        bob = (tmp_path / "people/bob/index.md").read_text()
+        assert "[[people/bob/" not in alice
+        assert "[[people/alice/" not in bob
+
+
+class TestSlugify:
+    def test_transcript_ids_are_dropped(self):
+        from transforms import slugify
+        assert slugify("Ace model fallback issue Limitless hnem5smxoylk") == \
+            "ace-model-fallback-issue"
+
+    def test_fireflies_id_form_is_dropped(self):
+        from transforms import slugify
+        assert slugify("Apr 7 2026 planning call Fireflies ID 01kmv4wgn3zs2h") == \
+            "apr-7-2026-planning-call"
+
+    def test_truncation_never_leaves_a_partial_word(self):
+        from transforms import slugify
+        slug = slugify("AI reliability tool frustration is a recurring pattern "
+                       "across many different sessions and contexts")
+        assert not slug.endswith("-")
+        assert len(slug) <= 50
+        # Every retained token must be a whole word from the source.
+        source = "ai reliability tool frustration is a recurring pattern across many " \
+                 "different sessions and contexts".split()
+        assert all(part in source for part in slug.split("-"))
+
+    def test_all_identifier_input_still_yields_a_name(self):
+        from transforms import slugify
+        assert slugify("limitless hnem5smxoylk")
+
+
+class TestDiscriminatingTags:
+    def test_irrelevant_parent_tags_are_not_inherited(self):
+        from transforms import discriminating_tags
+        tags = discriminating_tags(
+            ["romantic-partner", "austin", "house-music", "comedy"],
+            "Heath Schechinger therapy session",
+        )
+        assert "house-music" not in tags
+        assert "comedy" not in tags
+
+    def test_relevant_parent_tag_is_kept(self):
+        from transforms import discriminating_tags
+        assert "comedy" in discriminating_tags(
+            ["austin", "comedy"], "Comedy show in October")
+
+    def test_tags_are_not_identical_across_sections(self):
+        """A tag on every child discriminates nothing."""
+        from transforms import discriminating_tags
+        parent = ["romantic-partner", "austin", "house-music"]
+        a = discriminating_tags(parent, "Therapy session with Heath")
+        b = discriminating_tags(parent, "Costa Rica trip planning")
+        assert a != b
+
+
+class TestSecondarySplit:
+    def test_oversized_section_is_split_on_subheadings(self, tmp_path):
+        """A 36KB child means the page was chopped, not reorganized."""
+        big_section = "".join(
+            "### 2026-05-%02d — Entry %d\n\n%s\n\n" % (d, d, "word " * 1200)
+            for d in range(1, 7)
+        )
+        page = ("---\ntitle: Subject\ntype: person\n---\n\nintro\n\n"
+                "## Current State\n\n" + big_section +
+                "".join("## Section %d\n\n%s\n\n" % (i, "word " * 200) for i in range(4)))
+        write(tmp_path, "people/subject.md", page)
+
+        apply_split(tmp_path, plan_split(tmp_path))
+        children = list((tmp_path / "people/subject").glob("*.md"))
+        oversized = [c for c in children if len(c.read_text()) > 20000]
+        assert not oversized, [c.name for c in oversized]
+        assert any("current-state" in c.name for c in children)
+
+
+class TestTagPhrases:
+    def test_multiword_names_stay_intact(self):
+        """`costa` and `rica` are meaningless alone; `costa-rica` is a concept."""
+        from transforms import discriminating_tags
+        tags = discriminating_tags([], "Holly session in Costa Rica")
+        assert "costa-rica" in tags
+        assert "costa" not in tags and "rica" not in tags
+
+    def test_temporal_filler_is_not_a_tag(self):
+        from transforms import discriminating_tags
+        tags = discriminating_tags([], "Recent updates late night")
+        assert not {"recent", "late", "updates"} & set(tags)
