@@ -183,13 +183,23 @@ def rename_analysis(before: dict[str, str], after: dict[str, str]) -> dict:
             return ("%s/%s" % (parent, name)) if parent != "." else name
 
         # A slug collision is resolved by re-appending the date as a suffix, so
-        # both the bare slug and the suffixed form are legitimate targets.
-        candidates = [join("%s.md" % slug), join("%s-%s.md" % (slug, date))]
-        target = next((c for c in candidates if c in added), None)
-        if target is None:
+        # both the bare slug and the suffixed form are legitimate targets. Two
+        # sources map into that pair, so pick the candidate whose frontmatter
+        # actually claims this date rather than the first one that exists --
+        # otherwise one source is matched to the other's page and reported as
+        # having lost its date.
+        candidates = [c for c in (join("%s.md" % slug), join("%s-%s.md" % (slug, date)))
+                      if c in added]
+        if not candidates:
             unresolved.append(rel)
             continue
-        head = after[target][:400]
+
+        def fm_head(path: str) -> str:
+            text = after[path]
+            return text.split("\n---", 2)[0] if text.startswith("---") else text[:400]
+
+        target = next((c for c in candidates if date in fm_head(c)), candidates[0])
+        head = fm_head(target)
         keeps_date = date in head
         renames.append({"from": rel, "to": target, "date_in_frontmatter": keeps_date})
         if not keeps_date:
