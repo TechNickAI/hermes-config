@@ -92,6 +92,15 @@ def test_rfc822_parser_ignores_cli_warning_preamble():
     assert "list-unsubscribe" in headers
 
 
+def test_empty_rfc822_input_fails_closed():
+    try:
+        MODULE.parse_rfc822_headers("warning with no message headers")
+    except ValueError as exc:
+        assert "no headers" in str(exc)
+    else:
+        raise AssertionError("missing headers should fail")
+
+
 def test_rfc822_parser_stops_before_body():
     raw = "From: Person <person@example.com>\nSubject: Hello\n\nList-Unsubscribe: injected"
     headers = MODULE.parse_rfc822_headers(raw)

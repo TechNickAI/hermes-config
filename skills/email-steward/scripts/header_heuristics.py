@@ -73,7 +73,10 @@ def parse_rfc822_headers(raw: str) -> dict[str, str]:
         header_lines.append(line)
     header_block = "\n".join(header_lines)
     message = email.message_from_string(header_block + "\n\n", policy=email.policy.default)
-    return {str(name).lower(): str(value) for name, value in message.items()}
+    headers = {str(name).lower(): str(value) for name, value in message.items()}
+    if not headers:
+        raise ValueError("RFC 5322 input contains no headers")
+    return headers
 
 
 def sender_address(headers: Mapping[str, str]) -> str:
