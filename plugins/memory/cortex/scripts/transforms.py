@@ -131,6 +131,21 @@ def parse_fm(block: str) -> dict:
     return _parse_fm_fallback(block)
 
 
+def _unquote(value: str) -> str:
+    """Reverse the renderer's quoting, including YAML escape sequences.
+
+    ``render_fm`` emits single-quoted scalars with embedded apostrophes doubled
+    (``Today's`` -> ``'Today''s'``). Stripping the outer quotes without decoding
+    ``''`` leaves an extra apostrophe behind, and because curation re-renders
+    what it parses, the value gains one more on every pass.
+    """
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        inner = value[1:-1]
+        return inner.replace("''", "'") if value[0] == "'" else inner
+    return value
+
+
 def _parse_fm_fallback(block: str) -> dict:
     """Minimal YAML subset parser: scalars and simple lists only.
 
@@ -145,13 +160,13 @@ def _parse_fm_fallback(block: str) -> dict:
         if line.startswith(("  - ", "- ")) and key:
             fm.setdefault(key, [])
             if isinstance(fm[key], list):
-                fm[key].append(line.split("- ", 1)[1].strip().strip("'\""))
+                fm[key].append(_unquote(line.split("- ", 1)[1]))
             continue
         if ":" in line and not line.startswith(" "):
             k, v = line.split(":", 1)
             key = k.strip()
             v = v.strip()
-            fm[key] = v.strip("'\"") if v else []
+            fm[key] = _unquote(v) if v else []
     return fm
 
 
@@ -166,18 +181,21 @@ def render_fm(fm: dict) -> str:
              "tags", "aliases", "related", "sources", "confidence"]
 
     def scalar(value) -> str:
-        """Render one scalar, quoting anything YAML would reinterpret."""
-        sv = str(value)
-        needs_quote = (
-            "#" in sv
-            or re.match(r"^\d{4}-\d{2}-\d{2}", sv)
-            # `[[wikilink]]` is the important case: unquoted, YAML reads it as a
-            # nested sequence and the link is destroyed on the next read.
-            or sv[:1] in "!&*?|>%@`[]{},"
-            or sv.strip() != sv
-            or sv == ""
-        )
-        return "'%s'" % sv.replace("'", "''") if needs_quote else sv
+        """Render one scalar without changing its YAML type or meaning.
+
+        Strings are always single-quoted. Selective quoting is easy to get
+        wrong: an ordinary title such as ``Session: 12:26`` is invalid YAML
+        when left bare (this shipped once and produced 142 unparseable pages),
+        while ``true``, ``null`` and numeric-looking strings silently change
+        type. Non-strings keep their native YAML representation.
+        """
+        if isinstance(value, str):
+            return "'%s'" % value.replace("'", "''")
+        if value is True:
+            return "true"
+        if value is False:
+            return "false"
+        return str(value)
 
     def emit(key: str, value) -> list[str]:
         # Drop keys with no value rather than emitting a bare `key:` that
@@ -509,7 +527,100 @@ def plan_split(store: Path, limit_bytes: int = 40000) -> list[dict]:
     return sorted(out, key=lambda x: -x["bytes"])
 
 
-def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
+# Machine identifiers that belong in metadata, not in a filename. Transcript
+# tools append opaque ids ("limitless-hnem5smx...", "fireflies-id-01kmv4...");
+# carrying them into the filename makes every link unreadable.
+SOURCE_ID = re.compile(
+    r"\b(limitless|fireflies|otter|granola|zoom|recall)\b"
+    r"(?:[\s\-_]*(?:id|transcript))?[\s\-_:]*[a-z0-9]{8,}",
+    re.I,
+)
+# A bare opaque token (no tool name) is also noise: long, mixed alphanumeric,
+# and not a word anyone would type.
+OPAQUE_TOKEN = re.compile(r"\b(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]{12,}\b", re.I)
+
+
+def slugify(text: str, max_len: int = 50) -> str:
+    """Build a readable filename slug.
+
+    Truncation happens on a word boundary, never mid-word: a slug ending
+    ``...-recurring-pattern-limitless-`` is a machine artifact, not a name.
+    Opaque transcript identifiers are dropped entirely; they stay available in
+    the page's frontmatter.
+    """
+    cleaned = SOURCE_ID.sub(" ", text)
+    cleaned = OPAQUE_TOKEN.sub(" ", cleaned)
+    slug = re.sub(r"[^a-z0-9]+", "-", cleaned.lower()).strip("-")
+    if not slug:
+        # Everything was identifier noise; fall back to the raw text so the
+        # page still gets a stable, if uglier, name.
+        slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:max_len].strip("-")
+        return slug or "section"
+    if len(slug) <= max_len:
+        return slug
+    cut = slug[:max_len]
+    if "-" in cut:
+        cut = cut[:cut.rindex("-")]
+    return cut.strip("-") or slug[:max_len].strip("-")
+
+
+def discriminating_tags(parent_tags, heading: str, limit: int = 4) -> list:
+    """Tags for a split child.
+
+    The parent's full tag set describes the *whole* subject. Copying it onto
+    every section makes a therapy-transcript page carry tags like ``house-music``
+    -- a tag present on all N children discriminates nothing and pollutes
+    retrieval. Keep only parent tags the section actually mentions, plus terms
+    drawn from its own heading.
+    """
+    if isinstance(parent_tags, str):
+        parent_tags = [parent_tags]
+    parent_tags = [str(t) for t in (parent_tags or [])]
+    text = heading.lower()
+    # Whole-word match only. A substring test lets `session` match `obsession`
+    # and `call` match `recall`, so children inherit tags their section never
+    # discusses -- the dilution this function exists to prevent.
+    def mentions(tag: str) -> bool:
+        # Escape the tag before it becomes a pattern. A tag is arbitrary user
+        # text: `c++` would otherwise match a bare "C" via the quantifiers,
+        # `a.b` would match "axb", and `a(b` raises and aborts the whole run.
+        phrase = r"[\s\-]+".join(re.escape(part) for part in tag.lower().split("-") if part)
+        if not phrase:
+            return False
+        return re.search(r"(?<![a-z0-9])%s(?![a-z0-9])" % phrase, text) is not None
+
+    kept = [t for t in parent_tags if mentions(t)]
+
+    stop = {"the", "and", "for", "with", "from", "her", "his", "our", "their",
+            "this", "that", "was", "were", "has", "have", "about", "into",
+            "update", "updates", "notes", "context", "session", "call", "part",
+            "early", "late", "mid", "next", "last", "first", "recent", "more",
+            "some", "other", "over", "after", "before", "during", "again"}
+    # Prefer multi-word phrases: splitting "Costa Rica" into `costa` + `rica`
+    # yields two tags that mean nothing on their own and match nothing useful.
+    cleaned = SOURCE_ID.sub(" ", heading)
+    cleaned = DATE_ANY.sub(" ", cleaned) if "DATE_ANY" in globals() else cleaned
+    phrases = re.findall(r"\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})+", cleaned)
+    for phrase in phrases:
+        tag = phrase.lower().replace(" ", "-")
+        if tag not in kept:
+            kept.append(tag)
+        if len(kept) >= limit:
+            return kept[:limit]
+
+    consumed = {w for p in phrases for w in p.lower().split()}
+    words = [w for w in re.findall(r"[a-z]{4,}", cleaned.lower())
+             if w not in stop and w not in consumed]
+    for w in words:
+        if w not in kept:
+            kept.append(w)
+        if len(kept) >= limit:
+            break
+    return kept[:limit]
+
+
+def apply_split(store: Path, plan: list[dict], max_pages: int = 3,
+                sub_limit_bytes: int = 12000) -> dict:
     """Split an oversized page into `<name>/index.md` + one file per section.
 
     Inbound ``[[stem]]`` links are repointed at the new index so splitting never
@@ -535,6 +646,21 @@ def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
         for i in range(1, len(parts) - 1, 2):
             heading = parts[i].lstrip("# ").strip()
             content = parts[i + 1]
+            # A section that is itself oversized has not really been split --
+            # `current-state` stayed 36KB in the first live evaluation. When it
+            # has its own `###` structure, descend one level so the result is a
+            # set of readable pages rather than one page plus fragments.
+            if len(content) > sub_limit_bytes:
+                sub = re.split(r"^(###\s+.+)$", content, flags=re.M)
+                sub_heads = [(sub[j].lstrip("# ").strip(), sub[j + 1])
+                             for j in range(1, len(sub) - 1, 2)]
+                if len(sub_heads) >= 3:
+                    lead = sub[0].strip()
+                    if lead:
+                        chunks.append((heading, lead))
+                    for sub_heading, sub_content in sub_heads:
+                        chunks.append(("%s — %s" % (heading, sub_heading), sub_content))
+                    continue
             chunks.append((heading, content))
         if len(chunks) < 4:
             continue
@@ -553,14 +679,19 @@ def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
             heading_nodate = DATE_ANY.sub("", heading)
             heading_nodate = re.sub(r"^[\s\-\u2014:]+", "", heading_nodate).strip()
             slug_src = heading_nodate or heading
-            slug = re.sub(r"[^a-z0-9]+", "-", slug_src.lower()).strip("-")[:60] or "section"
+            slug = slugify(slug_src)
             child_fm = {
                 "title": (heading_nodate or heading)[:120],
                 "type": fm.get("type", "note"),
                 "parent": "[[%s/index]]" % (item["page"][:-3] if item["page"].endswith(".md")
                                             else item["page"]),
-                "tags": fm.get("tags") or [],
+                "tags": discriminating_tags(fm.get("tags"), slug_src),
             }
+            # The transcript id is dropped from the filename, so keep it as
+            # metadata -- it is how you find the original recording.
+            src_id = SOURCE_ID.search(slug_src)
+            if src_id:
+                child_fm["source_ref"] = src_id.group(0).strip()
             if dm:
                 # Date preserved as metadata, so chronological sorting still works.
                 child_fm["date"] = dm.group(1)
@@ -570,7 +701,11 @@ def apply_split(store: Path, plan: list[dict], max_pages: int = 3) -> dict:
                 target = folder / ("%s-%d.md" % (slug, n))
                 n += 1
             target.write_text(render_fm(child_fm) + "\n\n## " + heading + "\n" + content.rstrip() + "\n")
-            index_links.append("- [[%s]]%s" % (target.stem, (" — %s" % dm.group(1)) if dm else ""))
+            # Path-qualify the link. A bare stem such as `[[recent-updates]]`
+            # collides across split folders (two people can each have one) and
+            # would resolve to an arbitrary person's section.
+            rel_target = "%s/%s" % (folder.relative_to(store).as_posix(), target.stem)
+            index_links.append("- [[%s]]%s" % (rel_target, (" — %s" % dm.group(1)) if dm else ""))
             files_created += 1
 
         fm["title"] = fm.get("title") or titleize(p.stem)
