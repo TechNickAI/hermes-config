@@ -91,6 +91,100 @@ def measure(store: Path) -> dict:
     }
 
 
+def accounted_for(source: Path, candidate: Path) -> dict:
+    """Every input file must survive, or be explained by a rename/split.
+
+    Structural quality checks all passed on a run that silently deleted 77
+    files, because they only ever inspected markdown that was still present.
+    This asks the complementary question: did anything simply vanish?
+
+    Non-markdown is never transformed, so it must be preserved byte for byte.
+    Markdown may legitimately disappear from a path when a page is de-renamed
+    or split, so it counts as accounted for when its content is recoverable
+    elsewhere in the candidate.
+    """
+    def rel_files(root: Path) -> dict:
+        out = {}
+        for p in root.rglob("*"):
+            if p.is_file() and not p.is_symlink() and not p.name.startswith(".plugin.db"):
+                out[str(p.relative_to(root))] = p
+        return out
+
+    src, dst = rel_files(source), rel_files(candidate)
+    missing_binary, missing_pages, altered_binary = [], [], []
+
+    dst_words = collections.Counter()
+    for rel, p in dst.items():
+        if rel.endswith(".md"):
+            dst_words.update(_prose(p))
+
+    for rel, p in src.items():
+        if rel in dst:
+            if not rel.endswith(".md") and p.read_bytes() != dst[rel].read_bytes():
+                altered_binary.append(rel)
+            continue
+        if not rel.endswith(".md"):
+            missing_binary.append(rel)
+            continue
+        # A moved page is fine as long as its prose still exists somewhere.
+        lost = _prose(p) - dst_words
+        if lost:
+            missing_pages.append({"page": rel, "words_lost": sum(lost.values()),
+                                  "sample": [w for w, _ in lost.most_common(5)]})
+
+    # Also compare the whole corpus. Per-missing-page accounting cannot see a
+    # transform that truncates a page but leaves it at the same path.
+    global_lost = prose_inventory(source) - prose_inventory(candidate)
+
+    return {
+        "source_files": len(src),
+        "candidate_files": len(dst),
+        "missing_non_markdown": missing_binary,
+        "altered_non_markdown": altered_binary,
+        "pages_with_unrecoverable_prose": missing_pages,
+        "substantive_words_lost": sum(global_lost.values()),
+        "substantive_words_lost_sample": [w for w, _ in global_lost.most_common(12)],
+    }
+
+
+def _prose(path: Path) -> collections.Counter:
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return collections.Counter()
+    if text.startswith("---"):
+        lines = text.splitlines(keepends=True)
+        for i in range(1, len(lines)):
+            if lines[i].rstrip("\r\n") == "---":
+                text = "".join(lines[i + 1:])
+                break
+    def substantive(word: str) -> bool:
+        if re.fullmatch(r"#{1,6}", word):
+            return False
+        # Link targets and path-only citations are expected to change when a
+        # page is de-renamed or split. Link preservation has its own stronger
+        # checks (broken/ambiguous/inbound); counting an old target token as
+        # prose loss produces false blocks such as
+        # `` `decisions/2026-05-28-old-name.md`, `` -> the new canonical path.
+        stripped = word.strip("`.,;:()[]{}<>")
+        if stripped.endswith(".md"):
+            return False
+        if word.lstrip("`.,;:(){}").startswith("[[") or "]]" in word:
+            return False
+        return True
+
+    return collections.Counter(w for w in text.split() if substantive(w))
+
+
+def prose_inventory(root: Path) -> collections.Counter:
+    """Global substantive prose/code inventory, excluding rewritable targets."""
+    total = collections.Counter()
+    for p in root.rglob("*.md"):
+        if p.is_file() and not p.is_symlink():
+            total.update(_prose(p))
+    return total
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", required=True)
@@ -121,21 +215,33 @@ def main() -> int:
     print("  copy  : %s" % ws)
     print("=" * 72)
 
-    # Copy markdown only: transforms operate on prose, and bulk binaries would
-    # dominate the copy time without affecting the result.
+    # Copy the ENTIRE store, not just markdown. The transforms only rewrite
+    # prose, but the copy is a candidate *store* -- a caller that swaps it in
+    # would silently destroy every attachment, artifact and index beside the
+    # pages. (This shipped once and deleted 77 files under `artifacts/`.)
+    # SKIP still governs what gets TRANSFORMED, never what gets preserved.
     n = 0
-    for p in live.rglob("*.md"):
-        if any(d in SKIP for d in p.parts):
+    carried = 0
+    for p in live.rglob("*"):
+        if p.is_dir() or p.is_symlink():
             continue
         rel = p.relative_to(live)
+        # The search index is derived data and is rebuilt from the pages; a
+        # stale index copied beside rewritten pages is worse than none.
+        if p.name.startswith(".plugin.db"):
+            continue
         dest = ws / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copy2(p, dest)
-            n += 1
         except OSError:
-            pass
-    print("\n[copied] %d markdown pages" % n)
+            continue
+        if p.suffix == ".md" and not any(d in SKIP for d in p.parts):
+            n += 1
+        else:
+            carried += 1
+    print("\n[copied] %d markdown pages to transform, %d other files preserved"
+          % (n, carried))
 
     before = measure(ws)
     report: dict = {"label": args.label, "before": before, "changes": {}, "samples": {}}
@@ -183,6 +289,18 @@ def main() -> int:
     after = measure(ws)
     report["after"] = after
 
+    # Preservation is a precondition, not a metric. Compare against the live
+    # store: quality checks only inspect pages that are still there, so a
+    # deletion is invisible to them.
+    accounting = accounted_for(live, ws)
+    report["accounting"] = accounting
+    lost_files = accounting["missing_non_markdown"]
+    altered = accounting["altered_non_markdown"]
+    lost_prose = accounting["pages_with_unrecoverable_prose"]
+    lost_words = accounting["substantive_words_lost"]
+    preserved = not (lost_files or altered or lost_prose or lost_words)
+    report["preserved"] = preserved
+
     print("\n" + "-" * 72)
     print("BEFORE -> AFTER")
     print("-" * 72)
@@ -201,11 +319,30 @@ def main() -> int:
         arrow = "" if delta == 0 else ("  (%+d)" % delta)
         print("  %-24s %6s%-1s  ->  %6s%-1s%s" % (label, b, unit, a, unit, arrow))
 
+    print("\n  %-24s %6d   ->  %6d"
+          % ("files in store", accounting["source_files"], accounting["candidate_files"]))
+    if preserved:
+        print("  PRESERVATION: every source file accounted for")
+    else:
+        print("  PRESERVATION FAILED — candidate is NOT safe to apply")
+        if lost_files:
+            print("    %d non-markdown file(s) missing, e.g. %s"
+                  % (len(lost_files), lost_files[:3]))
+        if altered:
+            print("    %d non-markdown file(s) modified, e.g. %s"
+                  % (len(altered), altered[:3]))
+        for item in lost_prose[:3]:
+            print("    %s lost %d words %s"
+                  % (item["page"], item["words_lost"], item["sample"]))
+        if lost_words:
+            print("    corpus lost %d substantive words, e.g. %s"
+                  % (lost_words, accounting["substantive_words_lost_sample"][:8]))
+
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(report, indent=2, default=str))
         print("\n[report] %s" % args.json_out)
     print("\n[live store untouched] %s" % live)
-    return 0
+    return 0 if preserved else 1
 
 
 if __name__ == "__main__":

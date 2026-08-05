@@ -8,6 +8,8 @@ store being audited.
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,3 +58,144 @@ class TestWorkspaceContainment:
 
         assert result.returncode == 0
         assert (live / "note.md").exists()
+
+
+class TestPreservationAccounting:
+    """The check that was missing when a run silently deleted 77 files."""
+
+    def _mod(self):
+        import importlib
+        sys.path.insert(0, str(SCRIPT.parent))
+        import curate_run
+        return importlib.reload(curate_run)
+
+    def test_missing_non_markdown_is_caught(self, tmp_path):
+        src, cand = tmp_path / "s", tmp_path / "c"
+        for root in (src, cand):
+            (root / "projects/artifacts").mkdir(parents=True)
+            (root / "note.md").write_text("---\ntitle: N\n---\n\nbody\n")
+        (src / "projects/artifacts/dump.txt").write_text("register xrefs")
+
+        result = self._mod().accounted_for(src, cand)
+        assert result["missing_non_markdown"] == ["projects/artifacts/dump.txt"]
+
+    def test_markdown_under_a_skipped_dir_is_still_required(self, tmp_path):
+        """`artifacts` is skipped for TRANSFORMS; it is never skipped for survival."""
+        src, cand = tmp_path / "s", tmp_path / "c"
+        for root in (src, cand):
+            (root / "projects/artifacts").mkdir(parents=True)
+        (src / "projects/artifacts/asm.md").write_text("movq callq rdi")
+
+        result = self._mod().accounted_for(src, cand)
+        assert result["pages_with_unrecoverable_prose"]
+        assert "movq" in result["pages_with_unrecoverable_prose"][0]["sample"]
+
+    def test_rename_is_not_reported_as_loss(self, tmp_path):
+        src, cand = tmp_path / "s", tmp_path / "c"
+        src.mkdir(); cand.mkdir()
+        (src / "2026-04-28-scan.md").write_text("---\ntitle: S\n---\n\nalpha beta\n")
+        (cand / "scan.md").write_text("---\ntitle: S\ndate: '2026-04-28'\n---\n\nalpha beta\n")
+
+        assert self._mod().accounted_for(src, cand)["pages_with_unrecoverable_prose"] == []
+
+    def test_split_is_not_reported_as_loss(self, tmp_path):
+        src, cand = tmp_path / "s", tmp_path / "c"
+        src.mkdir(); (cand / "big").mkdir(parents=True)
+        (src / "big.md").write_text("---\ntitle: B\n---\n\n## One\n\nalpha\n\n## Two\n\nbeta\n")
+        (cand / "big/index.md").write_text("---\ntitle: B\n---\n\n## Sections\n")
+        (cand / "big/one.md").write_text("---\ntitle: One\n---\n\n## One\n\nalpha\n")
+        (cand / "big/two.md").write_text("---\ntitle: Two\n---\n\n## Two\n\nbeta\n")
+
+        assert self._mod().accounted_for(src, cand)["pages_with_unrecoverable_prose"] == []
+
+    def test_modified_binary_is_caught(self, tmp_path):
+        src, cand = tmp_path / "s", tmp_path / "c"
+        src.mkdir(); cand.mkdir()
+        (src / "img.png").write_bytes(b"original")
+        (cand / "img.png").write_bytes(b"corrupted")
+
+        assert self._mod().accounted_for(src, cand)["altered_non_markdown"] == ["img.png"]
+
+    def test_derived_index_is_not_required(self, tmp_path):
+        src, cand = tmp_path / "s", tmp_path / "c"
+        src.mkdir(); cand.mkdir()
+        (src / ".plugin.db").write_bytes(b"sqlite")
+
+        assert self._mod().accounted_for(src, cand)["missing_non_markdown"] == []
+
+
+class TestEndToEndPreservation:
+    """Exercise the real copy path, not just the accounting helper.
+
+    The helper being correct is not enough: the deletion shipped *through*
+    curate_run's own copy step, so the test has to run that step.
+    """
+
+    def _store(self, root: Path) -> Path:
+        (root / "projects/artifacts").mkdir(parents=True)
+        (root / "note.md").write_text("---\ntitle: Note\n---\n\nalpha beta gamma\n")
+        (root / "projects/artifacts/asm.md").write_text(
+            "---\ntitle: ASM\n---\n\nmovq callq rdi rsi\n")
+        (root / "projects/artifacts/dump.bin").write_bytes(b"\x00binary payload")
+        (root / "image.png").write_bytes(b"\x89PNG stub")
+        return root
+
+    def test_non_markdown_and_skipped_dirs_survive_a_real_run(self, tmp_path):
+        store = self._store(tmp_path / "store")
+        ws = tmp_path / "ws"
+        result = _run("--store", str(store), "--workspace", str(ws),
+                      "--label", "cand", "--json-out", str(tmp_path / "r.json"))
+        assert result.returncode == 0, result.stdout[-2000:]
+
+        cand = ws / "cand"
+        assert (cand / "image.png").read_bytes() == b"\x89PNG stub"
+        assert (cand / "projects/artifacts/dump.bin").read_bytes() == b"\x00binary payload"
+        assert (cand / "projects/artifacts/asm.md").exists()
+
+        report = json.loads((tmp_path / "r.json").read_text())
+        assert report["preserved"] is True
+        assert report["accounting"]["missing_non_markdown"] == []
+
+    def test_run_fails_loudly_when_content_would_be_lost(self, tmp_path, monkeypatch):
+        """A candidate that drops files must exit non-zero, not just print."""
+        store = self._store(tmp_path / "store")
+        ws = tmp_path / "ws"
+        _run("--store", str(store), "--workspace", str(ws), "--label", "cand")
+
+        # Simulate any transform losing a file, then re-audit.
+        sys.path.insert(0, str(SCRIPT.parent))
+        import importlib
+        import curate_run
+        curate_run = importlib.reload(curate_run)
+        (ws / "cand/projects/artifacts/dump.bin").unlink()
+
+        audit = curate_run.accounted_for(store, ws / "cand")
+        assert audit["missing_non_markdown"] == ["projects/artifacts/dump.bin"]
+
+
+    def test_exit_code_is_nonzero_when_preservation_fails(self, tmp_path):
+        """The rollout gates on this exit code; a printed warning is not enough.
+
+        A file the copy step cannot read is dropped from the candidate, which
+        is exactly the shape of the failure that shipped. The only signal under
+        test here is the process exit status.
+        """
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "keep.md").write_text("---\ntitle: K\n---\n\nalpha\n")
+        secret = store / "payload.bin"
+        secret.write_bytes(b"irreplaceable")
+        secret.chmod(0o000)  # unreadable -> silently skipped by the copy
+        self.addfinalizer = None
+
+        try:
+            result = _run("--store", str(store), "--workspace", str(tmp_path / "ws"),
+                          "--label", "cand", "--json-out", str(tmp_path / "r.json"))
+        finally:
+            secret.chmod(0o644)
+
+        assert result.returncode != 0, result.stdout[-1500:]
+        assert "PRESERVATION FAILED" in result.stdout
+        report = json.loads((tmp_path / "r.json").read_text())
+        assert report["preserved"] is False
+        assert report["accounting"]["missing_non_markdown"] == ["payload.bin"]
