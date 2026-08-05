@@ -45,14 +45,25 @@ def body_of(text: str) -> str:
 
 
 def norm_words(text: str) -> collections.Counter:
-    """Body prose only.
+    """Body prose/code only; exclude structure and rewritable link targets.
 
     Markdown structure markers are excluded: promoting a ``###`` subsection to
-    its own page legitimately consumes the marker, and counting it as lost
-    content produces false alarms that mask real loss.
+    its own page legitimately consumes the marker. File-path citations and
+    wikilink targets are also rewritten during de-rename/split and are verified
+    independently by ``link_health``. Counting their old spelling as lost prose
+    creates false blocks while making no content-safety claim stronger.
     """
-    return collections.Counter(
-        w for w in body_of(text).split() if not re.fullmatch(r"#{1,6}", w))
+    def substantive(word: str) -> bool:
+        if re.fullmatch(r"#{1,6}", word):
+            return False
+        stripped = word.strip("`.,;:()[]{}<>")
+        if stripped.endswith(".md"):
+            return False
+        if word.lstrip("`.,;:(){}").startswith("[[") or "]]" in word:
+            return False
+        return True
+
+    return collections.Counter(w for w in body_of(text).split() if substantive(w))
 
 
 # ----------------------------------------------------------------- link health

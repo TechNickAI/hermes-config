@@ -132,3 +132,22 @@ class TestLinkHealth:
         health = link_health(pages(tmp_path))
         assert health["self_links"] == 1
         assert health["broken"] == 0
+
+
+class TestRewritableTargetsAreNotProseLoss:
+    def test_path_citation_rewritten_by_derename_is_not_loss(self, tmp_path):
+        before, after = tmp_path / "b", tmp_path / "a"
+        write(before, "p/big.md", fm("Big", "## S\n\nanalysis `2026-04-16-old-name.md`; stays"))
+        write(after, "p/big/index.md", fm("Big", "## Sections\n\n- [[p/big/s]]"))
+        write(after, "p/big/s.md", fm("S", "## S\n\nanalysis `new-name.md`; stays"))
+        result = split_analysis(pages(before), pages(after))
+        assert result["with_loss"] == 0
+
+    def test_real_word_next_to_rewritten_path_is_still_caught(self, tmp_path):
+        before, after = tmp_path / "b", tmp_path / "a"
+        write(before, "p/big.md", fm("Big", "## S\n\nanalysis irreplaceable `old.md`"))
+        write(after, "p/big/index.md", fm("Big", "## Sections\n\n- [[p/big/s]]"))
+        write(after, "p/big/s.md", fm("S", "## S\n\nanalysis `new.md`"))
+        result = split_analysis(pages(before), pages(after))
+        assert result["with_loss"] == 1
+        assert "irreplaceable" in result["detail"][0]["lost_sample"]
