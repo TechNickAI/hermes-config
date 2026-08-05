@@ -11,7 +11,7 @@
 #   use_when              the trigger conditions, for selective installation
 _generated_by: scripts/generate_manifest.py
 _do_not_edit: Regenerate with `python scripts/generate_manifest.py`; CI checks it.
-count: 19
+count: 20
 skills:
 - name: address-pr-comments
   version: 1.0.0
@@ -45,6 +45,24 @@ skills:
   - fleet
   - observability
   path: skills/cron-healthcheck
+- name: email-steward
+  version: 1.0.0
+  scope: solo
+  summary: Use when triaging one or more email inboxes on a schedule, removing obvious debris, quarantining promotional mail, and surfacing only messages that need the user's attention.
+  use_when: triaging one or more email inboxes on a schedule, removing obvious debris, quarantining promotional mail, and surfacing only messages that need the user's attention. Provides a Hermes-native workflow using cron, per-message sub-agent isolation, deterministic header heuristics, account adapters, visi…
+  requires:
+  - 'email CLI: gog or himalaya'
+  - Hermes cron + delegation toolsets enabled
+  works_out_of_the_box: false
+  tags:
+  - email
+  - inbox
+  - triage
+  - cron
+  - delegation
+  - prompt-injection
+  - productivity
+  path: skills/email-steward
 - name: google-docs
   version: 1.0.0
   scope: solo
