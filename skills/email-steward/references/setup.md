@@ -66,13 +66,18 @@ Choose a delivery destination that the user actually monitors. `origin` returns 
 conversation that created the job. Use an explicit `platform:chat_id` only when the user
 requests another destination.
 
-The cron tool can also attach a restricted toolset when jobs are created through the
-API. For this workflow, enable only what the adapter and isolation contract need,
-normally:
+The CLI currently has no `--toolset` flag. Jobs created through Hermes' cron API can
+restrict the **parent job** with `enabled_toolsets`; otherwise use a dedicated profile
+whose enabled tools are already minimal. For this workflow, the parent normally needs:
 
 - terminal or file tools for the email CLI and Markdown state;
-- delegation for isolated body reads;
+- delegation for context-isolated body reads;
 - cron only for job management, not every run.
+
+This is not a per-child sandbox. `delegate_task` children inherit the parent's available
+toolsets, so narrowing the parent job or profile is the security boundary. Delegation
+provides a fresh conversation and keeps raw body text out of the orchestrator's context;
+it does not remove tools from the child.
 
 ## 5. Prove the scheduled path
 
