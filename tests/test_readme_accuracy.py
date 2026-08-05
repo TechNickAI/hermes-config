@@ -60,7 +60,7 @@ def test_skill_count_in_heading_matches_reality() -> None:
         "nineteen": 19, "twenty": 20, "twenty-one": 21, "twenty-two": 22,
         "twenty-three": 23, "twenty-four": 24, "twenty-five": 25,
     }
-    match = re.search(r"### `skills/` — ([\w-]+) procedural skills", _readme())
+    match = re.search(r"### `skills/`[: ]+([\w-]+) procedural skills", _readme())
     assert match, "could not find the skills heading in README.md"
     claimed_word = match.group(1).lower()
     # The heading may spell the count ("nineteen") or use a numeral ("19"); both are
