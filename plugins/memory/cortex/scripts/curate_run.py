@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import os
 import re
 import shutil
 import sys
@@ -106,7 +107,7 @@ def accounted_for(source: Path, candidate: Path) -> dict:
     def rel_files(root: Path) -> dict:
         out = {}
         for p in root.rglob("*"):
-            if p.is_file() and not p.is_symlink() and not p.name.startswith(".plugin.db"):
+            if (p.is_file() or p.is_symlink()) and not p.name.startswith(".plugin.db"):
                 out[str(p.relative_to(root))] = p
         return out
 
@@ -120,6 +121,10 @@ def accounted_for(source: Path, candidate: Path) -> dict:
 
     for rel, p in src.items():
         if rel in dst:
+            if p.is_symlink():
+                if not dst[rel].is_symlink() or os.readlink(p) != os.readlink(dst[rel]):
+                    altered_binary.append(rel)
+                continue
             if not rel.endswith(".md") and p.read_bytes() != dst[rel].read_bytes():
                 altered_binary.append(rel)
             continue
@@ -152,12 +157,12 @@ def _prose(path: Path) -> collections.Counter:
         text = path.read_text(errors="replace")
     except OSError:
         return collections.Counter()
-    if text.startswith("---"):
-        lines = text.splitlines(keepends=True)
-        for i in range(1, len(lines)):
-            if lines[i].rstrip("\r\n") == "---":
-                text = "".join(lines[i + 1:])
-                break
+    # Use the same parser as every transform. A body can legitimately begin
+    # with horizontal rules; stripping the first ---...--- pair unconditionally
+    # would hide real prose from the preservation inventory.
+    block, body = split_frontmatter(text)
+    if block and isinstance(parse_fm(block), dict):
+        text = body
     def substantive(word: str) -> bool:
         if re.fullmatch(r"#{1,6}", word):
             return False
@@ -223,7 +228,7 @@ def main() -> int:
     n = 0
     carried = 0
     for p in live.rglob("*"):
-        if p.is_dir() or p.is_symlink():
+        if p.is_dir() and not p.is_symlink():
             continue
         rel = p.relative_to(live)
         # The search index is derived data and is rebuilt from the pages; a
@@ -233,7 +238,10 @@ def main() -> int:
         dest = ws / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.copy2(p, dest)
+            if p.is_symlink():
+                dest.symlink_to(os.readlink(p))
+            else:
+                shutil.copy2(p, dest)
         except OSError:
             continue
         if p.suffix == ".md" and not any(d in SKIP for d in p.parts):

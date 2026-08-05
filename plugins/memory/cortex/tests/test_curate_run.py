@@ -123,6 +123,36 @@ class TestPreservationAccounting:
 
         assert self._mod().accounted_for(src, cand)["missing_non_markdown"] == []
 
+    def test_symlink_target_and_path_are_preserved(self, tmp_path):
+        src, cand = tmp_path / "s", tmp_path / "c"
+        src.mkdir(); cand.mkdir()
+        (src / "shared").symlink_to("../knowledge/shared")
+        (cand / "shared").symlink_to("../knowledge/shared")
+        result = self._mod().accounted_for(src, cand)
+        assert result["missing_non_markdown"] == []
+        assert result["altered_non_markdown"] == []
+
+    def test_missing_or_retargeted_symlink_is_caught(self, tmp_path):
+        src, cand = tmp_path / "s", tmp_path / "c"
+        src.mkdir(); cand.mkdir()
+        (src / "shared").symlink_to("../knowledge/shared")
+        missing = self._mod().accounted_for(src, cand)
+        assert missing["missing_non_markdown"] == ["shared"]
+
+        (cand / "shared").symlink_to("../wrong/place")
+        altered = self._mod().accounted_for(src, cand)
+        assert altered["altered_non_markdown"] == ["shared"]
+
+    def test_horizontal_rule_body_is_in_prose_inventory(self, tmp_path):
+        src, cand = tmp_path / "s", tmp_path / "c"
+        src.mkdir(); cand.mkdir()
+        # The opening --- is a horizontal rule, not YAML frontmatter.
+        (src / "note.md").write_text("---\nnot: [valid yaml\n---\nirreplaceable prose\n")
+        (cand / "note.md").write_text("---\nnot: [valid yaml\n---\nprose\n")
+        result = self._mod().accounted_for(src, cand)
+        assert result["substantive_words_lost"] == 1
+        assert "irreplaceable" in result["substantive_words_lost_sample"]
+
 
 class TestEndToEndPreservation:
     """Exercise the real copy path, not just the accounting helper.
@@ -185,14 +215,28 @@ class TestEndToEndPreservation:
         (store / "keep.md").write_text("---\ntitle: K\n---\n\nalpha\n")
         secret = store / "payload.bin"
         secret.write_bytes(b"irreplaceable")
-        secret.chmod(0o000)  # unreadable -> silently skipped by the copy
-        self.addfinalizer = None
 
-        try:
-            result = _run("--store", str(store), "--workspace", str(tmp_path / "ws"),
-                          "--label", "cand", "--json-out", str(tmp_path / "r.json"))
-        finally:
-            secret.chmod(0o644)
+        # Deterministically force the copy call to fail in a subprocess, even
+        # under root. sitecustomize is imported before the script and wraps
+        # shutil.copy2 only for the named fixture.
+        shim = tmp_path / "shim"
+        shim.mkdir()
+        (shim / "sitecustomize.py").write_text(
+            "import shutil\n"
+            "_real = shutil.copy2\n"
+            "def copy2(src, dst, *a, **k):\n"
+            "    if str(src).endswith('payload.bin'):\n"
+            "        raise OSError('injected copy failure')\n"
+            "    return _real(src, dst, *a, **k)\n"
+            "shutil.copy2 = copy2\n"
+        )
+        env = dict(os.environ, PYTHONPATH=str(shim))
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--store", str(store),
+             "--workspace", str(tmp_path / "ws"), "--label", "cand",
+             "--json-out", str(tmp_path / "r.json")],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
 
         assert result.returncode != 0, result.stdout[-1500:]
         assert "PRESERVATION FAILED" in result.stdout
