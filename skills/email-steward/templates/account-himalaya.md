@@ -40,7 +40,10 @@ and disposition. Do not use unread state.
 ### get_headers(message_id)
 
 Pipe the command directly to the classifier so the body never enters the orchestrator's
-context. The classifier stops parsing at the first blank line.
+context. Himalaya prints the selected headers and then the body; the classifier accepts
+only the initial RFC header block and stops at the first blank line. Keep stderr
+separate and enable shell `pipefail` when this is wrapped in a script so a failed
+Himalaya command cannot be mistaken for a successful classification.
 
 ```bash
 himalaya -c "$CFG" message read --preview -f INBOX \
@@ -94,7 +97,7 @@ in the Markdown dedup table when needed.
 ### check_sent(message_id)
 
 ```bash
-himalaya -c "$CFG" -o json message thread <message-id>
+himalaya -c "$CFG" -o json message thread --preview <message-id>
 ```
 
 If the latest message is from the managed account, the loop is handled.

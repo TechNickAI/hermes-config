@@ -28,7 +28,7 @@ This is a Hermes-native skill, not a persistent workflow process:
 - Hermes cron provides scheduling and delivery.
 - This skill provides judgment and the action contract.
 - An account adapter maps abstract operations to an installed email CLI.
-- `delegate_task` isolates each untrusted body read from the orchestrator.
+- `delegate_task` context-isolates each untrusted body read from the orchestrator.
 - Markdown files hold user-owned rules and an auditable decision history.
 - Gmail labels or IMAP folders provide reversible disposition and deduplication.
 
@@ -153,7 +153,7 @@ billing, onboarding, and outage notices commonly use those same signals, so appl
 explicit user rule or send the message through isolated body classification. `ambiguous`
 falls through unchanged.
 
-### 5. Isolate every necessary body read
+### 5. Context-isolate every necessary body read
 
 Only an ambiguous message that cannot be decided from sender, subject, rules, and
 headers justifies a body read. The orchestrator must not read it inline.
@@ -185,6 +185,10 @@ deadline: <verified date, or none>
 
 If the child fails, omits the ID, returns an invalid verdict, or quotes sensitive body
 content, do not act. Keep the message and record `classification_failed`.
+
+Delegation is a context boundary, not a tool sandbox. Children inherit the parent's
+available toolsets. Run this workflow from a parent cron job or dedicated profile with
+only the email adapter, Markdown state, and delegation capabilities it actually needs.
 
 ### 6. Pass the actionability gate before flagging
 
