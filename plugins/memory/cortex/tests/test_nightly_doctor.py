@@ -240,6 +240,25 @@ def test_normal_page_deletion_is_not_blocked(tmp_path, monkeypatch):
 # --------------------------------------------------------------- embeddings
 
 
+def test_empty_store_is_healthy_not_alarming(tmp_path, monkeypatch):
+    """A new agent with no pages yet must not alarm every single night.
+
+    Found in fleet rollout: a profile whose Cortex store was empty exited 1
+    forever. Coverage asks whether the pages that EXIST are embedded.
+    """
+    mod = load_module()
+    (tmp_path / "cortex").mkdir()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    assert result["embeddings_after"]["pages"] == 0
+    assert result["embeddings_after"]["ok"] is True
+    assert result["retrieval"]["ok"] is True
+    assert result["ok"] is True
+    assert result["repairs"] == []
+
+
 def test_missing_embeddings_are_backfilled(tmp_path, monkeypatch):
     mod, st = make_store(tmp_path)
     st._conn.execute("DELETE FROM page_embeddings")
