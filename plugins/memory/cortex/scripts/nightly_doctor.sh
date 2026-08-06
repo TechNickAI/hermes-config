@@ -14,7 +14,11 @@ set -uo pipefail
 STORE="${CORTEX_STORE:-$HOME/.hermes/cortex}"
 PROFILE_HOME="${CORTEX_PROFILE_HOME:-$HOME/.hermes}"
 QUERY="${CORTEX_DOCTOR_QUERY:-memory}"
-PLUGIN_DIR="${CORTEX_PLUGIN_DIR:-$PROFILE_HOME/plugins/cortex}"
+# Default to the directory this script lives in. The doctor and summary scripts
+# are siblings, so self-location works both from a repo checkout and from an
+# installed plugin dir -- guessing a path under PROFILE_HOME does not.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_DIR="${CORTEX_PLUGIN_DIR:-$(dirname -- "$SCRIPT_DIR")}"
 KEEP_DAYS="${CORTEX_KEEP_BACKUP_DAYS:-14}"
 PYTHON="${CORTEX_PYTHON:-}"
 
