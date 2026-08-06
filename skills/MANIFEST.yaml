@@ -11,7 +11,7 @@
 #   use_when              the trigger conditions, for selective installation
 _generated_by: scripts/generate_manifest.py
 _do_not_edit: Regenerate with `python scripts/generate_manifest.py`; CI checks it.
-count: 20
+count: 21
 skills:
 - name: address-pr-comments
   version: 1.0.0
@@ -45,6 +45,22 @@ skills:
   - fleet
   - observability
   path: skills/cron-healthcheck
+- name: deep-dive
+  version: 1.0.0
+  scope: solo
+  summary: Use when told "do a deep dive", "go figure this out", or "don't reinvent the wheel" - researches a question across every relevant source and returns a decision.
+  use_when: told "do a deep dive", "go figure this out", or "don't reinvent the wheel" - researches a question across every relevant source and returns a decision. Also fires on "see what everyone else is doing", "use all the skills you have", "what's the best way to X", "should we build this or buy it", "is th…
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - research
+  - diligence
+  - decision
+  - build-vs-buy
+  - prior-art
+  - multi-source
+  - orchestration
+  path: skills/deep-dive
 - name: email-steward
   version: 1.0.0
   scope: solo
