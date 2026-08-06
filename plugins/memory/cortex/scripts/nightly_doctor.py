@@ -130,16 +130,25 @@ def resolve_paths(
     plugin_config: dict[str, Any],
     store_override: str | None,
 ) -> tuple[Path, Path]:
-    """Resolve (store_path, db_path) the same way the provider does."""
+    """Resolve (store_path, db_path) the same way the provider does.
+
+    A --store override deliberately ALSO discards a configured db_path. Pairing
+    an overridden markdown root with the configured database would open the live
+    index against a different corpus, and the reindex would then delete every
+    page it could not find under the override.
+    """
 
     def expand(value: str) -> Path:
-        text = str(value).replace("$HERMES_HOME", str(profile_home))
+        # Match the provider: both $HERMES_HOME and ${HERMES_HOME} are accepted.
+        text = str(value).replace("${HERMES_HOME}", str(profile_home))
+        text = text.replace("$HERMES_HOME", str(profile_home))
         return Path(text).expanduser().resolve()
 
     if store_override:
         store = Path(store_override).expanduser().resolve()
-    else:
-        store = expand(plugin_config.get("store_path") or str(profile_home / "cortex"))
+        return store, store / ".plugin.db"
+
+    store = expand(plugin_config.get("store_path") or str(profile_home / "cortex"))
     raw_db = plugin_config.get("db_path") or ""
     db = expand(raw_db) if raw_db else store / ".plugin.db"
     return store, db

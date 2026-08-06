@@ -11,7 +11,10 @@
 # Exit: 0 healthy, 1 unhealthy, 2 setup failure.
 set -uo pipefail
 
-STORE="${CORTEX_STORE:-$HOME/.hermes/cortex}"
+# CORTEX_STORE is an OPTIONAL override. When unset the doctor resolves the store
+# and database from plugins.cortex in the profile's config.yaml, which is what the
+# live agent uses. Passing a store unconditionally would defeat that.
+STORE="${CORTEX_STORE:-}"
 PROFILE_HOME="${CORTEX_PROFILE_HOME:-$HOME/.hermes}"
 QUERY="${CORTEX_DOCTOR_QUERY:-memory}"
 # Default to the directory this script lives in. The doctor and summary scripts
@@ -37,8 +40,12 @@ if [[ ! -x "$PYTHON" || ! -f "$DOCTOR" ]]; then
   exit 2
 fi
 
-OUT="$("$PYTHON" "$DOCTOR" --store "$STORE" --profile-home "$PROFILE_HOME" \
-        --query "$QUERY" --keep-backup-days "$KEEP_DAYS" --repair 2>&1)"
+ARGS=(--profile-home "$PROFILE_HOME" --query "$QUERY" --keep-backup-days "$KEEP_DAYS" --repair)
+if [[ -n "$STORE" ]]; then
+  ARGS+=(--store "$STORE")
+fi
+
+OUT="$("$PYTHON" "$DOCTOR" "${ARGS[@]}" 2>&1)"
 RC=$?
 
 case "$RC" in

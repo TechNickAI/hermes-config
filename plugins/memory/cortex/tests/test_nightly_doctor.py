@@ -447,16 +447,48 @@ def test_store_and_db_path_come_from_config_yaml(tmp_path):
 
 
 def test_explicit_store_flag_overrides_config(tmp_path):
+    """--store must override the database too, not just the markdown root.
+
+    Pairing an overridden tree with the configured db_path would open the LIVE
+    index against a different corpus, and the reindex would delete every page it
+    could not find under the override.
+    """
     mod = load_module()
     profile = tmp_path / "profile"
     profile.mkdir()
-    (profile / "config.yaml").write_text("plugins:\n  cortex:\n    store_path: $HERMES_HOME/from-config\n")
+    (profile / "config.yaml").write_text(
+        "plugins:\n"
+        "  cortex:\n"
+        "    store_path: $HERMES_HOME/from-config\n"
+        "    db_path: $HERMES_HOME/from-config/live.db\n"
+    )
 
     cfg = mod.load_plugin_config(profile)
     store, db = mod.resolve_paths(profile, cfg, str(tmp_path / "explicit"))
 
     assert store == (tmp_path / "explicit").resolve()
     assert db == (tmp_path / "explicit/.plugin.db").resolve()
+    assert "from-config" not in str(db), "override must not reuse the live database"
+
+
+def test_braced_hermes_home_is_expanded(tmp_path):
+    """The provider expands ${HERMES_HOME} as well as $HERMES_HOME."""
+    mod = load_module()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "config.yaml").write_text(
+        "plugins:\n"
+        "  cortex:\n"
+        "    store_path: ${HERMES_HOME}/braced-kb\n"
+        "    db_path: ${HERMES_HOME}/braced-kb/braced.db\n"
+    )
+
+    cfg = mod.load_plugin_config(profile)
+    store, db = mod.resolve_paths(profile, cfg, None)
+
+    assert store == (profile / "braced-kb").resolve()
+    assert db == (profile / "braced-kb/braced.db").resolve()
+    assert "$" not in str(store) and "$" not in str(db)
 
 
 def test_embedding_dimension_drift_is_reported_and_forces_recompute(tmp_path, monkeypatch):
