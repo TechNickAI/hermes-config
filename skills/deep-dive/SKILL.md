@@ -91,7 +91,8 @@ big. An atomic question asked with the words "go figure this out" is still an L0
 ## Effort tiers
 
 Do reconnaissance first, then let the evidence pick the tier. **State the tier reached
-and a one-sentence reason in the output.**
+and a one-sentence reason in L1/L2 output.** L0 answers carry no tier label — an answer
+that explains its own process is no longer an L0 answer.
 
 | Tier | Qualifies when | Machinery | Search ceiling |
 |---|---|---|---|
