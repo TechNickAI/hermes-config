@@ -10,9 +10,9 @@ description: >
   Routes one question across the relevant source classes (primary docs and source code,
   open-source repos, commercial vendors, practitioner community, academic work,
   prediction markets, and the operator's own prior work), verifies decision-critical
-  claims against the PING failure modes, and returns a decision-first brief with an
-  explicit build-vs-adopt call. Starts at the cheapest route that can settle the question
-  and escalates only against a named gap.
+  claims against the PING failure modes, and returns a decision-first brief, with an
+  explicit build-vs-adopt call when the question is a sourcing decision. Starts at the
+  cheapest route that can settle the question and escalates only against a named gap.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -526,7 +526,8 @@ ends in a question mark, justify it against those three or delete it.
 - [ ] Every decision-critical claim traceable to evidence meeting its claim-type bar,
       with date/version; primary evidence used wherever one exists
 - [ ] Contradictions resolved or presented conditionally, never averaged
-- [ ] Build-vs-adopt call explicit, with build justified against all seven conditions
+- [ ] Sourcing decisions only: build-vs-adopt call explicit, and any build
+      recommendation justified against all six conditions
 - [ ] Decision first, gaps and falsifiers stated, no padding
 - [ ] Every citation was returned by a tool this run and supports its exact claim
 - [ ] Output sections conditional; no empty template scaffolding
