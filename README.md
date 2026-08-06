@@ -99,7 +99,7 @@ actually have one, and that a copied memory plugin is actually selected in
 
 **[`SETUP.md`](SETUP.md) has a prompt to paste into Claude Code, Cursor, or Codex.** It
 tells your agent to read [`skills/MANIFEST.yaml`](skills/MANIFEST.yaml) rather than
-nineteen skill files, to filter by whether you run one machine or a fleet, to install
+twenty-one skill files, to filter by whether you run one machine or a fleet, to install
 only what needs no configuration, and to _ask_ before anything requiring a credential —
 rather than copying everything and reporting success.
 
@@ -112,7 +112,7 @@ Four `SOUL.md` starters: `personal-assistant`, `engineer`, `it-admin`,
 the single highest-leverage file in your setup. Copy one, then make it yours. See
 [`templates/soul/README.md`](templates/soul/README.md).
 
-### `skills/`: 20 procedural skills
+### `skills/`: 21 procedural skills
 
 Skills are markdown procedures the agent loads on demand. **A skill is just a
 directory** — `cp -r` it into `~/.hermes/skills/` and it works.
@@ -140,6 +140,7 @@ directory** — `cp -r` it into `~/.hermes/skills/` and it works.
 | `project-steward` | Run a portfolio of long-running projects as a chief of staff       | **needs setup** |
 | `mob-check`       | What real people are saying right now — Reddit, X, HN, YouTube     |                 |
 | `email-steward`   | Triage inboxes safely with cron, header rules, and isolated reads  | **needs setup** |
+| `deep-dive`       | "Go figure this out" — research a question across every source     |                 |
 
 **Code review & GitHub**
 
