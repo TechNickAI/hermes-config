@@ -379,6 +379,110 @@ def test_old_backups_are_pruned(tmp_path, monkeypatch):
     assert Path(result["backups"][0]).exists(), "today's backup must be kept"
 
 
+def test_corpus_gate_ignores_files_the_indexer_skips(tmp_path, monkeypatch):
+    """Decoy markdown in excluded dirs must not satisfy the data-loss gate.
+
+    CortexStore prunes SKIP_DIRS (node_modules/, .git/, ...) when reindexing, so
+    counting those files lets the gate pass while the constructor deletes every
+    real page. Verified: this wiped a 6-page index before the fix.
+    """
+    mod, st = make_store(tmp_path, pages=6)
+    st.close()
+    store = tmp_path / "cortex"
+    db = store / ".plugin.db"
+    before = sqlite3.connect(db).execute("SELECT count(*) FROM pages").fetchone()[0]
+    assert before == 6
+
+    for md in store.rglob("*.md"):
+        md.unlink()
+    decoys = store / "node_modules"
+    decoys.mkdir(parents=True)
+    for i in range(20):
+        (decoys / f"decoy{i}.md").write_text("# decoy\nmemory")
+    # Filename-level exclusions count too: index.md, .bak, and dotfiles are
+    # skipped by the indexer regardless of where they live.
+    (store / "index.md").write_text("# skipped by the indexer")
+    (store / "topics").mkdir(exist_ok=True)
+    for i in range(10):
+        (store / "topics" / f"note{i}.md.bak").write_text("# skipped")
+        (store / "topics" / f".hidden{i}.md").write_text("# skipped")
+
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+    with pytest.raises(mod.SetupError):
+        mod.run(store, tmp_path, "memory", repair=False)
+
+    after = sqlite3.connect(db).execute("SELECT count(*) FROM pages").fetchone()[0]
+    assert after == before, "index must survive: decoys are invisible to the indexer"
+
+
+def test_store_and_db_path_come_from_config_yaml(tmp_path):
+    """The doctor must inspect the SAME database the live provider uses.
+
+    Reading only .env means probing a default path, so a profile with a custom
+    store_path/db_path gets a freshly created database 'repaired' while the real
+    one stays broken.
+    """
+    mod = load_module()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "config.yaml").write_text(
+        "plugins:\n"
+        "  cortex:\n"
+        "    store_path: $HERMES_HOME/custom-kb\n"
+        "    db_path: $HERMES_HOME/custom-kb/custom.db\n"
+        "    embed_model: configured-model\n"
+        "    embed_dim: 7\n"
+    )
+
+    cfg = mod.load_plugin_config(profile)
+    store, db = mod.resolve_paths(profile, cfg, None)
+
+    assert store == (profile / "custom-kb").resolve()
+    assert db == (profile / "custom-kb/custom.db").resolve()
+    assert cfg["embed_model"] == "configured-model"
+
+    embedder = mod.build_embedder(cfg)
+    assert embedder.model == "configured-model"
+    assert embedder.dimensions == 7
+
+
+def test_explicit_store_flag_overrides_config(tmp_path):
+    mod = load_module()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "config.yaml").write_text("plugins:\n  cortex:\n    store_path: $HERMES_HOME/from-config\n")
+
+    cfg = mod.load_plugin_config(profile)
+    store, db = mod.resolve_paths(profile, cfg, str(tmp_path / "explicit"))
+
+    assert store == (tmp_path / "explicit").resolve()
+    assert db == (tmp_path / "explicit/.plugin.db").resolve()
+
+
+def test_embedding_dimension_drift_is_reported_and_forces_recompute(tmp_path, monkeypatch):
+    """An endpoint can change vector width without changing its model name.
+
+    Model-only checking leaves rows that match on name but are unusable at query
+    time, so coverage looks full while semantic retrieval finds nothing.
+    """
+    mod, st = make_store(tmp_path)
+    st._conn.execute("UPDATE page_embeddings SET dimensions=99")
+    st._conn.commit()
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    checked = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=False)
+    assert checked["embeddings_before"]["embedded"] == 2
+    assert checked["embeddings_before"]["dimension_drift"], "width drift must be detected"
+    assert checked["embeddings_before"]["ok"] is False
+    assert checked["ok"] is False
+
+    repaired = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+    assert any(r.startswith("embeddings_backfilled:") for r in repaired["repairs"])
+    assert repaired["embeddings_after"]["dimension_drift"] == []
+    assert repaired["ok"] is True
+
+
 def test_dotenv_handles_export_and_quotes(tmp_path, monkeypatch):
     mod = load_module()
     env = tmp_path / ".env"

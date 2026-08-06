@@ -36,7 +36,7 @@ sys.path.insert(0, str(PLUGIN_DIR))
 
 from embeddings import OpenAIEmbeddingClient  # noqa: E402
 from retrieval import CortexRetriever  # noqa: E402
-from store import CortexStore  # noqa: E402
+from store import SKIP_DIRS, CortexStore, _should_skip_file  # noqa: E402
 
 DEFAULT_QUERY = "memory"
 # A reindex may legitimately drop pages, but losing most of the corpus means the
@@ -74,7 +74,20 @@ def load_dotenv(path: Path) -> None:
 
 
 def count_markdown(store_path: Path) -> int:
-    return sum(1 for _ in store_path.rglob("*.md"))
+    """Count markdown files the INDEXER would actually see.
+
+    A raw rglob overcounts: ``CortexStore._reindex_changed`` prunes SKIP_DIRS
+    (``.git/``, ``node_modules/``, ...) and skips files via ``_should_skip_file``.
+    Counting files it ignores lets the corpus gate pass on decoys while the
+    constructor deletes every real page.
+    """
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(store_path):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        for fname in filenames:
+            if fname.endswith(".md") and not _should_skip_file(fname):
+                total += 1
+    return total
 
 
 def count_indexed_pages(db_path: Path) -> int:
@@ -88,6 +101,61 @@ def count_indexed_pages(db_path: Path) -> int:
         return 0
     finally:
         conn.close()
+
+
+def load_plugin_config(profile_home: Path) -> dict[str, Any]:
+    """Read ``plugins.cortex`` from the profile's config.yaml.
+
+    The provider honours store_path, db_path, and embed_* settings from here.
+    A doctor that reads only .env probes a DIFFERENT database than the live
+    agent uses -- creating and "repairing" a fresh one while the real store
+    stays broken.
+    """
+    config_path = profile_home / "config.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        import yaml
+    except ImportError:
+        return {}
+    try:
+        loaded = yaml.safe_load(config_path.read_text()) or {}
+    except Exception:
+        return {}
+    return ((loaded.get("plugins") or {}).get("cortex") or {}) if isinstance(loaded, dict) else {}
+
+
+def resolve_paths(
+    profile_home: Path,
+    plugin_config: dict[str, Any],
+    store_override: str | None,
+) -> tuple[Path, Path]:
+    """Resolve (store_path, db_path) the same way the provider does."""
+
+    def expand(value: str) -> Path:
+        text = str(value).replace("$HERMES_HOME", str(profile_home))
+        return Path(text).expanduser().resolve()
+
+    if store_override:
+        store = Path(store_override).expanduser().resolve()
+    else:
+        store = expand(plugin_config.get("store_path") or str(profile_home / "cortex"))
+    raw_db = plugin_config.get("db_path") or ""
+    db = expand(raw_db) if raw_db else store / ".plugin.db"
+    return store, db
+
+
+def build_embedder(plugin_config: dict[str, Any]) -> OpenAIEmbeddingClient:
+    """Construct the embedding client from config.yaml, falling back to env."""
+    dim = plugin_config.get("embed_dim")
+    return OpenAIEmbeddingClient(
+        url=plugin_config.get("embed_url") or None,
+        model=plugin_config.get("embed_model") or None,
+        api_key=plugin_config.get("embed_key") or None,
+        dimensions=int(dim) if dim else None,
+        timeout=30,
+        batch_size=16,
+    )
 
 
 def backup_database(db_path: Path, reason: str) -> Path:
@@ -156,24 +224,35 @@ def fts_probe(conn: sqlite3.Connection, query: str) -> dict[str, Any]:
 
 
 def embedding_probe(store: CortexStore) -> dict[str, Any]:
-    """Coverage plus model consistency.
+    """Coverage plus model AND dimension consistency.
 
     Counting alone reports healthy when every row was computed by a since-changed
-    model, which is a silent retrieval-quality failure.
+    model, or at a different vector width. Dimension drift is the sneakier case:
+    an endpoint can change width without changing its name, leaving rows that
+    match on model but are unusable at query time.
     """
     stats = store.embedding_stats()
     pages = int(stats.get("pages", 0))
     embedded = int(stats.get("embedded", 0))
     by_model = stats.get("by_model", []) or []
     configured = getattr(store.embedder, "model", None) if store.embedder else None
+    configured_dim = getattr(store.embedder, "dimensions", None) if store.embedder else None
     foreign = [m for m in by_model if configured and m.get("model") != configured]
+    drifted = []
+    if configured_dim:
+        for m in by_model:
+            lo, hi = m.get("min_dim"), m.get("max_dim")
+            if (lo and lo != configured_dim) or (hi and hi != configured_dim):
+                drifted.append({"model": m.get("model"), "min_dim": lo, "max_dim": hi})
     return {
-        "ok": pages > 0 and embedded == pages and not foreign,
+        "ok": pages > 0 and embedded == pages and not foreign and not drifted,
         "pages": pages,
         "embedded": embedded,
         "missing": max(0, pages - embedded),
         "configured_model": configured,
+        "configured_dim": configured_dim,
         "foreign_model_rows": [m.get("model") for m in foreign],
+        "dimension_drift": drifted,
         "by_model": by_model,
     }
 
@@ -201,7 +280,10 @@ def run(
     query: str,
     repair: bool,
     keep_backup_days: int = 14,
+    plugin_config: dict[str, Any] | None = None,
+    db_path: Path | None = None,
 ) -> dict[str, Any]:
+    plugin_config = plugin_config if plugin_config is not None else {}
     result: dict[str, Any] = {
         "store": str(store_path),
         "query": query,
@@ -211,7 +293,8 @@ def run(
         "pruned_backups": [],
         "started_at": dt.datetime.now().isoformat(timespec="seconds"),
     }
-    db_path = store_path / ".plugin.db"
+    db_path = db_path or (store_path / ".plugin.db")
+    result["db_path"] = str(db_path)
 
     result.update(preflight(store_path, db_path))
 
@@ -224,12 +307,17 @@ def run(
         except sqlite3.Error as exc:
             raise SetupError(f"pre-open backup failed, refusing to continue: {exc}") from exc
 
-    embedder = OpenAIEmbeddingClient(timeout=30, batch_size=16)
+    embedder = build_embedder(plugin_config)
     embed_health = embedder.health()
     result["embedding_endpoint_healthy"] = embed_health
+    result["embed_model"] = getattr(embedder, "model", None)
 
     try:
-        store = CortexStore(store_path, embedder=embedder if embed_health else None)
+        store = CortexStore(
+            store_path,
+            db_path=db_path,
+            embedder=embedder if embed_health else None,
+        )
     except Exception as exc:
         raise SetupError(f"store open failed: {exc}") from exc
 
@@ -252,8 +340,10 @@ def run(
         coverage = embedding_probe(store)
         result["embeddings_before"] = coverage
         if not coverage["ok"] and repair and embed_health and coverage["pages"] > 0:
-            # force=True when a foreign model is present, so stale vectors are
-            # recomputed rather than left in place by a count-only backfill.
+            # backfill_embeddings tracks staleness by content hash PLUS
+            # model/dimension, so drifted rows are recomputed without force.
+            # force=True is only needed when the model name itself changed and
+            # we want the whole corpus rewritten rather than row-by-row.
             changed = store.backfill_embeddings(force=bool(coverage["foreign_model_rows"]))
             result["repairs"].append(f"embeddings_backfilled:{changed}")
         result["embeddings_after"] = embedding_probe(store)
@@ -287,7 +377,7 @@ def run(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--store", required=True)
+    parser.add_argument("--store", help="Override the store path from config.yaml")
     parser.add_argument("--profile-home", required=True)
     parser.add_argument("--query", default=DEFAULT_QUERY)
     parser.add_argument("--repair", action="store_true")
@@ -295,12 +385,21 @@ def main() -> int:
     parser.add_argument("--json-out")
     args = parser.parse_args()
 
-    store = Path(args.store).expanduser().resolve()
     profile_home = Path(args.profile_home).expanduser().resolve()
     load_dotenv(profile_home / ".env")
+    plugin_config = load_plugin_config(profile_home)
+    store, db_path = resolve_paths(profile_home, plugin_config, args.store)
 
     try:
-        result = run(store, profile_home, args.query, args.repair, args.keep_backup_days)
+        result = run(
+            store,
+            profile_home,
+            args.query,
+            args.repair,
+            args.keep_backup_days,
+            plugin_config=plugin_config,
+            db_path=db_path,
+        )
         code = EXIT_OK if result.get("ok") else EXIT_UNHEALTHY
     except SetupError as exc:
         result = {"ok": False, "setup_error": str(exc), "store": str(store)}
