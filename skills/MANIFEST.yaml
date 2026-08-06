@@ -11,7 +11,7 @@
 #   use_when              the trigger conditions, for selective installation
 _generated_by: scripts/generate_manifest.py
 _do_not_edit: Regenerate with `python scripts/generate_manifest.py`; CI checks it.
-count: 20
+count: 21
 skills:
 - name: address-pr-comments
   version: 1.0.0
@@ -331,3 +331,19 @@ skills:
   - trust
   - oversight
   path: skills/trust-framework
+- name: vapi-calls
+  version: 1.0.0
+  scope: solo
+  summary: Place and manage real outbound phone calls through the Vapi voice AI platform.
+  use_when: an agent needs to reach a human by phone — a reminder, a confirmation, a question for a business, an appointment booking, or any errand that a voice conversation handles better than a message. Covers first-time setup, per-call configuration, live call control, and reading the result afterward.
+  requires:
+  - 'env: VAPI_API_KEY (Vapi dashboard → API Keys, private key)'
+  works_out_of_the_box: false
+  tags:
+  - vapi
+  - voice
+  - phone
+  - outbound
+  - telephony
+  - calls
+  path: skills/vapi-calls
