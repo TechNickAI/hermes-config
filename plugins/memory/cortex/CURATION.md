@@ -119,3 +119,76 @@ Weekly, not nightly. Curation requires reasoning, and a nightly cadence produced
 noise than a human would ever read. Cheap deterministic integrity checks can still run
 daily; the LLM-driven pass runs once a week and reports to the agent's Memory Management
 topic.
+
+## Nightly health check (`scripts/nightly_doctor.py`)
+
+The daily deterministic counterpart to weekly curation. Curation improves what the
+pages *say*; the doctor keeps the store *searchable*.
+
+### Why it exists
+
+`pages_fts` is an FTS5 **external-content** table keyed by rowid, and
+`INSERT OR REPLACE INTO pages` reassigns rowids. That desyncs the index, so ranked
+`MATCH` joins raise `missing row N from content table` and **lexical search silently
+returns zero results**. Observed in production on multiple stores, and it recurred
+within hours of a manual rebuild. The vector tier masks it: hybrid retrieval still
+returns rows, so the store looks fine while half of it is broken.
+
+`CortexStore` has a self-heal, but its probe is a fixed-term `MATCH` — corruption in
+pages that term does not hit passes undetected. The doctor runs FTS5's native
+`integrity-check`, which catches it.
+
+### What it checks
+
+| Check                | Failure it catches                                    |
+| -------------------- | ----------------------------------------------------- |
+| `PRAGMA integrity_check` (before **and** after repair) | SQLite-level damage |
+| FTS5 `integrity-check` | Desynced external-content index → zero lexical results |
+| Embedding coverage + model | Missing vectors, or vectors from a superseded model |
+| Live `CortexRetriever.search` | Silent degradation to lexical-only retrieval |
+
+### Repair authority
+
+It may rebuild FTS, reindex, and backfill embeddings. It **never** modifies markdown —
+the tree is authoritative, `.plugin.db` is derived.
+
+Two safety properties matter more than the repairs:
+
+1. **Backup precedes the store open, not just the repair.** `CortexStore.__init__`
+   reindexes and DELETEs rows for files it cannot see. That is a mutation, and it runs
+   on check-only invocations too, so the recovery point must come first.
+2. **A missing corpus aborts the run.** If markdown files on disk drop below
+   `MIN_CORPUS_RATIO` of indexed pages, the doctor refuses to open the store. Without
+   this, a wrong `--store` path or an unmounted volume makes the constructor delete a
+   perfectly good index — verified, and the reason exit code 2 exists.
+
+Backups older than `--keep-backup-days` (default 14) are pruned, so a nightly job
+cannot fill the disk with database copies.
+
+### Output contract
+
+Silent when healthy and nothing needed doing. It speaks only when it repaired something
+or when the store is still broken. A "nothing was done" message every morning is noise,
+not monitoring.
+
+| Exit | Meaning                                                        |
+| ---- | -------------------------------------------------------------- |
+| 0    | Healthy, verified after any repair                              |
+| 1    | Still not fully operational — needs a human                     |
+| 2    | Setup/precondition failure; **store deliberately left untouched** |
+
+### Running it
+
+```bash
+CORTEX_STORE=~/.hermes/cortex \
+CORTEX_PROFILE_HOME=~/.hermes \
+  plugins/memory/cortex/scripts/nightly_doctor.sh
+```
+
+Or directly, for a one-off check that changes nothing (omit `--repair`):
+
+```bash
+python plugins/memory/cortex/scripts/nightly_doctor.py \
+  --store ~/.hermes/cortex --profile-home ~/.hermes --query "some phrase"
+```
+

@@ -1,0 +1,411 @@
+from __future__ import annotations
+
+import importlib.util
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "nightly_doctor.py"
+
+
+def load_module():
+    spec = importlib.util.spec_from_file_location("nightly_doctor", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class FakeEmbedder:
+    model = "fake-embedding"
+    dimensions = 4
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def health(self):
+        return True
+
+    def embed(self, texts):
+        out = []
+        for text in texts:
+            seed = sum(text.encode("utf-8")) or 1
+            out.append([float((seed + i) % 11 + 1) for i in range(self.dimensions)])
+        return out
+
+
+def make_store(tmp_path: Path, pages=2):
+    mod = load_module()
+    st = mod.CortexStore(tmp_path / "cortex", embedder=FakeEmbedder())
+    st.write_page("topics", "memory-operations", "Memory operations database repair runbook.")
+    st.write_page("decisions", "memory-source", "Cortex memory is the durable knowledge source.")
+    for i in range(pages - 2):
+        st.write_page("topics", f"memory-extra-{i}", f"Memory extra note {i} about the knowledge base.")
+    st.backfill_embeddings(force=True)
+    return mod, st
+
+
+def corrupt_unrelated_page(db: Path, rel_path: str) -> None:
+    """Orphan one FTS row so integrity-check fails but a MATCH probe still works."""
+    conn = sqlite3.connect(db)
+    conn.execute("DROP TRIGGER pages_ad")
+    conn.execute("DELETE FROM pages WHERE rel_path=?", (rel_path,))
+    conn.commit()
+    conn.close()
+
+
+# --------------------------------------------------------------- happy path
+
+
+def test_healthy_store_passes_without_repairs(tmp_path, monkeypatch):
+    mod, st = make_store(tmp_path)
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    assert result["ok"] is True
+    assert result["repairs"] == []
+    assert result["fts_after"]["ok"] is True
+    assert result["embeddings_after"]["embedded"] == result["embeddings_after"]["pages"] == 2
+    assert result["retrieval"]["ok"] is True
+
+
+def test_absent_query_term_is_not_treated_as_corruption(tmp_path, monkeypatch):
+    """Zero matches means the word is absent, not that the index is broken.
+
+    Conflating them made a healthy store get rebuilt every night and still
+    report failure.
+    """
+    mod, st = make_store(tmp_path)
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "zzzznonexistentterm", repair=True)
+
+    assert result["fts_before"]["corrupt"] is False
+    assert result["fts_before"]["rows"] == 0
+    assert result["repairs"] == []
+    assert result["ok"] is True
+
+
+# ------------------------------------------------------- corruption + repair
+
+
+def test_corruption_outside_the_probe_query_is_still_detected(tmp_path, monkeypatch):
+    """A MATCH probe alone misses damage in pages the query does not hit."""
+    mod, st = make_store(tmp_path)
+    st.write_page("topics", "widget-catalog", "Widget catalog of sprockets and flanges.")
+    st.backfill_embeddings(force=True)
+    st.close()
+    db = tmp_path / "cortex/.plugin.db"
+    corrupt_unrelated_page(db, "topics/widget-catalog.md")
+
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT pages.rel_path FROM pages_fts JOIN pages ON pages.rel_path=pages_fts.rel_path "
+        "WHERE pages_fts MATCH ? ORDER BY bm25(pages_fts) LIMIT 3",
+        ("memory",),
+    ).fetchall()
+    conn.close()
+    assert rows, "fixture invalid: MATCH probe must still succeed"
+
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    assert result["fts_before"]["corrupt"] is True
+    assert "fts_rebuilt" in result["repairs"]
+    assert result["ok"] is True
+
+
+def test_repair_flag_gates_fts_rebuild(tmp_path, monkeypatch):
+    mod, st = make_store(tmp_path)
+    st.close()
+    corrupt_unrelated_page(tmp_path / "cortex/.plugin.db", "decisions/memory-source.md")
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=False)
+
+    assert result["ok"] is False
+    assert result["repairs"] == []
+    assert result["fts_after"]["corrupt"] is True
+
+
+def test_backup_precedes_the_mutating_store_open(tmp_path, monkeypatch):
+    """CortexStore's constructor mutates, so the recovery point must precede it.
+
+    The backup must still contain the CORRUPT index: that proves it was taken
+    before any repair, including the constructor's own healing.
+    """
+    mod, st = make_store(tmp_path)
+    st.close()
+    db = tmp_path / "cortex/.plugin.db"
+    corrupt_unrelated_page(db, "decisions/memory-source.md")
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    backups = [b for b in result["backups"] if "bak-doctor-preopen-" in b]
+    assert backups, "a pre-open backup is mandatory"
+    backup_conn = sqlite3.connect(backups[0])
+    with pytest.raises(sqlite3.DatabaseError):
+        backup_conn.execute("INSERT INTO pages_fts(pages_fts, rank) VALUES('integrity-check', 1)")
+    backup_conn.close()
+
+
+def test_check_only_run_also_takes_a_backup(tmp_path, monkeypatch):
+    """Even --repair=False opens the store, which mutates. Protect it anyway."""
+    mod, st = make_store(tmp_path)
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=False)
+
+    assert any("bak-doctor-preopen-" in b for b in result["backups"])
+
+
+def test_backup_is_a_consistent_sqlite_snapshot(tmp_path, monkeypatch):
+    """A raw file copy can be torn; the backup must be a readable database."""
+    mod, st = make_store(tmp_path)
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    backup = Path(result["backups"][0])
+    conn = sqlite3.connect(backup)
+    assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert conn.execute("SELECT count(*) FROM pages").fetchone()[0] == 2
+    conn.close()
+
+
+# ------------------------------------------------------------ data-loss gate
+
+
+def test_missing_markdown_tree_aborts_before_opening_the_store(tmp_path, monkeypatch):
+    """The confirmed data-loss path: a bad --store path wipes a good index.
+
+    CortexStore's constructor DELETEs rows for files it cannot see, so a wrong
+    path or unmounted volume silently empties the index -- on check-only runs
+    too. The doctor must refuse to open the store at all.
+    """
+    mod, st = make_store(tmp_path, pages=6)
+    st.close()
+    db = tmp_path / "cortex/.plugin.db"
+    before = sqlite3.connect(db).execute("SELECT count(*) FROM pages").fetchone()[0]
+    assert before == 6
+
+    for md in (tmp_path / "cortex").rglob("*.md"):
+        md.unlink()
+
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+    with pytest.raises(mod.SetupError) as excinfo:
+        mod.run(tmp_path / "cortex", tmp_path, "memory", repair=False)
+
+    assert "corpus sanity check failed" in str(excinfo.value)
+    after = sqlite3.connect(db).execute("SELECT count(*) FROM pages").fetchone()[0]
+    assert after == before, "index must survive an aborted run"
+
+
+def test_setup_failure_exits_2_not_1(tmp_path, monkeypatch, capsys):
+    """Cron must distinguish 'bad invocation' from 'data is broken'."""
+    mod = load_module()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+    monkeypatch.setattr(
+        sys_argv_holder := mod.sys, "argv",
+        ["nightly_doctor.py", "--store", str(tmp_path / "nope"), "--profile-home", str(tmp_path)],
+    )
+    assert sys_argv_holder is mod.sys
+
+    code = mod.main()
+
+    assert code == mod.EXIT_SETUP == 2
+    assert "setup_error" in capsys.readouterr().out
+
+
+def test_normal_page_deletion_is_not_blocked(tmp_path, monkeypatch):
+    """The sanity gate must not fire on ordinary curation deleting a few pages."""
+    mod, st = make_store(tmp_path, pages=10)
+    st.close()
+    (tmp_path / "cortex/topics/memory-extra-0.md").unlink()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    assert result["ok"] is True
+    assert result["embeddings_after"]["pages"] == 9
+
+
+# --------------------------------------------------------------- embeddings
+
+
+def test_missing_embeddings_are_backfilled(tmp_path, monkeypatch):
+    mod, st = make_store(tmp_path)
+    st._conn.execute("DELETE FROM page_embeddings")
+    st._conn.commit()
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    assert result["ok"] is True
+    assert result["embeddings_before"]["embedded"] == 0
+    assert result["embeddings_after"]["embedded"] == 2
+    assert any(item.startswith("embeddings_backfilled:") for item in result["repairs"])
+
+
+def test_embeddings_from_a_foreign_model_are_not_reported_healthy(tmp_path, monkeypatch):
+    """Full count with vectors from an old model is a silent quality failure."""
+    mod, st = make_store(tmp_path)
+    st._conn.execute("UPDATE page_embeddings SET model='stale-model-v0'")
+    st._conn.commit()
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=False)
+
+    assert result["embeddings_before"]["embedded"] == 2
+    assert result["embeddings_before"]["ok"] is False
+    assert result["embeddings_before"]["foreign_model_rows"] == ["stale-model-v0"]
+    assert result["ok"] is False
+
+
+def test_unhealthy_endpoint_fails_closed_when_embeddings_missing(tmp_path, monkeypatch):
+    mod, st = make_store(tmp_path)
+    st._conn.execute("DELETE FROM page_embeddings")
+    st._conn.commit()
+    st.close()
+
+    class DownEmbedder(FakeEmbedder):
+        def health(self):
+            return False
+
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", DownEmbedder)
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    assert result["ok"] is False
+    assert result["embedding_endpoint_healthy"] is False
+    assert not any(item.startswith("embeddings_backfilled:") for item in result["repairs"])
+
+
+# ---------------------------------------------------------------- retrieval
+
+
+def test_post_repair_integrity_is_what_gates_success(tmp_path, monkeypatch):
+    """Exit 0 must mean 'healthy NOW', proven after repairs, not before them.
+
+    Checking integrity only up front would let a rebuild that damaged the file
+    still report success.
+    """
+    mod, st = make_store(tmp_path)
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    calls = {"n": 0}
+
+    class FlakyIntegrityConn:
+        """Wraps the real connection; reports damage only on the POST-repair check."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args, **kwargs):
+            if "integrity_check" in sql:
+                calls["n"] += 1
+                if calls["n"] >= 2:
+                    class Fake:
+                        def fetchone(self_inner):
+                            return ("row 42 missing from index pages_fts",)
+                    return Fake()
+            return self._inner.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    real_get_conn = mod.CortexStore._get_conn
+    monkeypatch.setattr(
+        mod.CortexStore, "_get_conn",
+        lambda self: FlakyIntegrityConn(real_get_conn(self)),
+    )
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    assert calls["n"] >= 2, "integrity must be re-checked AFTER repairs"
+    assert result["sqlite_integrity_after"] != "ok"
+    assert result["ok"] is False
+
+
+def test_lexical_only_retrieval_is_not_reported_healthy(tmp_path, monkeypatch):
+    """Silent degradation to lexical search is the failure this job exists to catch."""
+    mod, st = make_store(tmp_path)
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+    real_search = mod.CortexRetriever.search
+
+    def lexical_only(self, query, **kwargs):
+        rows = real_search(self, query, **kwargs)
+        for row in rows:
+            row["source"] = "fts"
+        return rows
+
+    monkeypatch.setattr(mod.CortexRetriever, "search", lexical_only)
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    assert result["retrieval"]["count"] > 0
+    assert result["retrieval"]["ok"] is False
+    assert result["ok"] is False
+
+
+# ------------------------------------------------------------ housekeeping
+
+
+def test_old_backups_are_pruned(tmp_path, monkeypatch):
+    """Nightly repairs must not fill the disk with database copies."""
+    import os
+    import time
+
+    mod, st = make_store(tmp_path)
+    st.close()
+    stale = tmp_path / "cortex/.plugin.db.bak-doctor-preopen-20200101T000000"
+    stale.write_bytes(b"old")
+    old = time.time() - 40 * 86400
+    os.utime(stale, (old, old))
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True, keep_backup_days=14)
+
+    assert stale.name in result["pruned_backups"]
+    assert not stale.exists()
+    assert Path(result["backups"][0]).exists(), "today's backup must be kept"
+
+
+def test_dotenv_handles_export_and_quotes(tmp_path, monkeypatch):
+    mod = load_module()
+    env = tmp_path / ".env"
+    env.write_text('export CORTEX_TEST_A="value-a"\nCORTEX_TEST_B=\'value-b\'\n# comment\n')
+    for key in ("CORTEX_TEST_A", "CORTEX_TEST_B"):
+        monkeypatch.delenv(key, raising=False)
+
+    mod.load_dotenv(env)
+
+    import os
+    assert os.environ["CORTEX_TEST_A"] == "value-a"
+    assert os.environ["CORTEX_TEST_B"] == "value-b"
+
+
+def test_non_markdown_payload_is_never_read_or_indexed(tmp_path, monkeypatch):
+    mod, st = make_store(tmp_path)
+    binary = tmp_path / "cortex/assets/payload.bin"
+    binary.parent.mkdir()
+    binary.write_bytes(b"\x00\xffnot text")
+    before = binary.read_bytes()
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+
+    assert result["ok"] is True
+    assert binary.read_bytes() == before
+    conn = sqlite3.connect(tmp_path / "cortex/.plugin.db")
+    assert conn.execute("SELECT count(*) FROM pages WHERE rel_path LIKE '%payload.bin%'").fetchone()[0] == 0
+    conn.close()
