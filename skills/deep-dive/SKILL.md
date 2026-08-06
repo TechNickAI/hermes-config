@@ -533,6 +533,7 @@ ends in a question mark, justify it against those three or delete it.
 - [ ] Output sections conditional; no empty template scaffolding
 - [ ] Research-vs-implement mode stated; no build authorization inferred
 - [ ] No homework handed back: open questions are approval gates or preference forks only
-- [ ] Any failed lane, unreachable source class, or waived route stamped `degraded:` in
-      the brief, with confidence lowered to match surviving evidence
+- [ ] Any failed lane or unreachable decision-critical source class stamped `degraded:`
+      in the brief, with confidence lowered to match surviving evidence. Deliberately
+      waived irrelevant routes are correct routing — note in evidence notes, do not stamp
 - [ ] `multi-review` run before irreversible/external action, else adversarial self-pass
