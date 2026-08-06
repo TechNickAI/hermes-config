@@ -108,20 +108,31 @@ creating the assistant. Both move faster than this document does.
 ### Creating it
 
 ```bash
+set -o pipefail
 curl -sS --fail-with-body -X POST https://api.vapi.ai/assistant \
   -H "Authorization: Bearer $VAPI_API_KEY" \
   -H "Content-Type: application/json" \
-  -d @assistant.json | tee assistant-created.json | jq -r '.id'
+  -d @assistant.json > assistant-created.json \
+  || { echo "create failed:"; cat assistant-created.json; rm -f assistant-created.json; exit 1; }
+
+ASSISTANT_ID=$(jq -er '.id' assistant-created.json) || { echo "no id in response"; exit 1; }
+echo "$ASSISTANT_ID"
 ```
 
-`--fail-with-body` is what stops you from saving an error response as if it were an
-assistant. Confirm the printed `id` is a real UUID, then read it back before trusting
-it:
+Three things are doing work here, and dropping any one of them lets a failed create look
+like a successful one: `--fail-with-body` makes curl exit non-zero on a 4xx/5xx while
+still showing you the error body; the `||` branch discards the file so an error response
+never masquerades as an assistant; and `jq -er` fails loudly when `.id` is absent
+instead of quietly printing `null`. Piping curl straight into jq would report jq's exit
+status and swallow curl's failure entirely.
+
+Confirm the printed `id` is a real UUID, then read it back before trusting it:
 
 ```bash
 curl -sS --fail-with-body -H "Authorization: Bearer $VAPI_API_KEY" \
   "https://api.vapi.ai/assistant/$VAPI_ASSISTANT_ID" \
-  | jq '{model: .model.model, tools: [.model.tools[].type], transcriber: .transcriber.model,
+  | jq '{model: .model.model, prompt_chars: (.model.messages[0].content | length),
+         tools: [.model.tools[].type], transcriber: .transcriber.model,
          maxDurationSeconds, recording: .artifactPlan.recordingEnabled,
          control: .monitorPlan.controlEnabled}'
 ```
@@ -175,19 +186,32 @@ Save the assistant `id` as `VAPI_ASSISTANT_ID`.
 
 ## 5. Updating an existing assistant
 
-Back up first — there is no version history in the API:
+Back up first — there is no version history in the API. Write to a temp file and only
+promote it once you have confirmed it is a real assistant, so a 401 or a truncated
+transfer cannot leave you holding an error body as your only rollback copy:
 
 ```bash
-curl -sS -H "Authorization: Bearer $VAPI_API_KEY" \
-  "https://api.vapi.ai/assistant/$VAPI_ASSISTANT_ID" > assistant-backup-$(date +%F).json
+BACKUP="assistant-backup-$(date +%F).json"
+curl -sS --fail-with-body -H "Authorization: Bearer $VAPI_API_KEY" \
+  "https://api.vapi.ai/assistant/$VAPI_ASSISTANT_ID" > "$BACKUP.tmp" \
+  || { echo "backup failed:"; cat "$BACKUP.tmp"; rm -f "$BACKUP.tmp"; exit 1; }
+
+jq -e '.id and .model' "$BACKUP.tmp" >/dev/null \
+  || { echo "backup is not a valid assistant, refusing to patch"; rm -f "$BACKUP.tmp"; exit 1; }
+
+mv "$BACKUP.tmp" "$BACKUP"
 ```
+
+Do not proceed to PATCH until that file exists. The patch is the irreversible step; the
+backup is the only thing standing behind it.
 
 Then `PATCH` **one field group at a time** (model, transcriber, call controls, speaking
 plans, analysis). Vapi rejects the whole request for a single bad field, so a grouped
 patch tells you precisely which group was refused instead of failing opaquely.
 
 Finish with a `GET` readback and diff it against what you intended. A `200` means
-accepted, not applied as you imagined.
+accepted, not applied as you imagined — and Vapi will echo back fields it does not
+actually implement, so check behavior on a real call when it matters.
 
 ## 6. Verify
 
