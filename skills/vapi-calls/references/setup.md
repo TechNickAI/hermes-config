@@ -60,6 +60,9 @@ call time, not in a duplicate assistant.
     "provider": "deepgram",
     "model": "flux-general-en",
     "language": "en",
+    "eotTimeoutMs": 1200,
+    "eotThreshold": 0.55,
+    "confidenceThreshold": 0.15,
   },
 
   "maxDurationSeconds": 900,
@@ -68,34 +71,53 @@ call time, not in a duplicate assistant.
   "endCallPhrases": ["goodbye", "talk to you later", "bye bye"],
 
   "startSpeakingPlan": {
-    "waitSeconds": 0.4,
+    "waitSeconds": 0.2,
     "smartEndpointingPlan": { "provider": "vapi" },
   },
-  "stopSpeakingPlan": { "numWords": 2, "backoffSeconds": 1.0 },
+  "stopSpeakingPlan": { "numWords": 0, "voiceSeconds": 0.15, "backoffSeconds": 0.8 },
 
   "analysisPlan": { "summaryPlan": { "enabled": true } },
-  "artifactPlan": { "recordingEnabled": false, "transcriptPlan": { "enabled": true } },
+  "artifactPlan": { "recordingEnabled": true, "transcriptPlan": { "enabled": true } },
   "monitorPlan": { "listenEnabled": true, "controlEnabled": true },
 }
 ```
 
 Why these values:
 
-| Field                 | Reason                                                                       |
-| --------------------- | ---------------------------------------------------------------------------- |
-| `messages[]`          | Where the prompt actually lands. `systemPrompt` is accepted and ignored.     |
-| `maxTokens: 400`      | Hard ceiling on monologue length. Long turns feel awful on a phone.          |
-| `endCall` tool        | Without it the assistant literally cannot hang up.                           |
-| `flux-general-en`     | Nova-3 accuracy plus model-native end-of-turn detection in one model.        |
-| `maxDurationSeconds`  | Cost ceiling. Default is 600s; set it deliberately rather than inheriting.   |
-| `stopSpeakingPlan`    | Two words of caller speech stops the assistant. Talking over people is rude. |
-| `analysisPlan`        | Gives you a post-call summary without re-reading the transcript.             |
-| `transcriptPlan`      | The transcript is the only honest record of what happened.                   |
-| `recordingEnabled`    | **Off by default** — recording consent is jurisdictional. Opt in knowingly.  |
-| `monitorPlan.control` | Without it you cannot end a live call the user wants stopped.                |
+| Field                 | Reason                                                                   |
+| --------------------- | ------------------------------------------------------------------------ |
+| `messages[]`          | Where the prompt actually lands. `systemPrompt` is accepted and ignored. |
+| `maxTokens: 400`      | Hard ceiling on monologue length. Long turns feel awful on a phone.      |
+| `endCall` tool        | Without it the assistant literally cannot hang up.                       |
+| `flux-general-en`     | Nova-3 accuracy plus model-native end-of-turn detection in one model.    |
+| `eotTimeoutMs: 1200`  | **The single biggest latency lever.** See below — the default is brutal. |
+| `confidenceThreshold` | Default 0.4 silently DISCARDS low-confidence speech. See below.          |
+| `maxDurationSeconds`  | Stops a wedged call from billing forever. Default is 600s.               |
+| `stopSpeakingPlan`    | `numWords: 0` reacts to any sound instead of waiting for two words.      |
+| `analysisPlan`        | Gives you a post-call summary without re-reading the transcript.         |
+| `transcriptPlan`      | The transcript is the only honest record of what happened.               |
+| `monitorPlan.control` | Without it you cannot end a live call.                                   |
 
-`stopSpeakingPlan.voiceSeconds` is deliberately omitted: it applies only when `numWords`
-is `0`, so setting both makes one of them dead config.
+### The two defaults that will ruin your first call
+
+Both of these were found on a real test call, not read off a docs page.
+
+**`eotTimeoutMs` defaults to 5000.** Flux waits a full five seconds of silence before
+declaring a turn over whenever end-of-turn confidence stays under `eotThreshold`. On a
+live call this reads as the assistant being slow or checked out — measured gaps of
+4.1–5.6 seconds before it started speaking, none of which were the model thinking.
+Dropping it to ~1200ms with `eotThreshold` at 0.55 is what makes the conversation feel
+responsive. `startSpeakingPlan.waitSeconds` is a rounding error next to this.
+
+**`confidenceThreshold` defaults to 0.4, and it discards rather than flags.** Anything
+scoring below it never reaches the model at all. Isolated letters and digits score low,
+so a caller spelling something out loses characters silently — on the test call, five
+letters of the alphabet vanished mid-sequence and the assistant read back the remainder
+as if it were complete. Drop it to ~0.15 for anything involving spelling, digits, or
+read-back confirmation.
+
+`stopSpeakingPlan.voiceSeconds` only applies when `numWords` is `0`; setting both makes
+one of them dead config.
 
 **Silence handling.** `silenceTimeoutSeconds` is documented on Vapi's call-timeout page
 and the API accepts it, but it is absent from the current assistant schema, so do not
@@ -170,19 +192,23 @@ Keep it about identity and the medium. Nothing scenario-specific.
    - Speak numbers as a person says them ("four oh five", not "4:05").
    - Spell anything that must be written down, and confirm it back.
    - If you need a moment, say so out loud rather than going silent.
-5. **Interruptions** — stop the moment the person starts talking; give two or three
-   seconds of silence before prompting; offer to call back if they sound rushed.
-6. **Identity and honesty** — never guess at facts, dates, or numbers. Never promise,
-   approve, or commit on anyone's behalf beyond what the call's TASK block explicitly
-   authorizes.
-7. **Opening a call** — in the first fifteen seconds, unprompted: that you are an AI
-   assistant, who you are calling for, why, and how long it will take. If the call is
-   being recorded, say so here. Then explicitly offer them the chance to decline or
-   reschedule.
-8. **Voicemail and wrong numbers** — leave a short message and end; if it is the wrong
+5. **Interruptions** — stop the moment the person starts talking. **Never restart or
+   repeat a point after being cut off**; answer what they said and move forward. A real
+   test call failed on exactly this: the assistant was interrupted, then replayed its
+   entire previous turn. Repeating yourself after an interruption is worse than the
+   interruption.
+6. **Reading things back** — read back exactly what was heard, including any gap. "I got
+   H I J K, then it cut out before Q" is the correct behavior. Never quietly fill a gap
+   or guess at a letter or digit; a confident wrong read-back is the worst outcome.
+7. **Identity and honesty** — say plainly that you are an AI assistant if asked. Never
+   guess at facts, dates, or numbers. Never promise, approve, or commit on anyone's
+   behalf beyond what the call's TASK block authorizes.
+8. **Opening a call** — say who you are, who you are calling for, and why, in the first
+   fifteen seconds. Get to the point.
+9. **Voicemail and wrong numbers** — leave a short message and end; if it is the wrong
    person, apologize, disclose nothing, and end.
-9. **Ending** — one sentence, then the `endCall` tool. Do not linger.
-10. **IVR navigation** — use the `dtmf` tool for digits, never speak them aloud; listen
+10. **Ending** — one sentence, then the `endCall` tool. Do not linger.
+11. **IVR navigation** — use the `dtmf` tool for digits, never speak them aloud; listen
     to all options first; press 0 or say "representative" when nothing matches; wait for
     the system to respond after each tone.
 
