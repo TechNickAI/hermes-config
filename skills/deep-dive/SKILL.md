@@ -519,7 +519,8 @@ ends in a question mark, justify it against those three or delete it.
 ## Verification checklist
 
 - [ ] Brief locked before searching; assumptions written down
-- [ ] Tier reached recorded with a one-sentence justification; fast exit taken if available
+- [ ] Fast exit taken if available; for L1/L2, tier reached recorded with a one-sentence
+      justification (L0 answers carry no tier label)
 - [ ] Started at the cheapest route; every escalation names its gap
 - [ ] All mandatory source classes for the problem shape covered or explicitly waived
 - [ ] Operator KB checked when the question touches prior work
