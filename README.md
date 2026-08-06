@@ -163,6 +163,12 @@ directory** — `cp -r` it into `~/.hermes/skills/` and it works.
 | ------------- | ----------------------------------------- | --------------- |
 | `grok-search` | Real-time web and X search via xAI's Grok | **needs setup** |
 
+**Voice**
+
+| Skill        | What it does                                                 |                 |
+| ------------ | ------------------------------------------------------------ | --------------- |
+| `vapi-calls` | Place real outbound phone calls, with consent and cost gates | **needs setup** |
+
 **Fleet / infrastructure — for multi-host setups**
 
 | Skill              | What it does                                              |                 |
