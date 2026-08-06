@@ -102,8 +102,25 @@ and the API accepts it, but it is absent from the current assistant schema, so d
 count on it. `maxDurationSeconds` is the reliable hard stop. If you want re-prompting on
 dead air, use the idle-message/hooks mechanism and confirm it on a real call.
 
-Verify the model and transcriber names against Vapi's current provider docs before
-creating the assistant. Both move faster than this document does.
+### Pick the model from the live enum, not from memory
+
+Do not write a model ID from recall. An LLM's sense of "the current model" is frozen at
+its training cutoff, so the confident-sounding answer is reliably a version or two stale
+— and a stale-but-valid ID fails silently, since it is still accepted and still works.
+Nobody notices except the person paying for a worse assistant.
+
+Vapi publishes the exact accepted values. Read them:
+
+```bash
+curl -sS https://api.vapi.ai/api-json \
+  | jq -r '.components.schemas.AnthropicModel.properties.model.enum[]'
+```
+
+Swap `AnthropicModel` for `OpenAIModel`, `GroqModel`, and so on. Take the newest entry
+for the family you want, and confirm the transcriber the same way
+(`.components.schemas.DeepgramTranscriber.properties.model.enum[]`).
+
+This costs one request. Do it every time you create or update an assistant.
 
 ### Creating it
 

@@ -268,6 +268,11 @@ number written here.
 
 ## Pitfalls
 
+- **A stale model ID is the silent failure nobody catches.** Vapi accepts older model
+  names indefinitely, so writing one from memory produces a working assistant that is
+  quietly a generation behind. Read the accepted values from
+  `.components.schemas.AnthropicModel.properties.model.enum` in
+  <https://api.vapi.ai/api-json> every time, and never from recall.
 - **`model.systemPrompt` is a silent no-op.** The API accepts it and returns it on
   `GET`, but it is not in the schema and never reaches the model. Use
   `model.messages[]`. This is the single most likely way to ship an assistant with no
