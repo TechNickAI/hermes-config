@@ -254,7 +254,10 @@ def embedding_probe(store: CortexStore) -> dict[str, Any]:
             if (lo and lo != configured_dim) or (hi and hi != configured_dim):
                 drifted.append({"model": m.get("model"), "min_dim": lo, "max_dim": hi})
     return {
-        "ok": pages > 0 and embedded == pages and not foreign and not drifted,
+        # An empty store is legitimately empty, not unhealthy: a new agent that
+        # has not written any pages yet must not alarm every night. Coverage is
+        # about whether the pages that EXIST are embedded.
+        "ok": embedded == pages and not foreign and not drifted,
         "pages": pages,
         "embedded": embedded,
         "missing": max(0, pages - embedded),
