@@ -30,67 +30,12 @@ conversation, and you read the transcript afterward.
 Do not reach for this when a text message would do. A phone call interrupts someone; a
 message does not.
 
-## The consent rule, before anything else
+## Confirm the number and purpose before dialing
 
-**An outbound call to another human is an irreversible, real-world action.** It rings a
-phone, it interrupts whatever the person is doing, and it cannot be recalled.
-
-- Get explicit approval for the specific number and the specific purpose before dialing.
-- "Set up a call" is not "place a call." Setup, auditing, and configuration are all
-  valid reasons to load this skill without ever dialing.
-- Approval for one call is not standing approval for a campaign, a redial, or a
-  follow-up message.
-- Never call a third party on the user's behalf without confirming they want that person
-  contacted, by voice, right now.
-- Run a test call to the user's own phone after initial setup and after any material
-  configuration change. Not before every routine call.
-
-### Refuse regardless of approval
-
-User approval is necessary, not sufficient. Decline calls whose purpose is harassment,
-deception, or impersonating a specific real person, and decline repeated unwanted
-contact with someone who has asked not to be called. Never dial emergency services,
-premium-rate numbers, or short codes.
-
-### Recording and AI disclosure
-
-Recording consent law varies by jurisdiction, and several jurisdictions now require
-proactive disclosure that a caller is an AI. Both are legal exposure, not etiquette.
-
-- Default `artifactPlan.recordingEnabled` to `false` unless the user has confirmed a
-  basis for recording. If recording is on, disclose it in the opening line.
-- The assistant states it is an AI in its opening, unprompted. "Only if asked" is not
-  disclosure.
-
-### Time of day
-
-Check the local time at the destination before dialing. Default to roughly 9am–8pm local
-unless the user has explicitly approved otherwise. Agents run around the clock; the
-people they call do not.
-
-### Data minimization
-
-Everything in the prompt reaches the voice provider and persists in their transcripts
-and recordings. `DO NOT SHARE` governs the conversation, not the vendor.
-
-- Include only the sensitive data the call strictly requires.
-- Never put passwords, authentication codes, full card numbers, or credentials in a
-  prompt.
-- Voicemail is unauthenticated and may be heard by anyone. Nothing sensitive goes in it.
-
-### Preflight, immediately before POST
-
-State these to the user and get a yes. If any line is unknown, do not dial.
-
-```text
-DESTINATION: <E.164 number, confirmed by the user>
-PURPOSE:     <one sentence>
-LOCAL TIME:  <time at the destination right now>
-VOICEMAIL:   <exact message, or "do not leave one">
-CEILINGS:    maxDurationSeconds <n>  (~$<estimate> worst case)
-RECORDING:   on (disclosed in opening) | off
-AUTHORIZED TO DIAL NOW: yes
-```
+A call rings a real person's phone and cannot be recalled, so confirm you have the right
+number and the right reason before you POST. "Set up a call" is not "place a call" —
+setup, auditing, and configuration are all valid reasons to load this skill without ever
+dialing.
 
 ## Prerequisites
 
@@ -151,9 +96,9 @@ exist.
 ```text
 TASK: Call <who> to <goal>.
 
-VERIFY: confirm you are speaking with <who> before sharing any context.
+VERIFY: confirm you are speaking with <who> before getting into it.
 CONTEXT YOU MAY SHARE: <facts the agent is allowed to state>
-DO NOT SHARE: <anything sensitive that must not leave the call>
+DO NOT SHARE: <anything that must not leave the call>
 WHAT SUCCESS LOOKS LIKE: <the one outcome that ends the call>
 YOU MAY COMMIT TO: <the specific commitments authorized, or "nothing">
 IF THEY SAY NO: <exact fallback>
@@ -171,8 +116,7 @@ back exactly the ones this call needs, and nothing else.
 ### If call creation is ambiguous, do not retry
 
 `POST /call` is not idempotent. A timeout or dropped connection may mean Vapi already
-accepted the call and the phone is already ringing. Retrying places a second
-unauthorized call to a real person.
+accepted the call and the phone is already ringing. Retrying dials the person twice.
 
 On any uncertain response, reconcile before doing anything else:
 
@@ -182,8 +126,7 @@ curl -sS -H "Authorization: Bearer $VAPI_API_KEY" \
   | jq -r '.[] | "\(.createdAt) \(.id) \(.status) \(.customer.number)"'
 ```
 
-If a call to that destination already exists, follow it — do not create another. If none
-exists, get fresh approval before placing a replacement.
+If a call to that destination already exists, follow it rather than creating another.
 
 ## Watching a call in flight
 
@@ -219,8 +162,7 @@ curl -sS -H "Authorization: Bearer $VAPI_API_KEY" \
   "https://api.vapi.ai/call/$CALL_ID" | jq '{status, endedReason}'
 ```
 
-Keep going until `status` is `ended`. Stopping a call the user asked you to stop is
-always authorized and never needs re-approval.
+Keep going until `status` is `ended`.
 
 ## After the call
 
@@ -230,11 +172,11 @@ Read `endedReason` first — it is the single most diagnostic field:
 | ------------------------- | ---------------------------- | ----------------------------------- |
 | `assistant-ended-call`    | Wrapped up normally          | Read the summary and transcript     |
 | `customer-ended-call`     | They hung up                 | Check the transcript for why        |
-| `customer-did-not-answer` | No pickup                    | Report it. Nothing further.         |
+| `customer-did-not-answer` | No pickup                    | Report it; do not auto-redial       |
 | `voicemail`               | Machine picked up            | Confirm the message actually landed |
 | `silence-timed-out`       | Dead air                     | Usually a bad connection            |
 | `pipeline-error-*`        | Provider fault (STT/LLM/TTS) | Configuration or provider outage    |
-| `exceeded-max-duration`   | Hit `maxDurationSeconds`     | Report it; ask before raising caps  |
+| `exceeded-max-duration`   | Hit `maxDurationSeconds`     | Raise the cap or tighten the task   |
 
 With `analysisPlan.summaryPlan.enabled` and `artifactPlan.transcriptPlan.enabled` on,
 the ended call object carries the results — but **at the paths below, not where you
@@ -252,18 +194,18 @@ Fall back to `.artifact.messages` or `.messages` if the transcript is empty. **R
 the outcome from the transcript, never from the fact that the call connected.** A
 completed call that failed its task is a failed call.
 
-**Any re-contact needs fresh approval.** That covers redialing after no answer, calling
-back after a hang-up, and sending a text instead. Approval to call once was approval to
-call once. Raising a duration or cost ceiling is also a new decision, not a retry.
+Do not auto-redial on no-answer. If the call needs to happen again, that is the user's
+call to make.
 
 ## Cost
 
 Roughly $0.05–0.15/min all-in, pay-as-you-go: Vapi's platform fee plus telephony plus
 your own STT/LLM/TTS. Premium voices and frontier models sit at the top of that range,
-built-in voices and small models at the bottom. `maxDurationSeconds` is your cost
-ceiling — set it deliberately on every assistant.
+built-in voices and small models at the bottom. A real 3.5-minute test call measured
+$0.24, of which $0.165 was Vapi's own platform fee.
 
-Check current per-provider pricing at <https://vapi.ai/pricing> rather than trusting any
+`maxDurationSeconds` is the ceiling that stops a wedged call from billing forever. Check
+current per-provider pricing at <https://vapi.ai/pricing> rather than trusting any
 number written here.
 
 ## Pitfalls
