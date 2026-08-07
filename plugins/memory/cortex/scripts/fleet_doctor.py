@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
+import shlex
 import subprocess
 import sys
 import time
@@ -69,18 +70,49 @@ class Target:
         missing = [k for k in ("label", "python", "doctor", "home") if not raw.get(k)]
         if missing:
             raise ValueError(f"target {raw.get('label', '<unnamed>')} missing keys: {missing}")
+        host = raw.get("host") or None
+
+        def resolve(value: str) -> str:
+            # Expand ~ locally only. For a remote target the path belongs to
+            # THAT machine, so expanding it here would substitute the wrong
+            # home; ssh's shell expands it on arrival instead.
+            return str(Path(value).expanduser()) if host is None else value
+
         return cls(
             label=raw["label"],
-            python=raw["python"],
-            doctor=raw["doctor"],
-            home=raw["home"],
-            host=raw.get("host") or None,
+            python=resolve(raw["python"]),
+            doctor=resolve(raw["doctor"]),
+            home=resolve(raw["home"]),
+            host=host,
         )
+
+
+def _remote_arg(value: str) -> str:
+    """Quote one argument for the remote shell, preserving a leading ``~``.
+
+    ``shlex.quote('~/x')`` yields ``'~/x'``, which the remote shell treats as a
+    literal directory named ``~`` -- verified over ssh. So quote the remainder
+    and leave the tilde bare, which is what lets ``~`` in a targets file expand
+    to the REMOTE user's home.
+    """
+    if value.startswith("~/"):
+        rest = value[2:]
+        return "~/" + shlex.quote(rest) if rest else "~/"
+    return shlex.quote(value)
 
 
 def load_targets(path: Path) -> list[Target]:
     data = json.loads(path.read_text())
-    raw = data["targets"] if isinstance(data, dict) else data
+    if isinstance(data, dict):
+        if "targets" not in data:
+            # A misspelled or omitted key must be a clean configuration error,
+            # not a KeyError traceback that breaks the exit-zero contract.
+            raise ValueError(
+                f"{path} has no 'targets' key (found: {sorted(data)[:5]})"
+            )
+        raw = data["targets"]
+    else:
+        raw = data
     if not raw:
         raise ValueError(f"no targets defined in {path}")
     return [Target.from_dict(item) for item in raw]
@@ -95,7 +127,10 @@ def probe(target: Target, query: str, timeout: int) -> dict[str, Any]:
         "--repair",
     ]
     cmd = argv if target.host is None else [
-        "ssh", "-o", "ConnectTimeout=30", target.host, " ".join(argv)
+        # ssh hands the remote command to a shell, so each argument must be
+        # quoted or a path/query containing spaces silently splits apart.
+        "ssh", "-o", "ConnectTimeout=30", target.host,
+        " ".join(_remote_arg(part) for part in argv),
     ]
 
     try:
@@ -221,9 +256,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         targets = load_targets(Path(args.targets).expanduser())
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        # A broken target file is itself worth reporting: silence here would
-        # mean "all clear" when nothing was actually checked.
+    except Exception as exc:  # noqa: BLE001
+        # Catch-all on purpose: silence means "all clear", so ANY failure to
+        # load targets must speak up rather than exit with a traceback.
         print(f"🔴 Cortex fleet doctor could not load targets: {exc}")
         return 0
 

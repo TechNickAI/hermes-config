@@ -59,6 +59,86 @@ def test_bare_list_of_targets_is_accepted(mod, tmp_path):
     assert [t.label for t in mod.load_targets(path)] == ["solo"]
 
 
+def test_object_without_targets_key_is_a_clean_error(mod, tmp_path):
+    """A misspelled key must not raise KeyError and break the exit-zero contract."""
+    path = tmp_path / "targets.json"
+    path.write_text(json.dumps({"target": [{"label": "a"}]}))  # note: singular
+
+    with pytest.raises(ValueError) as excinfo:
+        mod.load_targets(path)
+
+    assert "targets" in str(excinfo.value)
+
+
+def test_any_bad_targets_file_reports_and_exits_zero(mod, tmp_path, capsys):
+    """Malformed JSON, wrong key, or a missing file must all speak up, never traceback."""
+    cases = {
+        "missing": tmp_path / "nope.json",
+        "malformed": tmp_path / "bad.json",
+        "wrong-key": tmp_path / "wrong.json",
+    }
+    cases["malformed"].write_text("{not json")
+    cases["wrong-key"].write_text(json.dumps({"target": []}))
+
+    for name, path in cases.items():
+        code = mod.main(["--targets", str(path)])
+        out = capsys.readouterr().out
+        assert code == 0, name
+        assert "🔴" in out, name
+        assert "could not load targets" in out, name
+
+
+def test_local_paths_expand_tilde(mod, tmp_path):
+    path = write_targets(tmp_path, [
+        {"label": "a", "python": "~/py", "doctor": "~/doc.py", "home": "~/hermes"},
+    ])
+
+    target = mod.load_targets(path)[0]
+
+    assert not target.home.startswith("~"), "local ~ must expand to a real path"
+    assert target.home.endswith("/hermes")
+
+
+def test_remote_paths_keep_tilde_for_the_remote_shell(mod, tmp_path):
+    """A remote ~ belongs to THAT machine, so expanding it locally is wrong."""
+    path = write_targets(tmp_path, [
+        {"label": "r", "host": "box", "python": "~/py", "doctor": "~/doc.py",
+         "home": "~/hermes"},
+    ])
+
+    target = mod.load_targets(path)[0]
+
+    assert target.home == "~/hermes"
+
+
+def test_remote_arguments_survive_spaces_and_tilde(mod, monkeypatch):
+    """ssh runs a shell: spaces must be quoted, but ~ must stay expandable.
+
+    shlex.quote('~/x') gives "'~/x'", which a remote shell reads as a literal
+    directory named ~ -- confirmed over real ssh. Both properties must hold.
+    """
+    seen = {}
+
+    class Done:
+        returncode = 0
+        stdout = json.dumps({"ok": True, "repairs": []})
+        stderr = ""
+
+    monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: (seen.update(cmd=cmd), Done())[1])
+    target = mod.Target.from_dict({
+        "label": "r", "host": "box",
+        "python": "~/venv/bin/python", "doctor": "~/d.py", "home": "~/.hermes/my agent",
+    })
+
+    mod.probe(target, "long term memory", 10)
+
+    remote = seen["cmd"][-1]
+    assert remote.startswith("~/venv/bin/python"), "tilde must stay bare to expand remotely"
+    assert "'.hermes/my agent'" in remote, "the space must be quoted"
+    assert "'long term memory'" in remote, "a multi-word query must stay one argument"
+    assert "'~/" not in remote, "quoting the tilde would make it a literal directory"
+
+
 def test_incomplete_target_is_rejected_by_name(mod, tmp_path):
     """A typo'd key must fail loudly, naming the target, not check the wrong path."""
     path = write_targets(tmp_path, [
