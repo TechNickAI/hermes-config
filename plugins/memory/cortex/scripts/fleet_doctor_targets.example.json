@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "Targets for fleet_doctor.py. Copy this outside the repo (for example to",
+    "~/.hermes/cortex_fleet_targets.json), fill in your real hosts, and pass it",
+    "with --targets. Real host names and home paths stay out of version control.",
+    "",
+    "Fields:",
+    "  label   name shown in the report (the agent or profile name)",
+    "  host    ssh destination; OMIT or null for a profile on this machine",
+    "  python  interpreter that can import the Cortex plugin on that host",
+    "  doctor  absolute path to nightly_doctor.py on that host",
+    "  home    HERMES_HOME for the profile (where its config.yaml lives)"
+  ],
+  "targets": [
+    {
+      "label": "primary",
+      "python": "/home/USER/.hermes/hermes-agent/venv/bin/python",
+      "doctor": "/home/USER/.hermes/plugins/cortex/scripts/nightly_doctor.py",
+      "home": "/home/USER/.hermes"
+    },
+    {
+      "label": "second-profile",
+      "python": "/home/USER/.hermes/hermes-agent/venv/bin/python",
+      "doctor": "/home/USER/.hermes/plugins/cortex/scripts/nightly_doctor.py",
+      "home": "/home/USER/.hermes/profiles/second-profile"
+    },
+    {
+      "label": "remote-agent",
+      "host": "my-other-box",
+      "python": "/home/USER/.hermes/hermes-agent/venv/bin/python",
+      "doctor": "/home/USER/.hermes/plugins/cortex/scripts/nightly_doctor.py",
+      "home": "/home/USER/.hermes"
+    }
+  ]
+}
