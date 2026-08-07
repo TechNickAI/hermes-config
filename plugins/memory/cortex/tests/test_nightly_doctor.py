@@ -301,7 +301,12 @@ def test_unhealthy_endpoint_fails_closed_when_embeddings_missing(tmp_path, monke
             return False
 
     monkeypatch.setattr(mod, "OpenAIEmbeddingClient", DownEmbedder)
-    result = mod.run(tmp_path / "cortex", tmp_path, "memory", repair=True)
+    # embed_url must be set so _semantic_configured returns True; otherwise a
+    # store with no embeddings and no configured endpoint is legitimately lexical-only.
+    result = mod.run(
+        tmp_path / "cortex", tmp_path, "memory", repair=True,
+        plugin_config={"embed_url": "http://embedder.test:1234/v1"},
+    )
 
     assert result["ok"] is False
     assert result["embedding_endpoint_healthy"] is False
@@ -564,3 +569,101 @@ def test_non_markdown_payload_is_never_read_or_indexed(tmp_path, monkeypatch):
     conn = sqlite3.connect(tmp_path / "cortex/.plugin.db")
     assert conn.execute("SELECT count(*) FROM pages WHERE rel_path LIKE '%payload.bin%'").fetchone()[0] == 0
     conn.close()
+
+
+# ------------------------------------------------- lexical-only deployments
+
+
+def test_lexical_only_deployment_is_healthy(tmp_path, monkeypatch):
+    """A store with no embed_url must not alarm the nightly job every single night.
+
+    Before this fix: embedded == 0 with pages > 0 (no endpoint configured) caused
+    the health gate to fail, and FTS-only retrieval was rejected as degradation.
+    """
+    mod = load_module()
+
+    class NoEmbedder(FakeEmbedder):
+        def health(self):
+            return False
+
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", NoEmbedder)
+    store = tmp_path / "cortex"
+    store.mkdir()
+    (store / "topics").mkdir()
+    (store / "topics" / "memory-ops.md").write_text("# Memory operations\nThis is about memory.")
+
+    # plugin_config has no embed_url — pure lexical-only deployment.
+    result = mod.run(store, tmp_path, "memory", repair=False, plugin_config={})
+
+    assert result["ok"] is True, "lexical-only store must not alarm every night"
+    assert result["embedding_endpoint_healthy"] is False
+    assert result["repairs"] == []
+
+
+# ----------------------------------------------- fts syntax error isolation
+
+
+def test_fts_syntax_error_is_not_reported_as_corruption():
+    """An OperationalError from a bad --query must not mark the FTS index as corrupt.
+
+    The old code wrapped both the integrity-check and the MATCH probe in the
+    same try-except, so FTS5 syntax errors (bad --query) set corrupt=True and
+    triggered a rebuild on a perfectly healthy index.
+    """
+    mod = load_module()
+    integrity_checked: list[bool] = []
+
+    class FakeConn:
+        def execute(self, sql, params=()):
+            if "integrity-check" in sql:
+                integrity_checked.append(True)
+                return self
+            if "MATCH" in sql:
+                raise sqlite3.OperationalError("fts5: syntax error near 'AND'")
+            return self
+
+        def fetchall(self):
+            return []
+
+    result = mod.fts_probe(FakeConn(), "AND OR")
+
+    assert result["corrupt"] is False, "FTS syntax error must not be flagged as corruption"
+    assert result["ok"] is False
+    assert integrity_checked, "integrity-check must run before the MATCH probe"
+    assert "query syntax error" in (result["error"] or "")
+
+
+# ----------------------------------------- backup pruning: custom db dir
+
+
+def test_backup_pruning_covers_custom_db_directory(tmp_path, monkeypatch):
+    """Backups written beside a custom db_path outside store_path must be pruned.
+
+    prune_backups previously only globbed store_path, so backups beside a
+    custom db_path accumulated forever when the database lived elsewhere.
+    """
+    import os
+    import time
+
+    mod, st = make_store(tmp_path)
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    custom_db_dir = tmp_path / "dbs"
+    custom_db_dir.mkdir()
+    stale = custom_db_dir / ".plugin.db.bak-doctor-preopen-20200101T000000"
+    stale.write_bytes(b"old backup in custom db dir")
+    old_ts = time.time() - 40 * 86400
+    os.utime(stale, (old_ts, old_ts))
+
+    result = mod.run(
+        tmp_path / "cortex",
+        tmp_path,
+        "memory",
+        repair=False,
+        keep_backup_days=14,
+        db_path=custom_db_dir / "custom.db",
+    )
+
+    assert stale.name in result["pruned_backups"], "stale backup in custom db dir must be pruned"
+    assert not stale.exists()
