@@ -47,16 +47,26 @@ BACKUP_PREFIX = ".plugin.db.bak-doctor-"
 EXIT_OK, EXIT_UNHEALTHY, EXIT_SETUP = 0, 1, 2
 
 
+def _config_bool(config: dict[str, Any], key: str, default: bool = False) -> bool:
+    """Mirror the provider's handling of boolean config strings."""
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1"}
+    return bool(value)
+
+
 def _semantic_configured(plugin_config: dict[str, Any]) -> bool:
-    """Return True only when semantic embedding is explicitly enabled — mirrors the provider.
+    """Return whether semantic embedding is enabled — mirror provider precedence.
 
     The provider's ``_build_embedder`` returns None (lexical-only) when
-    ``semantic: false`` or ``embed_url`` is empty. The doctor must apply the
-    same gate so a lexical-only deployment does not alarm every night.
+    ``semantic: false`` or both config and env embed URLs are empty. The doctor
+    must apply the same gate so a lexical-only deployment does not alarm.
     """
-    if not plugin_config.get("semantic", True):
+    if not _config_bool(plugin_config, "semantic", default=True):
         return False
-    return bool(plugin_config.get("embed_url"))
+    return bool(plugin_config.get("embed_url") or os.environ.get("CORTEX_EMBED_URL"))
 
 
 class SetupError(RuntimeError):
@@ -377,11 +387,13 @@ def run(
 
         coverage = embedding_probe(store)
         result["embeddings_before"] = coverage
-        # Semantic checks apply only when embed_url is configured (matching the
-        # provider's _build_embedder logic), OR when the store already contains
-        # embeddings from a prior semantic deployment — so that degradation
-        # (endpoint dropped but rows still present) is still caught.
-        semantic_in_use = _semantic_configured(plugin_config) or coverage["embedded"] > 0
+        # Semantic checks apply when the provider would build an embedder, OR
+        # when semantic remains enabled and the store contains embeddings from a
+        # prior deployment — so endpoint-loss degradation is still caught.
+        semantic_enabled = _config_bool(plugin_config, "semantic", default=True)
+        semantic_in_use = _semantic_configured(plugin_config) or (
+            semantic_enabled and coverage["embedded"] > 0
+        )
         if not coverage["ok"] and repair and embed_health and coverage["pages"] > 0:
             # backfill_embeddings tracks staleness by content hash PLUS
             # model/dimension, so drifted rows are recomputed without force.

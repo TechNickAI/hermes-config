@@ -313,6 +313,14 @@ def test_unhealthy_endpoint_fails_closed_when_embeddings_missing(tmp_path, monke
     assert not any(item.startswith("embeddings_backfilled:") for item in result["repairs"])
 
 
+def test_semantic_config_gate_mirrors_provider(monkeypatch):
+    mod = load_module()
+    monkeypatch.setenv("CORTEX_EMBED_URL", "http://embed.test/v1")
+    assert mod._semantic_configured({}) is True
+    assert mod._semantic_configured({"semantic": "false"}) is False
+    assert mod._semantic_configured({"semantic": "true"}) is True
+
+
 # ---------------------------------------------------------------- retrieval
 
 
