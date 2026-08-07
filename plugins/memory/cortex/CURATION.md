@@ -122,8 +122,8 @@ topic.
 
 ## Nightly health check (`scripts/nightly_doctor.py`)
 
-The daily deterministic counterpart to weekly curation. Curation improves what the
-pages *say*; the doctor keeps the store *searchable*.
+The daily deterministic counterpart to weekly curation. Curation improves what the pages
+_say_; the doctor keeps the store _searchable_.
 
 ### Why it exists
 
@@ -140,12 +140,12 @@ pages that term does not hit passes undetected. The doctor runs FTS5's native
 
 ### What it checks
 
-| Check                | Failure it catches                                    |
-| -------------------- | ----------------------------------------------------- |
-| `PRAGMA integrity_check` (before **and** after repair) | SQLite-level damage |
-| FTS5 `integrity-check` | Desynced external-content index → zero lexical results |
-| Embedding coverage + model | Missing vectors, or vectors from a superseded model |
-| Live `CortexRetriever.search` | Silent degradation to lexical-only retrieval |
+| Check                                                  | Failure it catches                                     |
+| ------------------------------------------------------ | ------------------------------------------------------ |
+| `PRAGMA integrity_check` (before **and** after repair) | SQLite-level damage                                    |
+| FTS5 `integrity-check`                                 | Desynced external-content index → zero lexical results |
+| Embedding coverage + model                             | Missing vectors, or vectors from a superseded model    |
+| Live `CortexRetriever.search`                          | Silent degradation to lexical-only retrieval           |
 
 ### Repair authority
 
@@ -162,8 +162,8 @@ Two safety properties matter more than the repairs:
    this, a wrong `--store` path or an unmounted volume makes the constructor delete a
    perfectly good index — verified, and the reason exit code 2 exists.
 
-Backups older than `--keep-backup-days` (default 14) are pruned, so a nightly job
-cannot fill the disk with database copies.
+Backups older than `--keep-backup-days` (default 14) are pruned, so a nightly job cannot
+fill the disk with database copies.
 
 ### Output contract
 
@@ -171,10 +171,10 @@ Silent when healthy and nothing needed doing. It speaks only when it repaired so
 or when the store is still broken. A "nothing was done" message every morning is noise,
 not monitoring.
 
-| Exit | Meaning                                                        |
-| ---- | -------------------------------------------------------------- |
-| 0    | Healthy, verified after any repair                              |
-| 1    | Still not fully operational — needs a human                     |
+| Exit | Meaning                                                           |
+| ---- | ----------------------------------------------------------------- |
+| 0    | Healthy, verified after any repair                                |
+| 1    | Still not fully operational — needs a human                       |
 | 2    | Setup/precondition failure; **store deliberately left untouched** |
 
 ### Running it
@@ -192,3 +192,44 @@ python plugins/memory/cortex/scripts/nightly_doctor.py \
   --store ~/.hermes/cortex --profile-home ~/.hermes --query "some phrase"
 ```
 
+## Checking a whole fleet (`scripts/fleet_doctor.py`)
+
+`nightly_doctor.py` checks one store. `fleet_doctor.py` runs it across every profile on
+every host, in parallel, and prints only what a human needs to act on.
+
+Targets are **not** hardcoded — they come from a JSON file, so machine names, usernames
+and home paths stay out of this public repo:
+
+```bash
+cp plugins/memory/cortex/scripts/fleet_doctor_targets.example.json \
+   ~/.hermes/cortex_fleet_targets.json
+# edit in your real hosts, then:
+python plugins/memory/cortex/scripts/fleet_doctor.py \
+  --targets ~/.hermes/cortex_fleet_targets.json
+```
+
+Each target names a `label`, the `python` and `doctor` paths on that machine, and the
+profile's `home`. Omit `host` for a profile on the local box; set it to an ssh
+destination for a remote one.
+
+### Output contract
+
+Designed for `cron` with `no_agent: true`, where stdout _is_ the message a human
+receives:
+
+| Situation                     | Output                                      |
+| ----------------------------- | ------------------------------------------- |
+| All healthy, nothing repaired | **nothing at all** — silence is the signal  |
+| Self-repaired                 | 🔧 what was fixed, no alarm                 |
+| Still broken / setup failure  | 🔴 the reason, plus how many remain healthy |
+| Unreachable or unparseable    | ⚠️ inconclusive — never reported as "down"  |
+
+The exit status is always 0. The body carries the signal; a non-zero exit would make the
+scheduler raise a second, redundant alert on top of it.
+
+### Why a retry
+
+A soft failure (endpoint blip, degraded retrieval, unreachable host) is probed a second
+time before it alarms — one observed run reported lexical-only retrieval and the next
+eight were clean. Durable faults (FTS corruption, missing embeddings, dimension drift,
+setup errors) are facts, not blips, and are reported the first time.
