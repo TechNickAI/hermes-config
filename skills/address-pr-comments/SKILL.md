@@ -183,9 +183,10 @@ Notes:
 ### 4. Separate stale-anchored findings from live ones
 
 After any prior fix push, a bot's inline comment stays anchored to the line numbers of
-the commit it reviewed — it is **not** necessarily a re-finding. Trust the latest
-_check-run_ status over lingering inline text. To isolate findings actually tied to the
-current head:
+the commit it reviewed — it is **not** necessarily a re-finding. A green check-run means
+the tooling ran, not that every inline finding is resolved, so use the check-run only to
+confirm the bot reviewed this head. Resolution is decided per finding, by re-reading the
+current code. To isolate findings actually tied to the current head:
 
 ```bash
 HEAD=$(gh pr view <N> --repo $R --json headRefOid --jq '.headRefOid')

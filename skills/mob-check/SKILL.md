@@ -301,10 +301,10 @@ question), not a summary and not a call to action.
 7. **One source monopolizing.** The ranker caps authors and diversifies sources; do not
    undo that by quoting only the loudest handle.
 
-8. **Assuming `scripts/rank.py` echoes input `id` fields.** It does not. Pipeline
-   callers can join ranked output back to source rows using a real unique, linkable
-   `url`. URLs rejected by `_url_ok` (such as placeholders) are emitted as an empty
-   string, so retain a source-side stable key for those items. This does not affect the
+8. **Assuming `scripts/rank.py` echoes input `id` fields.** It does not. Every ranked
+   item carries a `key` field instead — the linkable url when there is one, otherwise
+   `source:id`. Join pipeline output back to source rows on `key`, not on `url`, because
+   placeholder/unlinkable urls are emitted as an empty string. This does not affect the
    normal interactive flow.
 9. **Delegating open-ended source crawls without a call budget.** Broad sequential
    searches can exhaust child-agent time limits. Bound research workers to a small

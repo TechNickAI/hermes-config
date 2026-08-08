@@ -396,7 +396,9 @@ just a one-line note if anything):
    get explicit confirmation before writing accumulated identity/persona state; never
    overwrite existing content. A skill only loads after the agent chooses it, so the
    always-on block is what makes the act-vs-ask rule fire before consequential reasoning
-   starts. Verify it appears in the live system prompt, not merely that the file exists.
+   starts. The system prompt is snapshotted at session start, so start a fresh session
+   or reset before checking: verify the block appears in the live system prompt, not
+   merely that the file exists. Until that fresh session, the guard is not yet active.
 3. Optionally schedule a periodic review (e.g. a weekly cron) that reads `TRUST.md`,
    tallies my track record, and updates my levels. Without it, I still run the review
    whenever I've accumulated a batch of resolved decisions.

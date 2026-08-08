@@ -50,9 +50,9 @@ When saving ranker input or output:
 - Leave unknown engagement fields empty. Never infer counts from qualitative wording.
 - Record source-class coverage separately from ranked-source coverage.
 - Read `thin_evidence` and `low_engagement_coverage` as different warnings.
-- Remember that `scripts/rank.py` does not echo input IDs. Join by a unique, linkable
-  URL where possible; placeholder/unlinkable URLs are stripped from ranked output, so
-  retain a source-side stable key for those items.
+- Remember that `scripts/rank.py` does not echo input IDs. Join ranked output back to
+  source rows on the emitted `key` field (the linkable url, else `source:id`);
+  placeholder/unlinkable urls are stripped to an empty string and are not a valid key.
 
 After writing a JSON research artifact, perform focused ad-hoc verification if no
 canonical suite owns it:
