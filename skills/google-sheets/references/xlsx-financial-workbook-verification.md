@@ -38,22 +38,29 @@ wb_values = load_workbook(p, data_only=True)
 wb_formulas = load_workbook(p, data_only=False)
 for ws in wb_formulas.worksheets:
     formulas=[]
+    missing_cache=[]
     for row in ws.iter_rows():
         for c in row:
             if isinstance(c.value, str) and c.value.startswith('='):
                 formulas.append((ws.title, c.coordinate, c.value))
+                cached = wb_values[ws.title][c.coordinate].value
+                if cached is None:
+                    missing_cache.append((ws.title, c.coordinate, c.value))
     print(ws.title, 'formula_count', len(formulas), formulas[:5])
+    print(ws.title, 'missing_formula_cache', len(missing_cache), missing_cache[:5])
 PY
 ```
 
-If using static values, formula count should be zero.
+If using static values, formula count should be zero. If formulas are intentional,
+`missing_formula_cache` should be zero and critical displayed totals should also be
+compared against values independently calculated from the source data.
 
 After Drive import to Google Sheets, verify key rows live:
 
 ```bash
-gog sheets get "$SID" "Income Statement!A8:F20" --json --no-input
-gog sheets get "$SID" "Income Statement!A39:F41" --json --no-input
-gog sheets get "$SID" "Balance Sheet!A8:D33" --json --no-input
+gog sheets get "$SID" "'Income Statement'!A8:F20" --json --no-input
+gog sheets get "$SID" "'Income Statement'!A39:F41" --json --no-input
+gog sheets get "$SID" "'Balance Sheet'!A8:D33" --json --no-input
 ```
 
 Check:

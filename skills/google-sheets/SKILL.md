@@ -180,11 +180,12 @@ Write each tab with `USER_ENTERED` values. Advanced formatting can use
 `spreadsheets.batchUpdate` requests such as `repeatCell`, `updateDimensionProperties`,
 `addConditionalFormatRule`, `setBasicFilter`, and `updateSheetProperties`.
 
-### Never strip formulas to "values only"
+### Choose live formulas or computed values deliberately
 
-Writing `"'" + formula` to neuter a formula renders as literal `'=SUM(H3:H14)` text in
-the cell. That is the single most visible way to ship a broken-looking sheet. Keep real
-formulas and let `USER_ENTERED` evaluate them.
+For a native interactive Sheet that should recalculate, keep real formulas and let
+`USER_ENTERED` evaluate them. For a portable/static XLSX deliverable, write computed
+values and verify the formula count is zero. Never apostrophe-prefix formulas as a
+workaround: `"'" + formula` renders as broken-looking literal formula text.
 
 ### Mandatory verification before handing over
 
@@ -192,8 +193,10 @@ formulas and let `USER_ENTERED` evaluate them.
    `gog sheets get ... --render FORMATTED_VALUE` and assert no displayed cell starts
    with `=` or `'=`, and none unexpectedly contain `#REF!`, `#ERROR!`, `#NAME?`,
    `#DIV/0!`, `#VALUE!`, `#NUM!`, or `#N/A`.
-2. **Formula liveness** — read the same range with `gog sheets get ... --render FORMULA`
-   and confirm required formulas are still present.
+2. **Formula policy** — for a live-formula workbook, read the same range with
+   `gog sheets get ... --render FORMULA` and confirm required formulas remain present.
+   For an intentionally static workbook, instead confirm formula count is zero and
+   compare critical totals against independently computed expectations.
 3. **Visual QA** — export each tab to PDF and inspect **every page**. Use a multipage
    rasterizer such as `pdftoppm` rather than a first-page-only conversion:
    ```bash
