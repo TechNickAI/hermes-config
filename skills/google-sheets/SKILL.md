@@ -168,8 +168,8 @@ format.
 
 ## Multi-tab workbooks + visual QA
 
-Do not flatten logical tabs into one sheet with banner rows. Feature-detect the installed
-CLI with `gog sheets --help`:
+Do not flatten logical tabs into one sheet with banner rows. Feature-detect the
+installed CLI with `gog sheets --help`:
 
 - For a new workbook, prefer `gog sheets create TITLE --sheets "Summary,Data"` when
   supported.
@@ -192,8 +192,8 @@ formulas and let `USER_ENTERED` evaluate them.
    `gog sheets get ... --render FORMATTED_VALUE` and assert no displayed cell starts
    with `=` or `'=`, and none unexpectedly contain `#REF!`, `#ERROR!`, `#NAME?`,
    `#DIV/0!`, `#VALUE!`, `#NUM!`, or `#N/A`.
-2. **Formula liveness** — read the same range with
-   `gog sheets get ... --render FORMULA` and confirm required formulas are still present.
+2. **Formula liveness** — read the same range with `gog sheets get ... --render FORMULA`
+   and confirm required formulas are still present.
 3. **Visual QA** — export each tab to PDF and inspect **every page**. Use a multipage
    rasterizer such as `pdftoppm` rather than a first-page-only conversion:
    ```bash
@@ -264,8 +264,7 @@ artifact still exists after cleanup.
    token, pass credentials explicitly: export gog's refresh token to a 0600 file. On
    current gog releases use
    `gog auth tokens export <account> --out /tmp/tok.json --overwrite`; inspect
-   `gog auth tokens export --help` on older releases. Then run the
-   helper with
+   `gog auth tokens export --help` on older releases. Then run the helper with
    `--refresh-token-file /tmp/tok.json --client-secret-file <gog credentials.json>`. The
    helper refuses explicit credential files that are group/world-readable or not owned
    by you — `chmod 600` them. These flags work before or after the subcommand. For a gog
