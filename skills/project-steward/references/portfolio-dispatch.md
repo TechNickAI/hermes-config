@@ -48,10 +48,12 @@ The key must be scoped to the attempt, not to the project forever. A constant
 second pass after its earlier task is complete, the create returns the historical task,
 the instruction below treats it as another pass's ownership, and the project becomes
 permanently unpickable. Scope the key to the pass instead so it is stable within a pass
-(atomic against a concurrent pass) but distinct across passes:
+(atomic against a concurrent pass) but distinct across passes. Use a timestamp at second
+or finer resolution — date-only collides when passes run more than once per calendar
+day:
 
 ```bash
-<task-cli> create "<project>: <deliverable>" --idempotency-key "portfolio:<project-slug>:<pass-iso-date>"
+<task-cli> create "<project>: <deliverable>" --idempotency-key "portfolio:<project-slug>:<pass-start-timestamp>"
 ```
 
 If the id that comes back is not the one you just made, another pass owns that project:
