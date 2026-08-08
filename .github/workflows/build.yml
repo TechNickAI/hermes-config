@@ -73,7 +73,12 @@ jobs:
           cache-dependency-path: devops/app-router/auth-service/package-lock.json
 
       - name: Install auth-service dependencies
-        run: npm ci
+        # Lifecycle scripts are the npm supply-chain attack surface. The Aug 2026
+        # keyv worm shipped as a "preinstall" hook and published with valid
+        # GitHub-signed provenance, so a pinned lockfile is not the guarantee it
+        # looks like. These three deps are pure JavaScript with no build step, so
+        # nothing legitimate needs scripts to run here. Do not drop this flag.
+        run: npm ci --ignore-scripts
         working-directory: devops/app-router/auth-service
 
       - name: Run auth-service tests
