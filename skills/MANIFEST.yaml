@@ -101,7 +101,8 @@ skills:
   summary: Use when creating, populating, formatting, importing, exporting, or quality-checking Google Sheets from CSV, JSON arrays, or computed tabular data.
   use_when: creating, populating, formatting, importing, exporting, or quality-checking Google Sheets from CSV, JSON arrays, or computed tabular data.
   requires:
-  - gog CLI, authorized via `gog auth login`
+  - gog CLI, authorized for Google Sheets and Drive
+  - python3
   works_out_of_the_box: false
   tags:
   - google
