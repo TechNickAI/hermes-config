@@ -332,6 +332,23 @@ skills:
   - fleet
   - reporting
   path: skills/report
+- name: robustify-doctor
+  version: 0.1.0
+  scope: solo
+  summary: Use when you need to know whether a Hermes agent is actually healthy — during a scheduled health check, after an outage or reboot, when someone asks "is X working?", or when an agent has gone quiet.
+  use_when: you need to know whether a Hermes agent is actually healthy — during a scheduled health check, after an outage or reboot, when someone asks "is X working?", or when an agent has gone quiet. Runs a deterministic collector that gathers facts across twelve subsystems, then reads those facts as an LLM t…
+  requires:
+  - Python 3.9+ (stdlib only, no third-party packages)
+  - Read access to the target agent's HERMES_HOME
+  works_out_of_the_box: false
+  tags:
+  - monitoring
+  - diagnostics
+  - reliability
+  - health-check
+  - fleet
+  - observability
+  path: skills/robustify-doctor
 - name: trust-framework
   version: 2.0.0
   scope: solo
