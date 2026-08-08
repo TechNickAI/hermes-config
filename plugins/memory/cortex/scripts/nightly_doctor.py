@@ -47,6 +47,28 @@ BACKUP_PREFIX = ".plugin.db.bak-doctor-"
 EXIT_OK, EXIT_UNHEALTHY, EXIT_SETUP = 0, 1, 2
 
 
+def _config_bool(config: dict[str, Any], key: str, default: bool = False) -> bool:
+    """Mirror the provider's handling of boolean config strings."""
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1"}
+    return bool(value)
+
+
+def _semantic_configured(plugin_config: dict[str, Any]) -> bool:
+    """Return whether semantic embedding is enabled — mirror provider precedence.
+
+    The provider's ``_build_embedder`` returns None (lexical-only) when
+    ``semantic: false`` or both config and env embed URLs are empty. The doctor
+    must apply the same gate so a lexical-only deployment does not alarm.
+    """
+    if not _config_bool(plugin_config, "semantic", default=True):
+        return False
+    return bool(plugin_config.get("embed_url") or os.environ.get("CORTEX_EMBED_URL"))
+
+
 class SetupError(RuntimeError):
     """Invocation/precondition failure: do not touch the store."""
 
@@ -188,38 +210,52 @@ def backup_database(db_path: Path, reason: str) -> Path:
     return backup
 
 
-def prune_backups(store_path: Path, keep_days: int) -> list[str]:
-    """Bound disk usage: nightly repairs must not accumulate DB copies forever."""
+def prune_backups(store_path: Path, keep_days: int, db_dir: Path | None = None) -> list[str]:
+    """Bound disk usage: nightly repairs must not accumulate DB copies forever.
+
+    Backups are written beside db_path (via backup_database), which may live
+    outside store_path when db_path is customised. db_dir covers that case.
+    """
     if keep_days <= 0:
         return []
     cutoff = dt.datetime.now().timestamp() - keep_days * 86400
     removed = []
-    for path in store_path.glob(f"{BACKUP_PREFIX}*"):
-        try:
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink()
-                removed.append(path.name)
-        except OSError:
-            continue
+    search_dirs: set[Path] = {store_path}
+    if db_dir and db_dir != store_path:
+        search_dirs.add(db_dir)
+    for search_dir in search_dirs:
+        for path in search_dir.glob(f"{BACKUP_PREFIX}*"):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed.append(path.name)
+            except OSError:
+                continue
     return removed
 
 
 def fts_probe(conn: sqlite3.Connection, query: str) -> dict[str, Any]:
-    """Check FTS integrity, distinguishing corruption from a sparse query.
+    """Check FTS integrity, distinguishing corruption from a sparse or malformed query.
 
-    Zero matching rows is NOT corruption: it means the term is absent. Only a
-    raised error indicates a damaged index. Conflating them makes the doctor
-    rebuild a healthy index every night and still report failure.
+    Zero matching rows is NOT corruption: it means the term is absent. A
+    DatabaseError from the integrity-check indicates a damaged index. An
+    OperationalError from the MATCH probe is a bad --query argument, not
+    corruption — conflating them triggers rebuilds on a healthy index.
     """
     result: dict[str, Any] = {"ok": False, "corrupt": False, "rows": 0, "error": None}
+    # Step 1: FTS5 integrity-check — a DatabaseError here is actual corruption.
+    # The `rank` argument (verify against external content) needs SQLite >= 3.42.
     try:
-        # FTS5's own integrity-check catches orphaned rowids even when a MATCH
-        # probe happens not to touch the damaged row. The `rank` argument
-        # (verify against external content) needs SQLite >= 3.42; fall back.
         try:
             conn.execute("INSERT INTO pages_fts(pages_fts, rank) VALUES('integrity-check', 1)")
         except sqlite3.OperationalError:
             conn.execute("INSERT INTO pages_fts(pages_fts) VALUES('integrity-check')")
+    except sqlite3.DatabaseError as exc:
+        result.update({"corrupt": True, "error": str(exc)})
+        return result
+    # Step 2: MATCH probe — an OperationalError here is a syntax error in the
+    # --query string, not index damage. Report it without setting corrupt=True.
+    try:
         rows = conn.execute(
             "SELECT pages.rel_path FROM pages_fts "
             "JOIN pages ON pages.rel_path = pages_fts.rel_path "
@@ -227,8 +263,8 @@ def fts_probe(conn: sqlite3.Connection, query: str) -> dict[str, Any]:
             (query,),
         ).fetchall()
         result.update({"ok": True, "rows": len(rows)})
-    except sqlite3.DatabaseError as exc:
-        result.update({"corrupt": True, "error": str(exc)})
+    except sqlite3.OperationalError as exc:
+        result.update({"ok": False, "error": f"query syntax error: {exc}"})
     return result
 
 
@@ -351,6 +387,13 @@ def run(
 
         coverage = embedding_probe(store)
         result["embeddings_before"] = coverage
+        # Semantic checks apply when the provider would build an embedder, OR
+        # when semantic remains enabled and the store contains embeddings from a
+        # prior deployment — so endpoint-loss degradation is still caught.
+        semantic_enabled = _config_bool(plugin_config, "semantic", default=True)
+        semantic_in_use = _semantic_configured(plugin_config) or (
+            semantic_enabled and coverage["embedded"] > 0
+        )
         if not coverage["ok"] and repair and embed_health and coverage["pages"] > 0:
             # backfill_embeddings tracks staleness by content hash PLUS
             # model/dimension, so drifted rows are recomputed without force.
@@ -365,9 +408,10 @@ def run(
         sources = [str(row.get("source", "")) for row in rows]
         semantic = any(source.startswith(("hybrid", "vector")) for source in sources)
         result["retrieval"] = {
-            # An empty store or an absent term returns no rows legitimately;
-            # only demand semantic sourcing when there is something to retrieve.
-            "ok": semantic if rows else coverage["pages"] == 0,
+            # Semantic deployments require hybrid/vector sourcing when rows exist.
+            # Lexical-only deployments accept FTS results — they are healthy by design.
+            "ok": (semantic if rows else coverage["pages"] == 0) if semantic_in_use
+                  else (len(rows) > 0 or coverage["pages"] == 0),
             "count": len(rows),
             "sources": sources,
         }
@@ -377,12 +421,12 @@ def run(
         result["ok"] = bool(
             result["sqlite_integrity_after"] == "ok"
             and result["fts_after"]["ok"]
-            and result["embeddings_after"]["ok"]
+            and (not semantic_in_use or result["embeddings_after"]["ok"])
             and result["retrieval"]["ok"]
         )
     finally:
         store.close()
-        result["pruned_backups"] = prune_backups(store_path, keep_backup_days)
+        result["pruned_backups"] = prune_backups(store_path, keep_backup_days, db_dir=db_path.parent)
         result["finished_at"] = dt.datetime.now().isoformat(timespec="seconds")
     return result
 

@@ -412,30 +412,35 @@ empty section to complete a template.
 ```markdown
 # Decision
 
-**Recommendation:** [1-2 sentences]
-**Confidence:** High | Medium | Low — [specific reason]
-**As of:** [date / version]  **Effort:** L1 | L2 — [why]
-**Do now:** [1-3 concrete actions]
+**Recommendation:** [1-2 sentences] **Confidence:** High | Medium | Low — [specific
+reason] **As of:** [date / version] **Effort:** L1 | L2 — [why] **Do now:** [1-3
+concrete actions]
 
 ## Build vs adopt
-**Choice:** Buy | Adopt OSS | Extend hybrid | Build
-[table: candidate | must-have fit | TCO | integration | lock-in | ops burden | verdict]
-**If Build:** the exact unmet requirement is [...]
+
+**Choice:** Buy | Adopt OSS | Extend hybrid | Build [table: candidate | must-have fit |
+TCO | integration | lock-in | ops burden | verdict] **If Build:** the exact unmet
+requirement is [...]
 
 ## Decision basis
+
 1-5 atomic, evidence-backed reasons, each cited.
 
 ## Serious alternatives rejected
+
 Each with the condition under which it would win instead.
 
 ## Disagreement and uncertainty
+
 What sources disagree about, why, and how the conclusion handles it.
 
 ## Gaps and falsifiers
+
 - [gap] — blocking or not, how it could change the decision, how to resolve it
 - **What would change my recommendation:** [...]
 
 ## Evidence notes
+
 Source-class coverage, versions, what was searched and not found.
 ```
 <!-- prettier-ignore-end -->
