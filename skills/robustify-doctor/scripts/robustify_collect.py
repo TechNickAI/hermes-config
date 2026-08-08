@@ -18,8 +18,15 @@ DEEP = "--deep" in sys.argv
 # space in it (common on macOS) otherwise splits into two arguments and the command
 # either fails or, worse, silently scans the wrong tree.
 SQ = shlex.quote
+# systemctl prefixes non-running units with U+25CF. It must be stripped before the unit
+# name can be read positionally, or the "unit name" comes back as the bullet itself.
+BULLET = "\u25cf"
 OUT = []
 FAILED = []
+STALE_READS = []  # databases that could only be opened via immutable=1 (see ro_connect)
+# Module scope so it is unit-testable against real argv strings. See c_processes for the
+# two verified false-detection bugs this pattern exists to prevent.
+GW_RE = re.compile(r"hermes_cli\.main\b.*\bgateway\b.*\brun\b")
 
 def ro_connect(path, timeout=8):
     """Read-only connect that survives WAL.
@@ -29,10 +36,17 @@ def ro_connect(path, timeout=8):
     needs to create a -shm sidecar that read-only mode forbids. So each candidate
     must be validated with a real query before being returned."""
     last = None
-    for uri in (f"file:{path}?mode=ro", f"file:{path}?immutable=1"):
+    # mode=ro first. immutable=1 is a LAST resort and is NOT equivalent: it ignores the
+    # -wal file, so a live database is read from a potentially stale main image. That can
+    # yield both false alarms and false confidence, so callers are told when it happened.
+    for uri, mode in ((f"file:{path}?mode=ro", "ro"), (f"file:{path}?immutable=1", "immutable")):
         try:
             con = sqlite3.connect(uri, uri=True, timeout=timeout)
             con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+            if mode == "immutable":
+                # Surfaced as a fact, not swallowed: every conclusion drawn from this
+                # database may be based on a pre-WAL-checkpoint image.
+                STALE_READS.append(Path(path).name)
             return con
         except Exception as e:
             last = e
@@ -64,6 +78,91 @@ def collector(fn):
             FAILED.append(fn.__name__)
             OUT.append(f"COLLECTOR_FAILED: {fn.__name__}: {type(e).__name__}: {e}")
     return wrap
+
+def redact(text):
+    """Replace the user's home prefix with ~ in anything we print.
+
+    The report is handed to an LLM, pasted into chats, and committed to logs. Absolute
+    paths carry the account name on every line for no diagnostic benefit — the relative
+    structure is what matters. Longest prefix first so profile paths are not left with a
+    dangling fragment.
+    """
+    s = str(text)
+    for pref, repl in sorted(((str(H), "$HERMES_HOME"), (str(HOME), "~")),
+                             key=lambda x: -len(x[0])):
+        s = s.replace(pref, repl)
+    return s
+
+def cortex_db_path():
+    """Locate the cortex database, or None.
+
+    Cortex is frequently a SHARED store living at the root Hermes home even when
+    HERMES_HOME points at a profile subdirectory. Checking only the profile path
+    reported MISSING for a 1.5GB store that was present and healthy — a false alarm
+    about the memory system, which is exactly the kind of noise that gets a monitor
+    muted. Check the profile location first, then the root home.
+    """
+    roots = [H / "cortex"]
+    root_home = HOME / ".hermes" / "cortex"
+    if root_home not in roots:
+        roots.append(root_home)
+    for r in roots:
+        for name in (".plugin.db", "cortex.db"):
+            if (r / name).exists():
+                return r / name
+    return None
+
+def expected_interval_h(job):
+    """Approximate hours between runs for a job, or None if it can't be determined.
+
+    Deliberately coarse: this feeds a staleness THRESHOLD, not a scheduler. Getting
+    "weekly-ish" instead of "exactly 168h" is fine; treating a weekly job as if it
+    should produce output every 48h is not, because that false alarm fires every
+    single run and trains the reader to ignore the report.
+    """
+    sched = job.get("schedule")
+    if isinstance(sched, dict):
+        kind = (sched.get("kind") or "").lower()
+        expr = str(sched.get("expr") or sched.get("display") or "").strip()
+        if kind == "interval":
+            for key, mult in (("hours", 1), ("minutes", 1 / 60), ("seconds", 1 / 3600), ("days", 24)):
+                v = sched.get(key)
+                if isinstance(v, (int, float)) and v > 0:
+                    return v * mult
+        if kind == "once":
+            return None
+    else:
+        expr = str(sched or "").strip()
+    m = re.fullmatch(r"(?:every\s+)?(\d+)\s*([mhd])\w*", expr, re.I)
+    if m:
+        n, unit = int(m.group(1)), m.group(2).lower()
+        return n * {"m": 1 / 60, "h": 1, "d": 24}[unit]
+    # 5-field cron. Estimate from the coarsest field that is actually constrained.
+    parts = expr.split()
+    if len(parts) == 5:
+        minute, hour, dom, _mon, dow = parts
+        if dow != "*" and dom == "*":
+            return 168.0                      # weekly
+        if dom != "*":
+            return 720.0                      # monthly
+        if hour != "*":
+            # N specific hours per day
+            n = len([h for h in hour.replace("-", ",").split(",") if h.strip()])
+            if hour.startswith("*/"):
+                try:
+                    return float(hour[2:])
+                except ValueError:
+                    return 24.0
+            return 24.0 / max(n, 1)
+        if minute.startswith("*/"):
+            try:
+                return float(minute[2:]) / 60
+            except ValueError:
+                return 1.0
+        if minute != "*":
+            return 1.0                        # hourly at a fixed minute
+        return 1 / 60                         # every minute
+    return None
 
 # ---------------------------------------------------------------- machine
 @collector
@@ -198,6 +297,24 @@ def c_jobs():
                     pass
         if tcol:
             oldest = con.execute(f"SELECT MIN({tcol}), MAX({tcol}) FROM executions").fetchone()
+            # An aggregate failure count is not actionable and is easy to misread. 46
+            # failures spread over 11 jobs is a very different situation from 46 in one,
+            # and a job that failed 20 times then recovered is not currently broken.
+            # Attribute failures to jobs, and say whether the LAST run still failed.
+            try:
+                rows = con.execute(
+                    f"SELECT {idcol}, COUNT(*) FROM executions WHERE status='failed' "
+                    f"GROUP BY {idcol} ORDER BY COUNT(*) DESC LIMIT 8").fetchall()
+                for jid, n in rows:
+                    last = con.execute(
+                        f"SELECT status FROM executions WHERE {idcol}=? "
+                        f"ORDER BY {tcol} DESC LIMIT 1", (jid,)).fetchone()
+                    still = (last or [""])[0]
+                    OUT.append(f"  FAILING_JOB: id={jid} failures_in_window={n} "
+                               f"latest_run={still or 'unknown'}"
+                               f"{' STILL_FAILING' if still == 'failed' else ' (recovered)'}")
+            except Exception:
+                pass
         con.close()
     fact("execution_status_counts", statuses or "unavailable")
     if oldest and oldest[0]:
@@ -209,7 +326,7 @@ def c_jobs():
     retention_h = None
     if oldest and oldest[0]:
         try:
-            t0 = datetime.fromisoformat(str(oldest[0]))
+            t0 = datetime.fromisoformat(str(oldest[0]).replace("Z", "+00:00"))
             retention_h = (datetime.now(t0.tzinfo) - t0).total_seconds() / 3600
             fact("execution_retention_hours", f"{retention_h:.1f}")
         except Exception:
@@ -269,8 +386,10 @@ def c_job_output():
         jj = jj if isinstance(jj, list) else jj.get("jobs", [])
         names = {j.get("id"): (j.get("name") or "?") for j in jj}
         enabled_ids = {j.get("id") for j in jj if j.get("enabled", True)}
+        expected = {j.get("id"): expected_interval_h(j) for j in jj}
     except Exception:
         enabled_ids = set()
+        expected = {}
     now = time.time()
     stale, empty = [], []
     dirs = [d for d in outdir.iterdir() if d.is_dir()]
@@ -282,8 +401,13 @@ def c_job_output():
         newest = files[-1]
         age_h = (now - newest.stat().st_mtime) / 3600
         size = newest.stat().st_size
-        if age_h > 48:
-            stale.append((d.name, age_h, size))
+        # A flat 48h threshold cries wolf on every weekly and monthly job, and a monitor
+        # that cries wolf is ignored within a week. Compare against each job's OWN
+        # cadence plus a grace multiplier; fall back to 48h only when cadence is unknown.
+        exp = expected.get(d.name)
+        threshold = (exp * 2.5) if exp else 48.0
+        if age_h > threshold:
+            stale.append((d.name, age_h, size, exp, threshold))
         elif size == 0:
             empty.append(d.name)
     fact("output_dirs_empty", len(empty))
@@ -291,10 +415,12 @@ def c_job_output():
         OUT.append(f"  NO_OUTPUT: {e} | {names.get(e,'?')[:40]}")
     # only stale-flag jobs that are still ENABLED — a disabled job's old output is expected
     stale_enabled = [s for s in stale if not enabled_ids or s[0] in enabled_ids]
-    fact("output_stale_gt48h_enabled", len(stale_enabled))
-    fact("output_stale_gt48h_total", len(stale))
-    for n, a, s in sorted(stale_enabled, key=lambda x: -x[1])[:8]:
-        OUT.append(f"  STALE_OUTPUT: {names.get(n,'?')[:38]} | {a:.0f}h old | {s}b | id={n}")
+    fact("output_stale_vs_own_cadence_enabled", len(stale_enabled))
+    fact("output_stale_total", len(stale))
+    for n, a, s, exp, th in sorted(stale_enabled, key=lambda x: -x[1])[:8]:
+        basis = f"expected ~{exp:.0f}h" if exp else "cadence unknown, default 48h"
+        OUT.append(f"  STALE_OUTPUT: {names.get(n,'?')[:38]} | {a:.0f}h old "
+                   f"| {basis} | threshold {th:.0f}h | {s}b | id={n}")
 
 # ---------------------------------------------------------------- logs
 @collector
@@ -334,7 +460,6 @@ def c_processes():
     #
     # `ps -axo` sees every process including our own ancestors, and matching on the
     # module invocation (`hermes_cli.main ... gateway run`) is specific to the real thing.
-    GW_RE = re.compile(r"hermes_cli\.main\b.*\bgateway\b.*\brun\b")
     procs = []
     for line in sh("ps -axo pid=,ppid=,etime=,args=").splitlines():
         parts = line.split(None, 3)
@@ -383,13 +508,38 @@ def c_processes():
                         age = f" last_run_log_age_h={(time.time()-cand.stat().st_mtime)/3600:.1f}"
                         break
                 OUT.append(f"  LAUNCHD_NONZERO_EXIT: {lbl} last_exit={code}{age}")
+    else:
+        # systemd is the Linux analogue of launchd. Without this, a Linux host running
+        # its gateway as a --user service had NO service-supervision coverage at all:
+        # the process check alone cannot tell "unit stopped cleanly" from "unit failed
+        # and is in a restart loop". Verified on a real fleet box carrying three failed
+        # units that the collector reported nothing about.
+        for scope in ("--user", "--system"):
+            listing = sh(f"systemctl {scope} list-units --type=service --all --no-legend "
+                         f"--no-pager 2>/dev/null")
+            if not listing or listing.startswith("ERR"):
+                continue
+            units = [l for l in listing.splitlines() if l.strip()]
+            hermes_units = [l for l in units if "hermes" in l.lower()]
+            fact(f"systemd{scope.replace('--', '_')}_hermes_units", len(hermes_units))
+            for l in hermes_units:
+                f_ = l.replace(BULLET, " ").split()
+                if len(f_) >= 4:
+                    OUT.append(f"  SYSTEMD_UNIT: {f_[0]} load={f_[1]} active={f_[2]} sub={f_[3]}")
+            # Failed units OUTSIDE hermes still matter: a failed portal/notification unit
+            # is how "the agent cannot send you anything" starts. Report, don't diagnose.
+            failed = [l.replace(BULLET, " ").split()[0]
+                      for l in units if " failed " in f" {l} "]
+            fact(f"systemd{scope.replace('--', '_')}_failed_count", len(failed))
+            for u in failed[:8]:
+                OUT.append(f"  SYSTEMD_FAILED: {u}")
     fact("chrome_procs", sh("pgrep -c -f 'Google Chrome' 2>/dev/null") or "0")
 
 # ---------------------------------------------------------------- databases
 @collector
 def c_databases():
     section("DATABASES")
-    cortex_db = next((c for c in (H/"cortex"/".plugin.db", H/"cortex"/"cortex.db") if c.exists()), H/"cortex"/".plugin.db")
+    cortex_db = cortex_db_path() or (H / "cortex" / ".plugin.db")
     for name, path in [("state", H / "state.db"), ("cortex", cortex_db),
                        ("executions", H / "cron" / "executions.db"), ("kanban", H / "kanban.db")]:
         if not path.exists():
@@ -399,8 +549,14 @@ def c_databases():
         # full integrity only when --deep is passed (daily), never on the 15-min tick.
         try:
             con = ro_connect(path)
+            # quick_check costs ~40s on a multi-GB db, so it is skipped by default on
+            # large files. The LABEL must say which check actually ran — an integrity
+            # claim the reader cannot distinguish from a real one is the exact failure
+            # this tool exists to catch.
             if DEEP or sz < 200:
                 ic = con.execute("PRAGMA quick_check").fetchone()[0]
+                if ic == "ok":
+                    ic = "ok(quick_check)"
             else:
                 con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
                 ic = "readable(deep-check-skipped)"
@@ -413,9 +569,13 @@ def c_databases():
 @collector
 def c_cortex():
     section("CORTEX")
-    cdir = H / "cortex"
+    # Resolve the cortex DIRECTORY the same way as the database: it may be the shared
+    # store at the root home rather than under the profile.
+    dbp = cortex_db_path()
+    cdir = dbp.parent if dbp else (H / "cortex")
     if not cdir.exists():
         fact("note", "no cortex dir"); return
+    fact("cortex_dir", str(cdir))
     md = list(cdir.rglob("*.md"))
     fact("pages_on_disk", len(md))
     daily = cdir / "daily"
@@ -429,14 +589,14 @@ def c_cortex():
             fact("newest_journal", "NONE — daily dir is empty")
             # where ARE journals landing? the configured store being empty while another
             # tree receives writes is the exact live bug on this host.
-            alt = sh(f"find {SQ(str(H))} {SQ(str(HOME / '.openclaw'))} -maxdepth 4 "
+            alt = sh(f"find {SQ(str(H))} -maxdepth 4 "
                      f"-type d -name daily -not -path {SQ(str(H / 'cortex') + '/*')} "
                      f"2>/dev/null | head -3", timeout=10)
             if alt:
                 for a in alt.splitlines():
                     n = sh(f"ls -1 '{a}'/*.md 2>/dev/null | wc -l").strip()
                     OUT.append(f"  ALT_JOURNAL_DIR: {a} ({n} md files)")
-    db = next((c for c in (cdir/".plugin.db", cdir/"cortex.db") if c.exists()), None)
+    db = cortex_db_path()
     if db:
         try:
             con = ro_connect(db)
@@ -586,11 +746,8 @@ def c_config():
     sk = H / "skills"
     if sk.exists():
         fact("skills_local", len([d for d in sk.iterdir() if d.is_dir()]))
-    # stale path references
-    stale = sh(f"grep -rl --include='*.md' --include='*.yaml' --include='*.py' "
-               f"'openclaw' {SQ(str(H / 'workflows'))} {SQ(str(H / 'skills'))} "
-               f"2>/dev/null | head -200 | wc -l", timeout=20)
-    fact("files_referencing_openclaw", stale.strip())
+    fact("config_profiles", len([d for d in (H / "profiles").iterdir() if d.is_dir()])
+         if (H / "profiles").is_dir() else 0)
 
 # ---------------------------------------------------------------- backups
 @collector
@@ -642,8 +799,14 @@ def c_backups():
 
 # ---------------------------------------------------------------- main
 def main():
+    # The hostname is genuinely useful when triaging a fleet (which box is this?), but
+    # it is also identifying. Default to a stable short hash; --show-host opts in when
+    # the operator wants the real name in their own private output.
     host = sh("hostname -s")
-    print(f"# ROBUSTIFY COLLECTOR REPORT")
+    if "--show-host" not in sys.argv:
+        import hashlib
+        host = "host-" + hashlib.sha256(host.encode()).hexdigest()[:8]
+    print("# ROBUSTIFY COLLECTOR REPORT")
     print(f"host: {host}")
     print(f"collected_at: {datetime.now().astimezone().isoformat(timespec='seconds')}")
     for fn in (c_machine, c_disk_trend, c_jobs, c_job_output, c_logs,
@@ -652,7 +815,14 @@ def main():
         fn()
     OUT.append("\n## COLLECTOR_SELF_HEALTH")
     OUT.append(f"collectors_failed: {len(FAILED)} {FAILED if FAILED else ''}")
-    print("\n".join(OUT))
+    if STALE_READS:
+        OUT.append(f"stale_immutable_reads: {sorted(set(STALE_READS))} — these databases "
+                   f"could only be opened with immutable=1, which IGNORES the -wal file. "
+                   f"Any conclusion drawn from them may reflect a pre-checkpoint image.")
+    # Redact at the FINAL chokepoint: many findings are emitted via OUT.append directly
+    # rather than through fact(), so redacting only in fact() would leak paths from
+    # exactly the lines that matter most (failures, alt dirs, log excerpts).
+    print(redact("\n".join(OUT)))
 
 if __name__ == "__main__":
     main()

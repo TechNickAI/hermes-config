@@ -32,6 +32,12 @@ This skill is deliberately split in two:
 1. **`scripts/robustify_collect.py`** — deterministic, stdlib-only, no LLM, no network.
    It gathers facts and refuses to interpret them. Every collector is fail-soft: a
    broken collector reports its own failure rather than killing the run.
+
+   It is read-only against everything it inspects, with **one deliberate exception**: it
+   maintains its own small SQLite history at `$HERMES_HOME/robustify/disk_history.db` so
+   it can report a disk _trajectory_ rather than a single instantaneous number. Rows
+   older than 30 days are pruned each run. It never writes to any database it monitors.
+
 2. **You** — you read the fact sheet and do the part a script cannot: correlate across
    subsystems, decide what is a real incident versus an artifact, and choose what to fix
    versus escalate.
@@ -56,8 +62,13 @@ deliberately passive and read-only.
 
 ```bash
 python3 scripts/robustify_collect.py              # ~1-2s, all collectors
-python3 scripts/robustify_collect.py --deep       # adds sqlite PRAGMA quick_check
+python3 scripts/robustify_collect.py --deep       # force PRAGMA quick_check on every db
+python3 scripts/robustify_collect.py --show-host  # real hostname instead of a hash
 ```
+
+The hostname is hashed by default (`host-c3263a4b`) so reports can be pasted into
+tickets and chats without leaking machine names; `--show-host` opts in. Paths under the
+home directory are rewritten to `~` / `$HERMES_HOME` on output.
 
 Against another agent's home, or another host:
 
@@ -70,27 +81,30 @@ Pipe the script over stdin rather than quoting it into `ssh ... python3 -c`. Mul
 inline shell over SSH silently returns a single blank line often enough to waste an
 hour.
 
-`--deep` runs `PRAGMA quick_check`, which costs ~40s on a multi-GB state database. Fine
-for a daily pass, too slow for a frequent one. The default skips it and says so in the
-output rather than implying the check passed.
+**What `--deep` actually changes.** Databases under 200MB are quick-checked on _every_
+run because it is cheap; `--deep` forces the check on the large ones too. On a multi-GB
+state database that costs ~20-40s, which is fine daily and too slow every 15 minutes.
+The label distinguishes the two outcomes precisely: `integrity=ok(quick_check)` means
+the check ran and passed, `integrity=readable(deep-check-skipped)` means only that the
+file opened and answered a query. Never read the second as the first.
 
 ## What it collects
 
-| Section                 | Answers                                                      |
-| ----------------------- | ------------------------------------------------------------ |
-| `MACHINE`               | disk, memory, thermal, clock drift, timezone                 |
-| `DISK_TRAJECTORY`       | is disk trending toward full, and how many hours out         |
-| `SCHEDULED_JOBS`        | what never ran, what is stalled, what is overdue             |
-| `JOB_OUTPUT_FRESHNESS`  | which jobs "succeed" while producing nothing                 |
-| `LOGS`                  | log volume and whether rotation is actually happening        |
-| `PROCESSES`             | gateways per profile, RSS per profile, failing launchd units |
-| `DATABASES`             | size and integrity of state / cortex / executions / kanban   |
-| `CORTEX`                | page counts, journal freshness, FTS index queryability       |
-| `INTEGRATIONS_PASSIVE`  | last activity per channel, credential presence, file mode    |
-| `USER_SURFACE`          | listening sockets, PM2 process health and restart counts     |
-| `CONFIG`                | version, install SHA, model block, timezone, skill count     |
-| `BACKUPS`               | success/failure counts and **consecutive trailing failures** |
-| `COLLECTOR_SELF_HEALTH` | which collectors failed — the monitor monitoring itself      |
+| Section                 | Answers                                                                                 |
+| ----------------------- | --------------------------------------------------------------------------------------- |
+| `MACHINE`               | disk, memory, thermal, clock drift, timezone                                            |
+| `DISK_TRAJECTORY`       | is disk trending toward full, and how many hours out                                    |
+| `SCHEDULED_JOBS`        | what never ran, what is stalled, what is overdue                                        |
+| `JOB_OUTPUT_FRESHNESS`  | which jobs "succeed" while producing nothing, judged against each job's OWN cadence     |
+| `LOGS`                  | log volume and whether rotation is actually happening                                   |
+| `PROCESSES`             | gateways per profile, RSS per profile, failing launchd (macOS) or systemd (Linux) units |
+| `DATABASES`             | size and integrity of state / cortex / executions / kanban                              |
+| `CORTEX`                | page counts, journal freshness, FTS index queryability                                  |
+| `INTEGRATIONS_PASSIVE`  | last activity per channel, credential presence, file mode                               |
+| `USER_SURFACE`          | listening sockets, PM2 process health and restart counts                                |
+| `CONFIG`                | version, install SHA, model block, timezone, skill count                                |
+| `BACKUPS`               | success/failure counts and **consecutive trailing failures**                            |
+| `COLLECTOR_SELF_HEALTH` | which collectors failed — the monitor monitoring itself                                 |
 
 ## Reading the output
 
@@ -104,8 +118,8 @@ facts only, no interpretation.
    than listing symptoms separately.
 2. Classify each finding: BROKEN NOW / WILL BREAK SOON / COSMETIC / NOT A PROBLEM.
 3. For each real finding: state the likely cause, the evidence line(s) it rests
-   on, and whether it is safe to auto-fix (restart/rotate/clear-cache class) or
-   needs a human.
+   on, and which escalation tier it falls into (see the ladder below). Do not
+   invent a repair authorization the ladder does not grant.
 4. Explicitly call out anything that looks alarming but is actually FINE —
    false-positive suppression matters as much as detection.
 5. Note what you CANNOT determine from this data and what you'd collect next.
@@ -124,31 +138,48 @@ benign, and a monitor that cries wolf gets ignored within a week.
 These are wrong readings that were made against real data. The collector emits the
 disambiguating fact in each case — use it.
 
+1. **Output staleness is measured against each job's own schedule, not a flat number.**
+   `output_stale_vs_own_cadence_enabled` already accounts for weekly and monthly jobs; a
+   weekly job with 60-hour-old output is healthy and is not counted.
+   `output_stale_total` is the raw count including disabled jobs and is expected to be
+   larger — do not report it as the problem count.
+
 1. **A stale `running` row is not a stalled job.** On one host, 3 of 4 long-running rows
    belonged to jobs that had since completed 26-85 times: orphan rows from a crash. The
    collector separates `jobs_stalled_no_later_completion` (real) from
    `jobs_orphan_running_rows_benign` (noise). Age alone is the wrong discriminator; the
    presence of a _later terminal run for the same job_ is the right one.
 
-2. **"No row in executions.db" does not mean "never ran."** That database retains ~20
+1. **"No row in executions.db" does not mean "never ran."** That database retains ~20
    hours on a busy host. The collector distinguishes `jobs_no_evidence_of_ever_running`
    (no execution row AND no output file — real) from
    `jobs_last_ran_before_retention_window` (ran, just outside the window — expected).
    Always read `execution_retention_hours` before drawing conclusions about job history.
 
-3. **A nonzero launchd `last_exit` may predate a manual fix.** It is the last run's
+1. **A nonzero launchd `last_exit` may predate a manual fix.** It is the last run's
    code, not current state. Corroborate with the unit's own log age, which the collector
    emits as `last_run_log_age_h`.
 
-4. **High restart counts are not an outage.** `restarts=262` alongside
+1. **High restart counts are not an outage.** `restarts=262` alongside
    `current_uptime=7.3h` means it crashed a lot historically and is stable now. Both
    facts matter; neither alone tells the story.
 
-5. **`integrity=readable(deep-check-skipped)` is not `integrity=ok`.** It means the
+1. **`integrity=readable(deep-check-skipped)` is not `integrity=ok`.** It means the
    database opened and answered a query. Run `--deep` before claiming integrity.
 
-6. **Backup success counts are meaningless without the consecutive-failure count.** 4
-   successes and 573 failures is a broken backup, not a working one.
+1. **Backup success counts are meaningless without the consecutive-failure count.** 4
+   successes and 573 failures is a broken backup, not a working one. Conversely
+   `consecutive_failures: 0` with a recent `last_success_hours_ago` is healthy no matter
+   how ugly the lifetime failure count looks.
+
+1. **`stale_immutable_reads` in the self-health section invalidates conclusions.** It
+   means a database could only be opened with `immutable=1`, which ignores the `-wal`
+   file. Anything derived from that database may reflect a pre-checkpoint image — re-run
+   before acting on it.
+
+1. **A hashed hostname is stable per machine.** `host-c3263a4b` is the same box across
+   runs, so it still groups a fleet correctly without naming anything. Use `--show-host`
+   only for local reading.
 
 ## Pitfalls found building this
 
@@ -162,10 +193,10 @@ disambiguating fact in each case — use it.
    a node test runner in a checkout whose path contained "hermes", inflating the gateway
    count and reporting a 14MB RSS that belonged to the wrong process entirely.
 
-3. **Unanchored launchd label matching is worse.** A filter of `/hermes|ace/` matched
-   `com.apple.facetimemessagestored` and `com.apple.appplaceholdersyncd` — the substring
-   "ace". Two Apple system daemons were reported as failing Hermes services. Anchor on
-   `^ai\.hermes\.`.
+3. **Unanchored launchd label matching is worse.** A filter that included an agent
+   nickname as a bare alternation matched two unrelated Apple system daemons whose names
+   merely contained those three letters, and reported them as failing Hermes services.
+   Never match service labels on a short substring. Anchor on `^ai\.hermes\.`.
 
 4. **`sqlite3.connect(file:X?mode=ro)` is lazy.** It succeeds at connect time and only
    raises on the first query, because a WAL database needs a `-shm` sidecar that
@@ -185,10 +216,17 @@ Layer the checks; each catches what the one above cannot see.
 
 | Frequency | Scope                                       | LLM?                                          |
 | --------- | ------------------------------------------- | --------------------------------------------- |
-| 5 min     | disk and memory hard limits                 | no — script only, silent when healthy         |
-| 30 min    | gateway presence, database integrity        | no                                            |
+| 5 min     | disk and memory hard limits                 | no — needs a separate threshold alarm (below) |
+| 30 min    | gateway presence, database readability      | no                                            |
 | Hourly    | full collector + LLM read, auto-fix in-lane | yes, cheap model                              |
 | Daily     | `--deep`, backup verification, digest       | yes, escalate to a stronger model on findings |
+
+**The 5-minute row is not this collector.** This script emits facts; it has no
+thresholds and raises no alarms. A sub-minute alarm plane is a separate, much dumber
+script that compares two numbers and exits silent when healthy. Do not schedule this
+collector every 5 minutes and assume you have hard-limit alerting — you would have a
+fact sheet nobody reads, which is how the "watchdog reported healthy while broken"
+failure happens.
 
 **Run it from outside the agent it monitors as well as inside.** A wedged agent cannot
 report that it is wedged; every self-check runs inside the process that would be down.
@@ -197,11 +235,20 @@ the internal and external view is itself a signal.
 
 ## Escalation
 
+Tier 2 is an **allowlist, not a category**. If the specific action is not on this list,
+it is tier 3, no matter how safe it feels. "Restart it" is not self-evidently
+reversible: restarting a gateway drops in-flight work, and clearing a cache can destroy
+the very evidence needed to diagnose the cause.
+
 1. **Log** — within variance, or a first occurrence that self-resolved
-2. **Auto-fix** — config-only, reversible, non-sensitive. Never user data, prompts, or
-   memory.
-3. **Surface, don't fix** — anything touching user-visible data, credentials, or state
-   that a wrong fix would corrupt. A silently-mangling job auto-repaired is worse than
+2. **Auto-fix (allowlisted actions only)** — each requires the stated evidence first:
+   rotate or truncate a log file, given `LARGE_LOG` plus a confirmed rotation gap;
+   re-run a single failed job, given `FAILING_JOB ... STILL_FAILING` and a job known to
+   be idempotent; restart a gateway that is absent from `PROCESSES` while its supervisor
+   expects it. Anything else, including config edits, is tier 3.
+3. **Surface, don't fix** — anything touching user-visible data, credentials, memory,
+   prompts, or state that a wrong fix would corrupt; anything with no confirmed cause;
+   anything already attempted twice. A silently-mangling job auto-repaired is worse than
    one left broken.
 4. **Wake a human** — blast radius is fleet-wide, or repair attempts are exhausted.
    Always with cause and blast radius attached, never a raw alert.
