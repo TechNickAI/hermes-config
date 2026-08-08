@@ -112,7 +112,7 @@ Four `SOUL.md` starters: `personal-assistant`, `engineer`, `it-admin`,
 the single highest-leverage file in your setup. Copy one, then make it yours. See
 [`templates/soul/README.md`](templates/soul/README.md).
 
-### `skills/`: 21 procedural skills
+### `skills/`: 22 procedural skills
 
 Skills are markdown procedures the agent loads on demand. **A skill is just a
 directory** — `cp -r` it into `~/.hermes/skills/` and it works.
