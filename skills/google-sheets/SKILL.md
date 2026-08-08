@@ -12,6 +12,9 @@ metadata:
     requires:
       - gog CLI, authorized for Google Sheets and Drive
       - python3
+      - pdftoppm (poppler-utils), for multipage visual QA rasterization
+      - uv, to run the XLSX verification snippets
+      - openpyxl, via `uv run --with openpyxl` (not a standing install)
     tags: [google, sheets, drive, csv, formatting, productivity]
     related_skills: [google-docs, google-slides]
 ---
