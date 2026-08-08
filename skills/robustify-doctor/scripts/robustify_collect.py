@@ -239,6 +239,14 @@ def c_disk_trend():
 def c_jobs():
     section("SCHEDULED_JOBS")
     jf = H / "cron" / "jobs.json"
+    if not jf.exists():
+        # A member with no scheduler configured is a legitimate state, not a broken
+        # collector. Raising here marked the whole run collectors_failed=1 on a
+        # perfectly healthy agent, which is the false-alarm class this tool exists to
+        # avoid. Say plainly that there is nothing to check.
+        fact("note", "no cron/jobs.json — this agent has no scheduled jobs configured")
+        fact("jobs_total", 0)
+        return
     jobs = json.loads(jf.read_text())
     jobs = jobs if isinstance(jobs, list) else jobs.get("jobs", [])
     enabled = [j for j in jobs if j.get("enabled", True)]
