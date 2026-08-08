@@ -165,12 +165,13 @@ directory** — `cp -r` it into `~/.hermes/skills/` and it works.
 
 **Fleet / infrastructure — for multi-host setups**
 
-| Skill              | What it does                                              |                 |
-| ------------------ | --------------------------------------------------------- | --------------- |
-| `cron-healthcheck` | Detect broken cron jobs; triage cheap, fix expensive      | **needs setup** |
-| `mini-app`         | Add/protect/troubleshoot an app on the mini-app router    | **needs setup** |
-| `omnirouter`       | Operate a self-hosted multi-provider LLM router           | **needs setup** |
-| `report`           | File a bug or piece of feedback from any platform session |                 |
+| Skill              | What it does                                                  |                 |
+| ------------------ | ------------------------------------------------------------- | --------------- |
+| `cron-healthcheck` | Detect broken cron jobs; triage cheap, fix expensive          | **needs setup** |
+| `robustify-doctor` | Collect agent health facts, then read them for real incidents |                 |
+| `mini-app`         | Add/protect/troubleshoot an app on the mini-app router        | **needs setup** |
+| `omnirouter`       | Operate a self-hosted multi-provider LLM router               | **needs setup** |
+| `report`           | File a bug or piece of feedback from any platform session     |                 |
 
 **Migration**
 
