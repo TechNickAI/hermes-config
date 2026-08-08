@@ -163,6 +163,12 @@ Notes:
 
 - **`claude-review` posts as a CHECK, not a comment** — its pass/fail shows in
   `gh pr checks <N>`, not in the comment endpoints. Read it there.
+- **Cursor Bugbot `NEUTRAL` conclusion is not a blocker.** After addressing all
+  actionable findings, Cursor sometimes posts a final review with `NEUTRAL` (not
+  `pass`). This is advisory — it means Cursor ran but had nothing new to flag. Do not
+  wait for it to flip to `pass`; proceed to merge when pre-commit and claude-review are
+  green. `Cursor Bugbot: skipping` similarly means it ran and passed the latest commit's
+  changes.
 - **Only act on the most recent Claude/PR-level bot review.** Older ones reflect
   outdated code — that is why the review-summary query slurps all paginated pages, sorts
   globally by `submitted_at`, and reverses, so the newest verdict is first; ignore
@@ -194,6 +200,14 @@ changed that code, the comment is stale-anchored — reply that it's resolved (c
 fix SHA) rather than "re-fixing." Cursor embeds `<!-- BUGBOT_BUG_ID: <uuid> -->`; the
 same uuid reappearing means the same finding, not a new one.
 
+**Subtler case (confirmed 2026-06-23):** after a fix push, the bot may re-review and
+anchor the _same_ `BUGBOT_BUG_ID` to the fix commit's new line numbers. The step-4
+`commit_id` filter will classify it as a "new finding on the fix commit." The correct
+test is not the commit — it is: **does the current code still exhibit the described
+bug?** If your fix changed that code and the answer is no, it is stale-anchored. Decline
+with the fix SHA and a one-line note. Do not re-fix code that is already correct just
+because the bot re-posted with a new anchor.
+
 ### 5. Triage each comment
 
 Ask: **"Is this suggestion correct given context the bot lacks?"** Verify against the
@@ -219,6 +233,19 @@ false-positive classes (each is a _decline-with-explanation_, not a skip):
 - **Redundant type/null checks** already guaranteed by the type system or handled by
   runtime validation at another layer.
 - **Premature optimization** with no profiling data showing a real problem.
+
+**Verify API/schema claims against the live source before Fix-or-Decline.** When a bot
+asserts a factual claim about an external API — "this field isn't in the schema", "the
+cap is N", "the endpoint returns X" — don't accept OR decline from memory. Probe the
+live API (a one-shot `curl`) and let the result decide. This session both directions
+fired on the same PR: a bot said `filters.recency_days` was unsupported — the API
+returned HTTP 200 but _silently ignored_ the unknown field (so recency-scoped queries
+came back unfiltered → real bug, real fix via the documented `from_date` mechanism); and
+a bot said the X-handle cap was higher than the code enforced — the API accepted 20
+handles where the code capped at 5 (→ real bug, cap was wrong). Note the trap: **HTTP
+200 does not mean the field was honored** — many APIs accept-and-ignore unknown keys, so
+"it didn't error" is not proof the parameter worked. Confirm the _effect_, not just the
+status code.
 
 **Decline as WONTFIX** when correct but explicitly unwanted: accessibility when it isn't
 a project priority, i18n in an English-only tool, micro-optimizations on cold paths,

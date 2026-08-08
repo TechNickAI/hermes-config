@@ -139,6 +139,14 @@ gog sheets get "$SID" "Sheet1!A1:E7" --json --no-input          # values correct
 python3 scripts/gworkspace.py meta "$SID"                        # native Sheet MIME?
 ```
 
+For financial/legal spreadsheets, verify **labels and values together** on key rows, not
+just totals in isolation. A workbook can have correct numbers but one-row-shifted labels
+after template filling or Drive import. Read back representative ranges from the live
+Google Sheet (for example `Income Statement!A8:F20` and the final total rows) and
+confirm the label-value alignment matches the source template. See
+`references/xlsx-financial-workbook-verification.md` for the full checklist and command
+snippets.
+
 For formatting, read back via the API with `includeGridData=true` and confirm
 `userEnteredFormat` on the styled range. A successful `format` call returns the applied
 field mask; that confirms acceptance, but a grid-data read confirms the actual stored
@@ -152,7 +160,81 @@ format.
 - Prefer `append` over `update` when adding rows to a live sheet to avoid clobbering.
 - `gog sheets clear` is destructive; confirm the range first.
 
+## Multi-tab workbooks + visual QA (learned the hard way)
+
+`gog v0.9.0` has **no add-sheet command**. Do NOT respond by flattening tabs into one
+sheet with `----- SECTION -----` banners — that produces an unusable document. Create
+all tabs in ONE `spreadsheets.create` call via the raw API:
+
+```python
+api("https://sheets.googleapis.com/v4/spreadsheets", {
+  "properties": {"title": TITLE},
+  "sheets": [{"properties": {"sheetId": 0, "title": "Summary",
+              "gridProperties": {"rowCount": 40, "columnCount": 6,
+                                 "frozenRowCount": 1}}}, ...]})
+```
+
+Then `values:batchUpdate` with `"valueInputOption": "USER_ENTERED"` and one entry per
+`'Tab Name'!A1`. Formatting goes through `:batchUpdate` (`repeatCell`,
+`updateDimensionProperties`, `addConditionalFormatRule`, `setBasicFilter`,
+`updateSheetProperties.gridProperties.hideGridlines`).
+
+### Never strip formulas to "values only"
+
+Writing `"'" + formula` to neuter a formula renders as literal `'=SUM(H3:H14)` text in
+the cell. That is the single most visible way to ship a broken-looking sheet. Keep real
+formulas and let `USER_ENTERED` evaluate them.
+
+### Mandatory verification before handing over
+
+1. **Literal-formula scan** — read every tab with `valueRenderOption=FORMATTED_VALUE`
+   and assert no displayed cell starts with `=` or `'=`, and none contain `#REF`,
+   `#ERROR`, `#NAME`. A formula that works shows `$2,380.00`, never `=SUM(...)`.
+2. **Formula liveness** — read the same range with `valueRenderOption=FORMULA` and
+   confirm the underlying `=SUM(...)` is still there.
+3. **Visual QA** — export each tab to PDF and actually look at it:
+   ```bash
+   curl -sL -H "Authorization: Bearer $TOK" \
+     "https://docs.google.com/spreadsheets/d/$SID/export?format=pdf&gid=$GID&portrait=false&fitw=true&gridlines=false" -o tab.pdf
+   sips -s format png --resampleWidth 1700 tab.pdf --out tab.png
+   ```
+   Then inspect the PNG with a vision tool. This catches what APIs cannot: truncated
+   columns, sentences split mid-thought across rows, header text that contradicts the
+   content ("THE THREE BUCKETS" above four items), unreadable CODE_NAME labels. Note:
+   PDF export renders `verticalAlignment: MIDDLE` as top-aligned — verify alignment via
+   `includeGridData=true&fields=...effectiveFormat` instead, not the PDF.
+
+### Layout rules that survived review
+
+- Long prose goes in ONE cell with `wrapStrategy: WRAP` + a wide column, never split
+  across consecutive rows — that reads as a formatting bug.
+- Set explicit `pixelSize` row heights for wrapped narrative rows so text can breathe.
+- `hideGridlines: True` on summary/report tabs; keep them on data tabs.
+- Human-readable labels (`Personal funds`) beat internal codes (`PERSONAL`).
+- For financial summaries include a **control total** proving the parts sum to the
+  source total — reviewers flag its absence immediately.
+- Make counts consistent everywhere (don't say "127 transactions" up top and "79
+  transactions" in the total; state what the difference is).
+
+### Don't litter Drive
+
+Each rebuild attempt creates a NEW spreadsheet. Track the current id, and
+`gog drive delete <id> --force` every superseded draft before sharing. Verify the
+survivor with `gog drive get <id>` (check `trashed`) and confirm the share landed on the
+FINAL id — sharing an early draft while polishing a later one is an easy, embarrassing
+miss.
+
 ## Common Pitfalls
+
+0. **XLSX formula cache trap on funder/legal deliverables.** Libraries like `openpyxl`
+   write formulas (`=SUM(...)`) but do not calculate and store cached results. Excel may
+   recalculate on open, but Quick Look, Numbers previews, Drive conversion, and some
+   Google Sheets imports may show `$0`, blank, or stale values. For external-facing
+   financial workbooks where values must display correctly everywhere, prefer writing
+   static computed values from Python instead of formulas. If formulas are required,
+   verify after upload by reading the live Google Sheet values with `gog sheets get`.
+   Also ensure labels do not start with `=` (e.g. `= SOIL NET...`) or spreadsheet tools
+   will treat them as formulas.
 
 1. **Positional values instead of `--values-json`.** In `gog v0.9.0`,
    `gog sheets update SID RANGE '[[...]]'` treats the JSON string as a single flat
@@ -190,6 +272,15 @@ format.
 8. **Sharing is irreversible.**
    `scripts/gworkspace.py share SHEET_ID --email ... --role ...` grants real Drive
    access. Confirm recipient and role with the user before using it.
+
+9. **Array index vs. A1 row number (off-by-one).** `gog sheets get` returns values as a
+   0-indexed array where index 0 is the header row. A1 notation is 1-indexed from the
+   top of the sheet: the header is row 1, the first data row is row 2. So array index N
+   maps to A1 row N+1. When updating a single cell by row, always compute
+   `sheet_row = array_index + 1`. Failing to add 1 writes to the row above the target --
+   and since `update` silently overwrites whatever is there, the only safety net is
+   reading back the updated cell and checking that the task/label in the same row
+   matches what you intended to update.
 
 ## One-Shot Recipe
 
