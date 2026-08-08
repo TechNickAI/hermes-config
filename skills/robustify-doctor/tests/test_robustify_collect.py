@@ -6,6 +6,7 @@ has no third-party dependencies so it works from a bare clone, matching the coll
 itself.
 """
 import importlib.util
+import shlex
 import sys
 from pathlib import Path
 
@@ -70,17 +71,46 @@ def test_weekly_job_is_not_stale_at_48h():
 
 def test_gateway_regex_matches_real_argv_and_rejects_lookalikes():
     """Guards the two verified false-detection bugs."""
-    real = ("/opt/homebrew/.../Python -m hermes_cli.main --profile alpha gateway run --replace")
+    real = "python -m hermes_cli.main --profile alpha gateway run --replace"
     assert rc.GW_RE.search(real)
     # a node test runner in a checkout whose path merely contains "hermes"
-    lookalike = "node /home/u/src/hermes-thing/node_modules/.bin/x --test gateway.test.ts"
+    lookalike = "node ./src/hermes-thing/node_modules/.bin/x --test gateway.test.ts"
     assert not rc.GW_RE.search(lookalike)
 
 
 def test_sq_quotes_paths_with_spaces():
-    quoted = rc.SQ("/Users/some one/.hermes")
-    assert " " not in quoted.strip("'\"") or quoted != "/Users/some one/.hermes"
-    assert quoted.startswith("'") or "\\" in quoted
+    """A home directory containing a space must survive shell interpolation."""
+    raw = str(Path("~/some dir/.hermes"))
+    quoted = rc.SQ(raw)
+    assert quoted != raw, "a path with a space must be quoted or escaped"
+    # the quoting must round-trip back to the original argument
+    assert shlex.split(quoted) == [raw]
+
+
+def test_job_id_lookup_is_string_keyed():
+    """Numeric job ids must still match their string-named output directory.
+
+    Output dirs are named by the id as a string. If the cadence map keeps a raw int
+    key, every lookup misses, cadence silently reverts to the 48h default, and the
+    weekly false alarms come straight back.
+    """
+    jobs = [{"id": 12345, "name": "numeric", "enabled": True,
+             "schedule": {"kind": "cron", "expr": "0 9 * * 1"}}]
+    expected = {str(j["id"]): rc.expected_interval_h(j) for j in jobs}
+    assert expected.get("12345") == 168.0, "string-keyed lookup must find a numeric id"
+
+
+def test_cortex_root_derives_from_target_home_not_process_home():
+    """The shared-cortex fallback must follow HERMES_HOME, not the collector's own $HOME.
+
+    When inspecting another agent's profile, using our own home would check OUR cortex
+    and report the target's as MISSING.
+    """
+    profile = Path("/srv/agents/other/.hermes/profiles/beta")
+    roots = [p / "cortex" for p in profile.parents if p.name == ".hermes"]
+    assert roots == [Path("/srv/agents/other/.hermes/cortex")], (
+        "root hermes home must be derived from the target path"
+    )
 
 
 if __name__ == "__main__":

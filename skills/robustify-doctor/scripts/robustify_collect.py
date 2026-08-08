@@ -103,9 +103,18 @@ def cortex_db_path():
     muted. Check the profile location first, then the root home.
     """
     roots = [H / "cortex"]
-    root_home = HOME / ".hermes" / "cortex"
-    if root_home not in roots:
-        roots.append(root_home)
+    # Derive the TARGET agent's root Hermes home from H itself. Using the collector
+    # process's own $HOME here is wrong whenever HERMES_HOME points into a different
+    # tree (inspecting another user's or another host's mounted profile) — it would
+    # check our cortex and report the target's as MISSING.
+    for parent in H.parents:
+        if parent.name == ".hermes":
+            if (parent / "cortex") not in roots:
+                roots.append(parent / "cortex")
+            break
+    fallback = HOME / ".hermes" / "cortex"
+    if fallback not in roots:
+        roots.append(fallback)
     for r in roots:
         for name in (".plugin.db", "cortex.db"):
             if (r / name).exists():
@@ -333,20 +342,41 @@ def c_jobs():
             pass
 
     outdir = H / "cron" / "output"
-    absent = [j for j in enabled if j.get("id") not in ran_ids]
-    truly_never, ran_outside_window = [], []
+    # Execution-row ids come from sqlite and may be int; job ids from JSON may be str.
+    # Compare as strings so a type mismatch cannot fake a "never ran" finding.
+    ran_ids_s = {str(r) for r in ran_ids}
+    absent = [j for j in enabled if str(j.get("id")) not in ran_ids_s]
+    truly_never, ran_outside_window, not_yet_due = [], [], []
+    now_utc = datetime.now(timezone.utc)
     for j in absent:
         d = outdir / str(j.get("id"))
         files = [f for f in d.glob("*") if f.is_file()] if d.exists() else []
         if files:
             newest = max(f.stat().st_mtime for f in files)
             ran_outside_window.append((j, (time.time() - newest) / 3600))
-        else:
-            truly_never.append(j)
+            continue
+        # A newly created job whose first scheduled time has not arrived yet correctly
+        # has no execution row and no output. Calling that NEVER_RAN invents an incident
+        # out of a healthy pending job, so separate the two.
+        nr = j.get("next_run_at")
+        pending = False
+        if nr:
+            try:
+                t = datetime.fromisoformat(str(nr).replace("Z", "+00:00"))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+                pending = t > now_utc
+            except Exception:
+                pending = False
+        (not_yet_due if pending else truly_never).append(j)
 
     fact("jobs_no_evidence_of_ever_running", len(truly_never))
     for j in truly_never:
         OUT.append(f"  NEVER_RAN: {str(j.get('name'))[:44]} | id={j.get('id')} | no execution row AND no output file")
+    fact("jobs_pending_first_run", len(not_yet_due))
+    for j in not_yet_due:
+        OUT.append(f"  PENDING_FIRST_RUN: {str(j.get('name'))[:40]} | next_run_at={j.get('next_run_at')} "
+                   f"| not yet due, absence of output is expected")
     fact("jobs_last_ran_before_retention_window", len(ran_outside_window))
     for j, age in sorted(ran_outside_window, key=lambda x: -x[1]):
         OUT.append(f"  RAN_OUTSIDE_WINDOW: {str(j.get('name'))[:40]} | last output {age:.0f}h ago")
@@ -384,12 +414,21 @@ def c_job_output():
     try:
         jj = json.loads((H / "cron" / "jobs.json").read_text())
         jj = jj if isinstance(jj, list) else jj.get("jobs", [])
-        names = {j.get("id"): (j.get("name") or "?") for j in jj}
-        enabled_ids = {j.get("id") for j in jj if j.get("enabled", True)}
-        expected = {j.get("id"): expected_interval_h(j) for j in jj}
-    except Exception:
+        # Output directories are named by the job id as a STRING. Job ids in jobs.json
+        # may be numeric, so every lookup key is coerced to str — otherwise
+        # expected.get(dirname) misses, cadence silently falls back to the 48h default
+        # (reintroducing the weekly false alarms this logic exists to remove), and the
+        # enabled filter drops genuinely stale jobs.
+        names = {str(j.get("id")): (j.get("name") or "?") for j in jj}
+        enabled_ids = {str(j.get("id")) for j in jj if j.get("enabled", True)}
+        expected = {str(j.get("id")): expected_interval_h(j) for j in jj}
+        jobs_loaded = True
+    except Exception as e:
+        names = {}
         enabled_ids = set()
         expected = {}
+        jobs_loaded = False
+        fact("jobs_manifest_error", f"{type(e).__name__}: {str(e)[:60]}")
     now = time.time()
     stale, empty = [], []
     dirs = [d for d in outdir.iterdir() if d.is_dir()]
@@ -413,8 +452,17 @@ def c_job_output():
     fact("output_dirs_empty", len(empty))
     for e in empty[:8]:
         OUT.append(f"  NO_OUTPUT: {e} | {names.get(e,'?')[:40]}")
-    # only stale-flag jobs that are still ENABLED — a disabled job's old output is expected
-    stale_enabled = [s for s in stale if not enabled_ids or s[0] in enabled_ids]
+    # Only stale-flag jobs that are still ENABLED — a disabled job's old output is
+    # expected. An EMPTY enabled set is ambiguous: it means either "every job is
+    # disabled" or "jobs.json could not be read". Treating it as "include everything"
+    # turns an unreadable manifest into a page of false staleness alarms, so say which
+    # case it is and count nothing.
+    if jobs_loaded:
+        stale_enabled = [s for s in stale if s[0] in enabled_ids]
+    else:
+        stale_enabled = []
+        fact("output_staleness", "UNDETERMINED — jobs.json unreadable, cannot tell "
+                                 "enabled from disabled jobs")
     fact("output_stale_vs_own_cadence_enabled", len(stale_enabled))
     fact("output_stale_total", len(stale))
     for n, a, s, exp, th in sorted(stale_enabled, key=lambda x: -x[1])[:8]:
