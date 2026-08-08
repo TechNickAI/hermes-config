@@ -302,8 +302,10 @@ question), not a summary and not a call to action.
    undo that by quoting only the loudest handle.
 
 8. **Assuming `scripts/rank.py` echoes input `id` fields.** It does not. Pipeline
-   callers must join ranked output back to source rows using a real unique `url`, which
-   the ranker preserves. This does not affect the normal interactive flow.
+   callers can join ranked output back to source rows using a real unique, linkable
+   `url`. URLs rejected by `_url_ok` (such as placeholders) are emitted as an empty
+   string, so retain a source-side stable key for those items. This does not affect the
+   normal interactive flow.
 9. **Delegating open-ended source crawls without a call budget.** Broad sequential
    searches can exhaust child-agent time limits. Bound research workers to a small
    source-call budget, require an early draft, then refine from the best evidence found.

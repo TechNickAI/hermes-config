@@ -163,12 +163,12 @@ Notes:
 
 - **`claude-review` posts as a CHECK, not a comment** — its pass/fail shows in
   `gh pr checks <N>`, not in the comment endpoints. Read it there.
-- **Cursor Bugbot `NEUTRAL` conclusion is not a blocker.** After addressing all
-  actionable findings, Cursor sometimes posts a final review with `NEUTRAL` (not
-  `pass`). This is advisory — it means Cursor ran but had nothing new to flag. Do not
-  wait for it to flip to `pass`; proceed to merge when pre-commit and claude-review are
-  green. `Cursor Bugbot: skipping` similarly means it ran and passed the latest commit's
-  changes.
+- **Cursor Bugbot `NEUTRAL` is not proof that findings are cleared.** GitHub may treat
+  the check as successful even when Bugbot reported findings, a newer commit cancelled
+  the run, or the run errored. Inspect the current HEAD's inline findings and confirm
+  every still-live `BUGBOT_BUG_ID` is resolved. A `skipping` or disabled message means
+  Bugbot did not review that push; never treat it as a pass. This skill drives a PR to
+  ready, but merging remains the user's decision.
 - **Only act on the most recent Claude/PR-level bot review.** Older ones reflect
   outdated code — that is why the review-summary query slurps all paginated pages, sorts
   globally by `submitted_at`, and reverses, so the newest verdict is first; ignore
@@ -200,13 +200,13 @@ changed that code, the comment is stale-anchored — reply that it's resolved (c
 fix SHA) rather than "re-fixing." Cursor embeds `<!-- BUGBOT_BUG_ID: <uuid> -->`; the
 same uuid reappearing means the same finding, not a new one.
 
-**Subtler case (confirmed 2026-06-23):** after a fix push, the bot may re-review and
-anchor the _same_ `BUGBOT_BUG_ID` to the fix commit's new line numbers. The step-4
-`commit_id` filter will classify it as a "new finding on the fix commit." The correct
-test is not the commit — it is: **does the current code still exhibit the described
-bug?** If your fix changed that code and the answer is no, it is stale-anchored. Decline
-with the fix SHA and a one-line note. Do not re-fix code that is already correct just
-because the bot re-posted with a new anchor.
+**Subtler case (confirmed in a recent incident):** after a fix push, the bot may
+re-review and anchor the _same_ `BUGBOT_BUG_ID` to the fix commit's new line numbers.
+The step-4 `commit_id` filter will classify it as a "new finding on the fix commit." The
+correct test is not the commit — it is: **does the current code still exhibit the
+described bug?** If your fix changed that code and the answer is no, it is
+stale-anchored. Decline with the fix SHA and a one-line note. Do not re-fix code that is
+already correct just because the bot re-posted with a new anchor.
 
 ### 5. Triage each comment
 

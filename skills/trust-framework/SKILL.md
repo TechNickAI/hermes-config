@@ -390,12 +390,13 @@ just a one-line note if anything):
 
 1. Copy `templates/TRUST.md` to `~/.hermes/trust/TRUST.md` and tune the buckets to my
    work (or let it default to L1 everywhere and grow from there).
-2. Install an always-on guard before relying on the skill. Append
-   `templates/trust-kernel.md` to the persona/context file, or append the shorter
-   `templates/soul-trust-block.md` to `SOUL.md` on Hermes. A skill only loads after the
-   agent chooses it; the always-on block is what makes the act-vs-ask rule fire before
-   consequential reasoning starts. Verify it appears in the live system prompt, not
-   merely that the file exists on disk.
+2. Install an always-on guard before relying on the skill. Prepare a patch that appends
+   `templates/trust-kernel.md` to the persona/context file, or the shorter
+   `templates/soul-trust-block.md` to `SOUL.md` on Hermes. Show the resulting diff and
+   get explicit confirmation before writing accumulated identity/persona state; never
+   overwrite existing content. A skill only loads after the agent chooses it, so the
+   always-on block is what makes the act-vs-ask rule fire before consequential reasoning
+   starts. Verify it appears in the live system prompt, not merely that the file exists.
 3. Optionally schedule a periodic review (e.g. a weekly cron) that reads `TRUST.md`,
    tallies my track record, and updates my levels. Without it, I still run the review
    whenever I've accumulated a batch of resolved decisions.
