@@ -163,6 +163,12 @@ Notes:
 
 - **`claude-review` posts as a CHECK, not a comment** — its pass/fail shows in
   `gh pr checks <N>`, not in the comment endpoints. Read it there.
+- **Cursor Bugbot `NEUTRAL` is not proof that findings are cleared.** GitHub may treat
+  the check as successful even when Bugbot reported findings, a newer commit cancelled
+  the run, or the run errored. Inspect the current HEAD's inline findings and confirm
+  every still-live `BUGBOT_BUG_ID` is resolved. A `skipping` or disabled message means
+  Bugbot did not review that push; never treat it as a pass. This skill drives a PR to
+  ready, but merging remains the user's decision.
 - **Only act on the most recent Claude/PR-level bot review.** Older ones reflect
   outdated code — that is why the review-summary query slurps all paginated pages, sorts
   globally by `submitted_at`, and reverses, so the newest verdict is first; ignore
@@ -177,9 +183,10 @@ Notes:
 ### 4. Separate stale-anchored findings from live ones
 
 After any prior fix push, a bot's inline comment stays anchored to the line numbers of
-the commit it reviewed — it is **not** necessarily a re-finding. Trust the latest
-_check-run_ status over lingering inline text. To isolate findings actually tied to the
-current head:
+the commit it reviewed — it is **not** necessarily a re-finding. A green check-run means
+the tooling ran, not that every inline finding is resolved, so use the check-run only to
+confirm the bot reviewed this head. Resolution is decided per finding, by re-reading the
+current code. To isolate findings actually tied to the current head:
 
 ```bash
 HEAD=$(gh pr view <N> --repo $R --json headRefOid --jq '.headRefOid')
@@ -193,6 +200,14 @@ Read each finding's _description_ against the current file state. If your fix al
 changed that code, the comment is stale-anchored — reply that it's resolved (cite the
 fix SHA) rather than "re-fixing." Cursor embeds `<!-- BUGBOT_BUG_ID: <uuid> -->`; the
 same uuid reappearing means the same finding, not a new one.
+
+**Subtler case (confirmed in a recent incident):** after a fix push, the bot may
+re-review and anchor the _same_ `BUGBOT_BUG_ID` to the fix commit's new line numbers.
+The step-4 `commit_id` filter will classify it as a "new finding on the fix commit." The
+correct test is not the commit — it is: **does the current code still exhibit the
+described bug?** If your fix changed that code and the answer is no, it is
+stale-anchored. Decline with the fix SHA and a one-line note. Do not re-fix code that is
+already correct just because the bot re-posted with a new anchor.
 
 ### 5. Triage each comment
 
@@ -219,6 +234,19 @@ false-positive classes (each is a _decline-with-explanation_, not a skip):
 - **Redundant type/null checks** already guaranteed by the type system or handled by
   runtime validation at another layer.
 - **Premature optimization** with no profiling data showing a real problem.
+
+**Verify API/schema claims against the live source before Fix-or-Decline.** When a bot
+asserts a factual claim about an external API — "this field isn't in the schema", "the
+cap is N", "the endpoint returns X" — don't accept OR decline from memory. Probe the
+live API (a one-shot `curl`) and let the result decide. This session both directions
+fired on the same PR: a bot said `filters.recency_days` was unsupported — the API
+returned HTTP 200 but _silently ignored_ the unknown field (so recency-scoped queries
+came back unfiltered → real bug, real fix via the documented `from_date` mechanism); and
+a bot said the X-handle cap was higher than the code enforced — the API accepted 20
+handles where the code capped at 5 (→ real bug, cap was wrong). Note the trap: **HTTP
+200 does not mean the field was honored** — many APIs accept-and-ignore unknown keys, so
+"it didn't error" is not proof the parameter worked. Confirm the _effect_, not just the
+status code.
 
 **Decline as WONTFIX** when correct but explicitly unwanted: accessibility when it isn't
 a project priority, i18n in an English-only tool, micro-optimizations on cold paths,

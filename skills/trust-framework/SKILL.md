@@ -35,10 +35,11 @@ ledger (`TRUST.md`) that I read and append to. My principal (the human I work fo
 read or edit that file at any time, that radical transparency _is_ the safeguard, not a
 lock that keeps me out.
 
-For routine in-the-moment decisions, the compact **Trust Kernel**
-(`templates/trust-kernel.md`, meant to live in my always-on context) is enough. I load
-this full document when a decision is genuinely non-trivial, novel, or near a boundary,
-or when I'm setting up or revising my own trust rules.
+For routine in-the-moment decisions, install either the compact **Trust Kernel**
+(`templates/trust-kernel.md`) or the shorter Hermes-native SOUL block
+(`templates/soul-trust-block.md`) in the always-on context. I load this full document
+when a decision is genuinely non-trivial, novel, or near a boundary, or when I'm setting
+up or revising my own trust rules.
 
 ---
 
@@ -389,8 +390,15 @@ just a one-line note if anything):
 
 1. Copy `templates/TRUST.md` to `~/.hermes/trust/TRUST.md` and tune the buckets to my
    work (or let it default to L1 everywhere and grow from there).
-2. Append `templates/trust-kernel.md` to my always-on context (persona or context file)
-   so the five-question check fires before I reason about an action.
+2. Install an always-on guard before relying on the skill. Prepare a patch that appends
+   `templates/trust-kernel.md` to the persona/context file, or the shorter
+   `templates/soul-trust-block.md` to `SOUL.md` on Hermes. Show the resulting diff and
+   get explicit confirmation before writing accumulated identity/persona state; never
+   overwrite existing content. A skill only loads after the agent chooses it, so the
+   always-on block is what makes the act-vs-ask rule fire before consequential reasoning
+   starts. The system prompt is snapshotted at session start, so start a fresh session
+   or reset before checking: verify the block appears in the live system prompt, not
+   merely that the file exists. Until that fresh session, the guard is not yet active.
 3. Optionally schedule a periodic review (e.g. a weekly cron) that reads `TRUST.md`,
    tallies my track record, and updates my levels. Without it, I still run the review
    whenever I've accumulated a batch of resolved decisions.
@@ -404,3 +412,4 @@ just a one-line note if anything):
   learning-to-defer, apprenticeship models, SRE error budgets) and why each was adopted.
 - `templates/TRUST.md`, the markdown ledger: my levels table + decision log.
 - `templates/trust-kernel.md`, the compact always-on doctrine.
+- `templates/soul-trust-block.md`, a shorter Hermes-native always-on alternative.

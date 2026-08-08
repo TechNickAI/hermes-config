@@ -40,7 +40,7 @@ Input  (stdin JSON):
 Output (stdout JSON):
   {
     "query": "...",
-    "ranked": [ {rank, score, title, url, source, author, local_relevance,
+    "ranked": [ {rank, score, key, title, url, source, author, local_relevance,
                  freshness, engagement, sources, why} ],
     "coverage": {"per_source": {...}, "total_in": N, "total_ranked": M,
                  "thin_evidence": bool},
@@ -283,8 +283,15 @@ def _url_ok(url: str) -> bool:
 
 
 def candidate_key(item: dict) -> str:
-    url = (item.get("url") or "").strip().lower()
-    if url:
+    """Stable dedup/join key.
+
+    Only a real linkable permalink is safe to dedup on. Placeholder urls repeat
+    across unrelated items, so keying on them collapses distinct results into one.
+    Those fall back to source:id, which stays unique per item.
+    """
+    raw = (item.get("url") or "").strip()
+    if _url_ok(raw):
+        url = raw.lower()
         url = re.sub(r"^https?://", "", url)
         url = re.sub(r"^(www\.|old\.|m\.)", "", url)
         url = url.split("?")[0].rstrip("/")
@@ -481,6 +488,7 @@ def rank(payload: dict, top: int, mode_override: str | None) -> dict:
         ranked.append({
             "rank": i,
             "score": round(c["rrf"], 6),
+            "key": c["key"],
             "title": c["title"],
             "url": c["url"],
             "source": c["source"],
@@ -658,6 +666,27 @@ def self_test() -> int:
         f"placeholder url not stripped: {by_title['acme mower review']['url']!r}"
     assert by_title["acme mower real thread"]["url"].startswith("https://old.reddit.com"), \
         f"valid url was dropped: {by_title['acme mower real thread']['url']!r}"
+
+    # Distinct items sharing an unlinkable placeholder url must NOT collapse into one
+    # candidate, and every ranked item must carry a stable join key.
+    pk = rank({"query": "acme mower", "now": now, "items": [
+        {"source": "web", "id": "k1", "title": "acme mower first review",
+         "snippet": "acme mower long term review one", "author": None,
+         "published_at": "2026-06-10T00:00:00Z",
+         "url": "https://example.com/placeholder", "engagement": {}},
+        {"source": "web", "id": "k2", "title": "acme mower second review",
+         "snippet": "acme mower long term review two", "author": None,
+         "published_at": "2026-06-10T00:00:00Z",
+         "url": "https://example.com/placeholder", "engagement": {}},
+    ]}, top=25, mode_override=None)
+    pk_titles = {r["title"] for r in pk["ranked"]}
+    assert pk_titles == {"acme mower first review", "acme mower second review"}, \
+        f"placeholder-url items collapsed: {pk_titles!r}"
+    pk_keys = [r["key"] for r in pk["ranked"]]
+    assert pk_keys == ["web:k1", "web:k2"] or pk_keys == ["web:k2", "web:k1"], \
+        f"unstable join keys for placeholder-url items: {pk_keys!r}"
+    assert all(isinstance(r.get("key"), str) and r["key"] for r in uf["ranked"]), \
+        "every ranked item must expose a non-empty join key"
 
     # Comparison balance: with labeled subqueries each carrying its own query, the
     # smaller/lower-engagement side must still surface in the ranked output rather
