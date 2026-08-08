@@ -113,6 +113,36 @@ personality will volunteer context to be helpful unless told where the line is.
 assistant open-ended authority. The base prompt forbids commitments; this line grants
 back exactly the ones this call needs, and nothing else.
 
+### Provisioning a number is a purchase, and there is no dry run
+
+`POST /phone-number` buys a number the instant inventory exists. There is no search
+endpoint, no availability lookup, and no dry-run flag anywhere in the API.
+
+That matters because the error responses look like a free lookup and are not. Ask for an
+area code with no stock and you get a helpful `400`:
+
+```text
+"This area code is currently not available. Hint: Try one of 562, 662, 716."
+```
+
+Ask for one WITH stock and the identical request silently succeeds and charges you. The
+request that maps inventory and the request that spends money are the same request. Do
+not loop over candidate area codes to "see what is available" — that is a purchase loop,
+and it will drain the free-tier allowance (5 per account) in seconds.
+
+Provision one number, read it back, stop. If the area code is empty, take the hint list
+from the error and try exactly one more.
+
+The free tier also gives you no choice of digits: `CreateVapiPhoneNumberDTO` accepts
+`numberDesiredAreaCode` and nothing else. If a specific or memorable number matters, buy
+it from a carrier that supports pattern search and import it via
+`CreateTwilioPhoneNumberDTO`, which does take an explicit `number`.
+
+A half-provisioned record is a real failure mode: if the purchase fails on billing, Vapi
+can leave a record with `status: active`, a name, an `assistantId`, and **no `number`
+and no `providerResourceId`**. It looks configured in a list view and cannot place a
+call. Always confirm both fields are populated before trusting a number.
+
 ### If call creation is ambiguous, do not retry
 
 `POST /call` is not idempotent. A timeout or dropped connection may mean Vapi already
@@ -210,6 +240,10 @@ number written here.
 
 ## Pitfalls
 
+- **`POST /phone-number` is a purchase with no dry run.** The "area code not available"
+  error looks like a free availability lookup, but the identical request against a code
+  that HAS stock buys the number. Never loop area codes to probe inventory; it burns the
+  5-per-account free allowance in seconds. One request, read it back, stop.
 - **A stale model ID is the silent failure nobody catches.** Vapi accepts older model
   names indefinitely, so writing one from memory produces a working assistant that is
   quietly a generation behind. Read the accepted values from
