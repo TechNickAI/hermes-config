@@ -67,7 +67,7 @@ if [ -f "$DEST/router/restore-tailscale-serve.sh" ]; then
 fi
 
 echo "[install] installing auth-service deps"
-(cd "$DEST/auth-service" && npm install --omit=dev --silent --no-audit --no-fund)
+(cd "$DEST/auth-service" && npm install --omit=dev --ignore-scripts --silent --no-audit --no-fund)
 
 LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
 PLIST_NAME="com.hermes.mini-app-router-serve.plist"
