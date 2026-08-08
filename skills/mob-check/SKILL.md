@@ -277,6 +277,12 @@ is a brief that reads like a sharp human analyst, not an SEO blog or an evidence
 
 See `references/output-contract.md` for a full worked transformation example.
 
+For strategy R&D, signal discovery, or backlog generation, use
+`references/research-to-experiment.md`. It separates papers, practitioner observations,
+and tooling evidence, then converts ranked findings into point-in-time,
+measurement-first experiments. In this mode the final artifact may follow the governing
+project workflow instead of the normal crowd-brief template.
+
 End the brief with one short forward-looking line (a tension to watch, an open
 question), not a summary and not a call to action.
 
@@ -295,8 +301,19 @@ question), not a summary and not a call to action.
 7. **One source monopolizing.** The ranker caps authors and diversifies sources; do not
    undo that by quoting only the loudest handle.
 
+8. **Assuming `scripts/rank.py` echoes input `id` fields.** It does not. Pipeline
+   callers must join ranked output back to source rows using a real unique `url`, which
+   the ranker preserves. This does not affect the normal interactive flow.
+9. **Delegating open-ended source crawls without a call budget.** Broad sequential
+   searches can exhaust child-agent time limits. Bound research workers to a small
+   source-call budget, require an early draft, then refine from the best evidence found.
+
 ## Verification Checklist
 
+- [ ] If this is strategy R&D, `references/research-to-experiment.md` was followed and
+      literature, practitioner, and tooling evidence were not collapsed into one claim.
+- [ ] Any saved JSON research artifact was parsed from disk and exercised through the
+      ranker with an ad-hoc verifier unless a canonical suite covers it.
 - [ ] Pre-flight line emitted; keyword traps reframed or clarified.
 - [ ] At least 3 sources attempted; skipped sources named.
 - [ ] `scripts/rank.py` actually ran; `ranked.json` produced and read.
