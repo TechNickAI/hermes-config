@@ -44,9 +44,22 @@ def ro_connect(path, timeout=8):
             con = sqlite3.connect(uri, uri=True, timeout=timeout)
             con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
             if mode == "immutable":
-                # Surfaced as a fact, not swallowed: every conclusion drawn from this
-                # database may be based on a pre-WAL-checkpoint image.
-                STALE_READS.append(Path(path).name)
+                # immutable=1 ignores the -wal file. Whether that matters depends
+                # entirely on whether a -wal exists RIGHT NOW:
+                #
+                #   no -wal  -> the database was cleanly closed and checkpointed, so the
+                #               main image IS the whole database. The read is exact.
+                #               (mode=ro fails here for a boring reason: a WAL db needs
+                #               to create a -shm sidecar on open, and read-only forbids
+                #               it. Verified deterministically, not assumed.)
+                #   -wal     -> there are committed pages outside the main image, so
+                #               conclusions really may be stale. Worth warning about.
+                #
+                # Warning on the first case made all 12 fleet members report a scary
+                # "may be stale" caveat on a perfectly exact read, which trains the
+                # reader to discount the warning in the case where it is real.
+                if Path(str(path) + "-wal").exists():
+                    STALE_READS.append(Path(path).name)
             return con
         except Exception as e:
             last = e

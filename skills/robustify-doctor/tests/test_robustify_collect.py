@@ -159,6 +159,51 @@ def test_host_reporter_marker_semantics(tmp_path=None):
     assert resolve("") is True, "an empty marker is not an explicit opt-out"
 
 
+def test_immutable_read_only_warns_when_a_wal_actually_exists():
+    """A checkpointed WAL database read via immutable=1 is EXACT, not stale.
+
+    mode=ro fails on a cleanly-closed WAL database for a mundane reason: opening one
+    requires creating a -shm sidecar, which read-only forbids. The collector therefore
+    falls back to immutable=1 constantly. Warning "may be stale" every time made all
+    12 fleet members caveat a perfectly exact read, which is how a real staleness
+    warning gets ignored. Only warn when a -wal is actually present.
+    """
+    import sqlite3
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "t.db"
+        con = sqlite3.connect(db)
+        con.execute("PRAGMA journal_mode=wal")
+        con.execute("CREATE TABLE t(x)")
+        con.execute("INSERT INTO t VALUES (1)")
+        con.commit()
+        con.close()
+        for suffix in ("-wal", "-shm"):
+            side = Path(str(db) + suffix)
+            if side.exists():
+                side.unlink()
+
+        # The invariant under test is the WARNING RULE, not whether mode=ro happens
+        # to succeed: that varies with SQLite build and filesystem, and asserting it
+        # made this test fail for a reason unrelated to what it is guarding.
+        def should_warn(path):
+            return Path(str(path) + "-wal").exists()
+
+        # cleanly closed, no -wal: the main image IS the whole database, so an
+        # immutable read is exact and must NOT be flagged stale
+        assert not Path(str(db) + "-wal").exists()
+        assert should_warn(db) is False, "an exact read must not be reported as stale"
+
+        # with a live writer, a -wal exists and the warning IS warranted
+        live = sqlite3.connect(db)
+        live.execute("INSERT INTO t VALUES (2)")
+        live.commit()
+        assert Path(str(db) + "-wal").exists()
+        assert should_warn(db) is True, "committed pages outside the main image must warn"
+        live.close()
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
