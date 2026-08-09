@@ -48,11 +48,25 @@ The key must be scoped to the attempt, not to the project forever. A constant
 second pass after its earlier task is complete, the create returns the historical task,
 the instruction below treats it as another pass's ownership, and the project becomes
 permanently unpickable. Scope the key to the pass instead so it is stable within a pass
-(atomic against a concurrent pass) but distinct across passes:
+(atomic against a concurrent pass) but distinct across passes.
+
+Derive that scope from the **scheduled window**, not from wall-clock start time. Two
+overlapping invocations of the same logical pass start at different instants, so a
+`<pass-start-timestamp>` gives each its own key, both creates succeed, and both dispatch
+the project — the exact duplicate the claim exists to prevent. Finer resolution makes
+that worse, not better. Floor the start time to the schedule interval (or use the
+scheduler's own run identifier, if it exposes one) so competing invocations of the same
+window agree on the key while the next legitimate pass gets a different one:
 
 ```bash
-<task-cli> create "<project>: <deliverable>" --idempotency-key "portfolio:<project-slug>:<pass-iso-date>"
+# Hourly schedule: every invocation of the same hour's pass floors to the same key.
+pass_window=$(date -u -d "$(date -u +%Y-%m-%dT%H:00:00)" +%Y%m%dT%H%M%SZ)
+<task-cli> create "<project>: <deliverable>" --idempotency-key "portfolio:<project-slug>:$pass_window"
 ```
+
+Match the floor to the cadence — a daily schedule floors to the date, an hourly one to
+the hour. The test is that two invocations you would consider the _same_ pass must
+produce identical keys, and two you would consider _different_ passes must not.
 
 If the id that comes back is not the one you just made, another pass owns that project:
 skip it and take the next eligible one.
