@@ -99,9 +99,9 @@ actually have one, and that a copied memory plugin is actually selected in
 
 **[`SETUP.md`](SETUP.md) has a prompt to paste into Claude Code, Cursor, or Codex.** It
 tells your agent to read [`skills/MANIFEST.yaml`](skills/MANIFEST.yaml) rather than
-twenty-two skill files, to filter by whether you run one machine or a fleet, to install
-only what needs no configuration, and to _ask_ before anything requiring a credential —
-rather than copying everything and reporting success.
+twenty-three skill files, to filter by whether you run one machine or a fleet, to
+install only what needs no configuration, and to _ask_ before anything requiring a
+credential — rather than copying everything and reporting success.
 
 ## What's in here
 
@@ -112,7 +112,7 @@ Four `SOUL.md` starters: `personal-assistant`, `engineer`, `it-admin`,
 the single highest-leverage file in your setup. Copy one, then make it yours. See
 [`templates/soul/README.md`](templates/soul/README.md).
 
-### `skills/`: 22 procedural skills
+### `skills/`: 23 procedural skills
 
 Skills are markdown procedures the agent loads on demand. **A skill is just a
 directory** — `cp -r` it into `~/.hermes/skills/` and it works.
