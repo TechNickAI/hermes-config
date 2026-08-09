@@ -158,6 +158,11 @@ curl -sS -H "Authorization: Bearer $VAPI_API_KEY" \
 
 If a call to that destination already exists, follow it rather than creating another.
 
+If none appears, **stop and ask the user before dialing again.** An absent record is not
+proof that nothing is ringing: the call may not be listed yet, and a second `POST` on a
+guess dials the person twice. The reconcile step exists to make the retry decision a
+human's, not to authorize an automatic one.
+
 ## Watching a call in flight
 
 ```bash
