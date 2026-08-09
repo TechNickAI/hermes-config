@@ -16,11 +16,22 @@ assistants or place calls.
 ## 3. Phone number
 
 ```bash
-curl -sS -X POST https://api.vapi.ai/phone-number \
+set -o pipefail
+curl -sS --fail-with-body -X POST https://api.vapi.ai/phone-number \
   -H "Authorization: Bearer $VAPI_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"provider": "vapi", "name": "<assistant name>"}'
+  -d '{"provider": "vapi", "name": "<assistant name>"}' > phone-created.json \
+  || { echo "provisioning failed:"; cat phone-created.json; rm -f phone-created.json; exit 1; }
+
+jq -e '.id and .number' phone-created.json >/dev/null \
+  || { echo "no id/number in response — see the half-provisioned record warning"; exit 1; }
 ```
+
+This is a purchase, so it gets the same failure handling as assistant create: a billing
+or inventory error returns 4xx with a JSON body, and plain `curl -sS` would exit 0 and
+let setup continue as if a number existed. The `jq -e` gate additionally catches the
+half-provisioned record described below, where Vapi returns a record with neither
+`number` nor `providerResourceId`.
 
 Free Vapi numbers are US-only, capped per account, and land in `activating` status for
 1–2 minutes. Do not attempt a call until `status` is `active`.
@@ -165,9 +176,13 @@ never masquerades as an assistant; and `jq -er` fails loudly when `.id` is absen
 instead of quietly printing `null`. Piping curl straight into jq would report jq's exit
 status and swallow curl's failure entirely.
 
-Confirm the printed `id` is a real UUID, then read it back before trusting it:
+Confirm the printed `id` is a real UUID, then read it back before trusting it. Export it
+first so the rest of this document — and a later session that did not run the create —
+both refer to the same assistant:
 
 ```bash
+export VAPI_ASSISTANT_ID="$ASSISTANT_ID"
+
 curl -sS --fail-with-body -H "Authorization: Bearer $VAPI_API_KEY" \
   "https://api.vapi.ai/assistant/$VAPI_ASSISTANT_ID" \
   | jq '{model: .model.model, prompt_chars: (.model.messages[0].content | length),
