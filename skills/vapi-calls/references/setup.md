@@ -181,7 +181,8 @@ first so the rest of this document — and a later session that did not run the 
 both refer to the same assistant:
 
 ```bash
-export VAPI_ASSISTANT_ID="$ASSISTANT_ID"
+export VAPI_ASSISTANT_ID="${ASSISTANT_ID:-$VAPI_ASSISTANT_ID}"
+: "${VAPI_ASSISTANT_ID:?no assistant id — run the create above or export VAPI_ASSISTANT_ID}"
 
 curl -sS --fail-with-body -H "Authorization: Bearer $VAPI_API_KEY" \
   "https://api.vapi.ai/assistant/$VAPI_ASSISTANT_ID" \
