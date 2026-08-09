@@ -834,8 +834,12 @@ def c_backups():
             m = re.match(r"\[([^\]]+)\]", last_ok)
             if m:
                 raw = m.group(1)
-                # normalize -0500 -> -05:00 for fromisoformat
-                norm = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", raw)
+                # Normalize -0500 -> -05:00 AND a trailing Z -> +00:00. Python only
+                # learned to parse the Z suffix in 3.11, and this skill claims 3.9+;
+                # on 3.9 a Z-stamped backup log raised ValueError and the run silently
+                # fell back to reporting the raw string instead of an age. Verified
+                # against a real 3.9 interpreter, not assumed.
+                norm = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", raw.replace("Z", "+00:00"))
                 try:
                     t = datetime.fromisoformat(norm)
                     fact(f"{log.stem}_last_success_hours_ago",

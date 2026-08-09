@@ -55,8 +55,9 @@ the script is an instrument.
 - Before and after any risky change, as a before/after comparison
 
 **Don't use for:** diagnosing a single known-broken job (read its log directly), or
-anything requiring live probes of third-party integrations — this collector is
-deliberately passive and read-only.
+anything requiring live probes of third-party integrations — this collector never
+makes a network call and never writes to anything it inspects. (It does maintain its
+own disk-history database; see the exception noted above.)
 
 ## Running it
 

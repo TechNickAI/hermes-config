@@ -113,6 +113,26 @@ def test_cortex_root_derives_from_target_home_not_process_home():
     )
 
 
+def test_backup_timestamp_normalization_handles_z_suffix():
+    """A Z-suffixed backup timestamp must parse on the claimed Python floor.
+
+    datetime.fromisoformat only learned the Z suffix in 3.11, and this skill claims
+    3.9+. Without the replace, a Z-stamped backup log raised ValueError on 3.9 and the
+    collector silently reported a raw string instead of "hours since last success" —
+    a backup monitor quietly losing its actual signal.
+    """
+    import re
+    from datetime import datetime
+
+    def norm(raw):
+        return re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", raw.replace("Z", "+00:00"))
+
+    for raw in ("2026-01-02T03:04:05Z", "2026-01-02T03:04:05-0500",
+                "2026-01-02T03:04:05+00:00"):
+        t = datetime.fromisoformat(norm(raw))
+        assert t.tzinfo is not None, f"{raw} must parse to an aware datetime"
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
