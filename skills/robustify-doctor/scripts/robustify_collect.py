@@ -866,8 +866,25 @@ def main():
     if "--show-host" not in sys.argv:
         import hashlib
         host = "host-" + hashlib.sha256(host.encode()).hexdigest()[:8]
+    # Several agents can share one machine, each with its own HERMES_HOME. They all
+    # observe the SAME disk and the SAME process table, so if every co-tenant alerts on
+    # host-level facts, one full disk becomes four identical pages. The marker names a
+    # single host reporter; everyone else still collects those facts (useful context)
+    # but is told not to raise them. Absent marker = report them, so a fresh single-agent
+    # host behaves correctly with no setup.
+    reporter_file = H / "robustify" / "host_reporter"
+    try:
+        is_reporter = reporter_file.read_text().strip().lower() != "no"
+    except Exception:
+        is_reporter = True
     print("# ROBUSTIFY COLLECTOR REPORT")
     print(f"host: {host}")
+    print(f"host_level_reporter: {'yes' if is_reporter else 'no'}")
+    if not is_reporter:
+        print("# NOTE: another agent on this machine owns host-level alerting.")
+        print("# Treat MACHINE, DISK_TREND and PROCESSES below as context only —")
+        print("# do NOT raise an incident for them. Alert only on this agent's own")
+        print("# scoped facts (its jobs, cortex, backups, integrations).")
     print(f"collected_at: {datetime.now().astimezone().isoformat(timespec='seconds')}")
     for fn in (c_machine, c_disk_trend, c_jobs, c_job_output, c_logs,
                c_processes, c_databases, c_cortex, c_integrations, c_surface,

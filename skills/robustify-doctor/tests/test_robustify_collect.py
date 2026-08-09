@@ -133,6 +133,32 @@ def test_backup_timestamp_normalization_handles_z_suffix():
         assert t.tzinfo is not None, f"{raw} must parse to an aware datetime"
 
 
+def test_host_reporter_marker_semantics(tmp_path=None):
+    """Co-tenant suppression must default to REPORTING when the marker is absent.
+
+    Getting this backwards is the dangerous direction: a fresh single-agent host with
+    no marker would silently stop alerting on disk and gateway facts, and nobody would
+    notice until a disk filled. Only an explicit "no" suppresses.
+    """
+    import tempfile
+
+    def resolve(contents):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "host_reporter"
+            if contents is not None:
+                f.write_text(contents)
+            try:
+                return f.read_text().strip().lower() != "no"
+            except Exception:
+                return True
+
+    assert resolve(None) is True, "absent marker must default to reporting"
+    assert resolve("yes\n") is True
+    assert resolve("no\n") is False
+    assert resolve("NO") is False, "marker must be case-insensitive"
+    assert resolve("") is True, "an empty marker is not an explicit opt-out"
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

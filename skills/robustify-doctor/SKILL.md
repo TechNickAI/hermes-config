@@ -59,6 +59,30 @@ anything requiring live probes of third-party integrations — this collector ne
 a network call and never writes to anything it inspects. (It does maintain its own
 disk-history database; see the exception noted above.)
 
+## Several agents on one machine
+
+Multiple agents often share a host, each with its own `HERMES_HOME`. They all see the
+same disk and the same process table, so if every one of them alerts on host-level
+facts, a single full disk becomes four identical incidents.
+
+Designate one agent per **machine** (not per owner) as the host reporter:
+
+```bash
+mkdir -p "$HERMES_HOME/robustify"
+echo no > "$HERMES_HOME/robustify/host_reporter"   # co-tenant: collect, don't alert
+echo yes > "$HERMES_HOME/robustify/host_reporter"  # designated reporter
+```
+
+Every agent still runs the full collector — the host-level facts remain useful context
+for diagnosing that agent's own problems. Only the alerting duty is assigned. The report
+states which role it is in via `host_level_reporter: yes|no`.
+
+**An absent marker means yes.** A fresh single-agent host must alert on its own disk
+without any setup; the failure mode of the opposite default is silence.
+
+Co-tenancy is a property of the host. Two agents owned by the same person on two
+different boxes are not co-tenants — each is its own reporter.
+
 ## Running it
 
 ```bash
