@@ -259,12 +259,18 @@ def c_jobs():
         # avoid. Say plainly that there is nothing to check.
         fact("note", "no cron/jobs.json — this agent has no scheduled jobs configured")
         fact("jobs_total", 0)
-        return
-    jobs = json.loads(jf.read_text())
-    jobs = jobs if isinstance(jobs, list) else jobs.get("jobs", [])
-    enabled = [j for j in jobs if j.get("enabled", True)]
-    fact("jobs_total", len(jobs))
-    fact("jobs_enabled", len(enabled))
+        # Do NOT return here. executions.db does not need the manifest, and a
+        # scheduler that lost its jobs.json while still holding failed runs is
+        # exactly the state worth reporting. Returning early printed a clean
+        # SCHEDULED_JOBS block with collectors_failed=0, which reads as "checked
+        # and healthy" rather than "not checked".
+        jobs, enabled = [], []
+    else:
+        jobs = json.loads(jf.read_text())
+        jobs = jobs if isinstance(jobs, list) else jobs.get("jobs", [])
+        enabled = [j for j in jobs if j.get("enabled", True)]
+        fact("jobs_total", len(jobs))
+        fact("jobs_enabled", len(enabled))
 
     db = H / "cron" / "executions.db"
     ran_ids, statuses, oldest = set(), {}, None
@@ -895,7 +901,7 @@ def main():
     print(f"host_level_reporter: {'yes' if is_reporter else 'no'}")
     if not is_reporter:
         print("# NOTE: another agent on this machine owns host-level alerting.")
-        print("# Treat MACHINE, DISK_TREND and PROCESSES below as context only —")
+        print("# Treat MACHINE, DISK_TRAJECTORY and PROCESSES below as context only —")
         print("# do NOT raise an incident for them. Alert only on this agent's own")
         print("# scoped facts (its jobs, cortex, backups, integrations).")
     print(f"collected_at: {datetime.now().astimezone().isoformat(timespec='seconds')}")
