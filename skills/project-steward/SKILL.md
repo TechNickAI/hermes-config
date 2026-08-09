@@ -6,12 +6,12 @@ description: >
   attention, when scheduled agent runs are producing activity without progress, when a
   notification channel has become an unreadable wall of updates, or when you want an
   agent to direct specialist agents instead of doing their work. Covers the
-  single-dispatcher pattern, applying advance / zoom-out / creativity lenses on a
-  per-project progress clock, spend gating on cluster health, and the living board that
+  single-dispatcher pattern, reasoning out the single best move per project instead of
+  picking from a fixed menu, spend gating on cluster health, and the living board that
   collapses a chat channel into one self-updating message. Triggers on "steward my
   projects", "the agent is busy but nothing is moving", "too many notifications to
   read", "stop it from redoing the specialist's work".
-version: 1.0.0
+version: 1.1.0
 license: MIT
 metadata:
   hermes:
@@ -33,10 +33,10 @@ Every rule below replaced something that failed in a measurable way, and the
 measurements are kept because they are what makes the rule persuasive rather than
 arbitrary.
 
-## The shape: one dispatcher, several lenses
+## The shape: one dispatcher, one question
 
-**One scheduled job picks a project, then picks a lens to apply to it.** Not one job per
-project, and not one job per kind of thinking.
+**One scheduled job picks a project, then reasons out the single best thing to do for
+it.** Not one job per project, and not one job per kind of thinking.
 
 The version before this had three scheduled lanes: a tactical "advance" lane every 90
 minutes, a daily "zoom-out" lane asking whether a project still pointed at its goal, and
@@ -52,30 +52,125 @@ single project had absorbed eight of the 31 passes.
 **Any global clock divided by the number of projects breaks.** Adding more lane jobs is
 more machinery around the same flaw.
 
-So the lanes stopped being jobs and became lenses. Rotation is solved exactly once, by
-the dispatcher, and every lens inherits it. Cadence becomes per-project and gated on
-that project's own progress rather than on the calendar.
+So the lanes stopped being jobs and became lenses, rotation solved once by the
+dispatcher. That fixed the arithmetic and left a deeper problem in place, described
+next.
 
-### Choosing the lens
+### Why the lens menu was removed
 
-Pick the project first, then ask in this order:
+Lenses were a fixed menu, and a menu guarantees the answer is one of its entries.
+Measured over 40 consecutive passes: **33 chose ADVANCE, 7 chose zoom-out, and
+creativity chose itself exactly zero times.** Creativity was gated on exhaustion, so the
+option set could only widen after everything in it had already died, which made a kill
+the cheapest route to permission to think.
 
-1. **Creativity**, if this project's frame looks exhausted. It outranks the others
-   because a project whose frame is dead will burn an advance pass executing a roadmap
-   that inherits the dead assumption.
-2. **Zoom-out**, if this project is due: five or more of its own passes since the last
-   one, or seven days, or it has never had one, or two consecutive passes produced no
-   decision-relevant answer.
-3. **Advance** otherwise. This should be the common case.
+A menu also degrades the reasoning that precedes it. Faced with labelled boxes, a pass
+classifies instead of thinking, and classification is a weaker operation than judgment.
+The best move on a given day is frequently something no taxonomy contains: merge two
+projects, buy a dataset, ask one person one question, ship the working half and stop,
+retire a workstream nobody has the heart to retire, or rewrite the charter because the
+goal itself moved.
 
-A pass may switch lenses mid-flight. If an advance pass discovers drift, do the zoom-out
-then and there rather than logging "should zoom out later." Deferring a lens to a future
-pass is exactly the failure this design removed.
+The deepest version of the failure is that **auditing is the only work that requires no
+outside input, so it is the only work that always succeeds.** A pass that verifies a
+number can always find something. A pass that needs a new data source, a budget, or a
+fact only the principal holds can be blocked. Under any procedure that rewards a
+completed pass, auditing wins by default, forever. One project ran six consecutive work
+orders that measured a system and zero that fed it; the pass that diagnosed this named
+it correctly and then dispatched a seventh measurement order.
 
-Tag every log line with the lens used. Rotation is tracked by reading that log, so an
-untagged line makes a project look like it has never been zoomed out.
+### The one question
 
-Full lens definitions: `references/lenses.md`.
+**What is the single best thing I could do in this pass to move this project toward what
+the principal actually wants?**
+
+Answer it in four written steps.
+
+**1. State the gap in plain English.** Where the project actually is, and what winning
+looks like per the charter. Not a status summary: the DISTANCE, in one or two sentences
+a smart friend would understand at dinner.
+
+**2. Name what is actually in the way.** The kind of obstacle determines the move. These
+are examples of the kinds that exist, offered to prime thinking:
+
+- we believe something that might not be true, so checking it is worth a pass
+- we know what to do and nobody has done it, so the move is to dispatch, not to think
+- we lack a thing that exists in the world, so get the thing
+- we lack a thing only the principal has, so ask, in one line
+- we are pointed at the wrong target, so re-aim before doing anything else
+- too many open threads and nothing closing, so close something
+- the frame itself is wrong, so the next move is not inside this frame
+
+**3. Generate at least three candidate moves, freely.** The list above is NOT a menu,
+and a pass whose answer merely names one of those labels has not finished thinking. Real
+candidates are concrete and specific: "buy one month of the vendor feed and check
+whether the candidate set survives our screens," "merge this with the other project, it
+is the same question," "ask whether that capital has a lockup," "ship what works and
+stop," "this is finished, retire it."
+
+**4. Choose by decision-delta, then defend the choice against the runner-up.** For each
+candidate: if this succeeds perfectly, what changes? What can the principal do that they
+could not do before? The winner has the largest decision-delta per dollar and per day.
+**Then state the strongest candidate not chosen, and why it lost.**
+
+That last line is the anti-capture mechanism, and it is the load-bearing part of the
+design. It forces the alternative into the permanent log, so choosing to audit again has
+to survive being written next to "or we could have bought the data."
+
+Then **execute it in the same pass.** Not a plan to act later.
+
+**WAIT is an illegal chosen move.** If the honest answer is "nothing to do until the
+agent reports," skip this project and pick another. A pass that logs "await WO-X"
+consumes a slot, produces a log line that looks like work, and leaves the project
+untouched. Silence is already a success state; a status page is not.
+
+### Three constraints that keep free reasoning honest
+
+Reasoning freely is what makes this work and also what makes it capturable.
+
+1. **Auditing must earn its slot against a named alternative.** Verification is
+   genuinely right when money is at risk or an unread deliverable carries a load-bearing
+   number. It simply no longer wins by default.
+2. **Every chosen move is scored INWARD or OUTWARD by a mechanical test, never by
+   intent.** A move is OUTWARD only if it does at least one of: introduces information
+   that did not exist inside the project's files; creates a capability or artifact that
+   did not exist; or makes an external commitment (a person is asked, money is spent, an
+   order carries a genuinely new question). **Reconciling, re-scoring, re-labelling,
+   rewriting state files, closing your own open loops, and waiting are INWARD by
+   definition**, however valuable they feel. Inward moves are sometimes correct; they
+   are never _progress_.
+3. **Fourteen days is the maximum a project may go without its option set being
+   questioned.** Not a mandated creativity pass: a hard requirement that at least once a
+   fortnight the pass asks whether the current frame is right, and records the answer.
+
+**One candidate must be of a different KIND.** Not different content, different kind:
+spend money, ask a person, merge two projects, retire it, ship it, or change the
+charter. Three variations on "resolve existing uncertainty" is a failed step 3, and a
+strawman inserted to reach three candidates is worse than two honest ones.
+
+**A pass may not have the last word on its own INWARD verdict.** The nightly meta-review
+recomputes it from the log against the mechanical test and reports disagreements.
+Measured on the first full-portfolio run of this procedure: **17 of 17 projects
+self-scored OUTWARD**, and an independent three-family panel found at least five were
+inward in substance. A metric that never fires is either measuring nothing or is being
+graded by the party it judges. **No metric may be graded by the same pass that produces
+the work it grades.**
+
+**This test is a better proxy, not an unhackable one.** Skalse et al. (arXiv:2209.13085)
+prove two reward functions can only be mutually unhackable if one is constant, so any
+non-constant test — including this one — is gameable in principle. Hold it accordingly:
+three ways to satisfy it nominally are citing a source you did not read, emitting a
+trivial artifact, and sending a ceremonial message. Two known holes are recorded in
+`references/choosing-the-best-move.md`: the nightly re-check is the same system
+re-reading its own log (not genuinely independent), and there is no outcome controller
+tying passes to whether projects actually advanced.
+
+Log the chosen move and the runner-up on every pass. The realized distribution of move
+kinds is an OUTPUT to inspect, never a quota to enforce. If it reads 90% verification,
+that is a broken decision procedure to diagnose.
+
+Worked examples, including three side-by-side against the procedure they replaced:
+`references/choosing-the-best-move.md`.
 
 ## Cadence is gated on progress, not the clock
 
@@ -96,6 +191,18 @@ work, or pull the next item from the project's roadmap.
 Not blockers: anything findable by reading a file or running a query, "I'd like your
 opinion" when a reasonable call could be made and reported, something already answered,
 or a question manufactured so a pass has a tidy ending.
+
+**The PHANTOM BLOCKER is the dangerous version of "already answered," because it
+survives good behavior.** A project's `now.md` claimed the principal's direction call
+was "still open, still the one real blocker" for four days, while the SAME FILE four
+paragraphs below recorded his verbatim approval and `decisions.md` carried it with a
+message id and timestamp. Every pass read the blocker line, correctly declined to re-ask
+an answered question, and moved on. The contradiction survived every pass **because each
+pass behaved well.** A phantom blocker is worse than a real one: it makes a decided
+project look stalled on the principal, and it PROTECTS the project from being worked,
+since "waiting on him" is a legitimate state nobody challenges. **Grep `decisions.md`
+for the question before writing or preserving any blocker line** — an answer with a date
+discharges it, so delete the line and record what the answer authorizes.
 
 ## Direct the specialists. Do not replicate their work.
 
@@ -311,7 +418,10 @@ next action, because that handles edge cases a lookup table cannot.
 
 ## Reference files
 
-- `references/lenses.md`, full advance / zoom-out / creativity definitions and triggers
+- `references/choosing-the-best-move.md`, worked examples of the four-step decision,
+  including one where the procedure it replaced was already right
+- `references/the-means-ledger.md`, the inventory of what a project can actually use,
+  and why constraint deletion is retroactive
 - `references/portfolio-dispatch.md`, slot allocation, claim locks, starvation floor
 - `references/project-state.md`, the markdown files each project carries, with templates
 - `templates/board.toml`, living board configuration
