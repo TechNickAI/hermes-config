@@ -163,6 +163,14 @@ benign, and a monitor that cries wolf gets ignored within a week.
 These are wrong readings that were made against real data. The collector emits the
 disambiguating fact in each case — use it.
 
+1. **A permissive credential-file mode is not automatically an incident.** The collector
+   reports `env_file_mode` as a plain fact because it cannot know the trust boundary. On
+   a single-tenant private host with no other human logins, a group- or world-readable
+   env file is a deliberate, accepted posture, and reporting it every run is noise that
+   buries real findings. Escalate it only when the host actually has untrusted local
+   users, or when the operator has said that mode matters to them. Ask once; do not
+   re-raise a posture the owner has already accepted.
+
 1. **Output staleness is measured against each job's own schedule, not a flat number.**
    `output_stale_vs_own_cadence_enabled` already accounts for weekly and monthly jobs; a
    weekly job with 60-hour-old output is healthy and is not counted.
