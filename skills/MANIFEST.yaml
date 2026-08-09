@@ -368,3 +368,19 @@ skills:
   - trust
   - oversight
   path: skills/trust-framework
+- name: vapi-calls
+  version: 1.0.0
+  scope: solo
+  summary: Place and manage real outbound phone calls through the Vapi voice AI platform.
+  use_when: an agent needs to reach a human by phone — a reminder, a confirmation, a question for a business, an appointment booking, or any errand that a voice conversation handles better than a message. Covers first-time setup, per-call configuration, live call control, and reading the result afterward.
+  requires:
+  - 'env: VAPI_API_KEY (Vapi dashboard → API Keys, private key)'
+  works_out_of_the_box: false
+  tags:
+  - vapi
+  - voice
+  - phone
+  - outbound
+  - telephony
+  - calls
+  path: skills/vapi-calls

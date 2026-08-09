@@ -99,7 +99,7 @@ actually have one, and that a copied memory plugin is actually selected in
 
 **[`SETUP.md`](SETUP.md) has a prompt to paste into Claude Code, Cursor, or Codex.** It
 tells your agent to read [`skills/MANIFEST.yaml`](skills/MANIFEST.yaml) rather than
-twenty-one skill files, to filter by whether you run one machine or a fleet, to install
+twenty-two skill files, to filter by whether you run one machine or a fleet, to install
 only what needs no configuration, and to _ask_ before anything requiring a credential —
 rather than copying everything and reporting success.
 
@@ -162,6 +162,12 @@ directory** — `cp -r` it into `~/.hermes/skills/` and it works.
 | Skill         | What it does                              |                 |
 | ------------- | ----------------------------------------- | --------------- |
 | `grok-search` | Real-time web and X search via xAI's Grok | **needs setup** |
+
+**Voice**
+
+| Skill        | What it does                                                 |                 |
+| ------------ | ------------------------------------------------------------ | --------------- |
+| `vapi-calls` | Place real outbound phone calls, with consent and cost gates | **needs setup** |
 
 **Fleet / infrastructure — for multi-host setups**
 
