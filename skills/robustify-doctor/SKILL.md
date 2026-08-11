@@ -141,7 +141,10 @@ facts only, no interpretation.
 
 1. CORRELATE across domains. Group related facts into single incidents rather
    than listing symptoms separately.
-2. Classify each finding: BROKEN NOW / WILL BREAK SOON / COSMETIC / NOT A PROBLEM.
+2. Classify each finding: `failing now` / `degrading` / `cosmetic` / `not a problem`.
+   Use those labels literally. Do not invent ALL-CAPS severity banners; see
+   "Writing the report" below, which is not a style preference but a correctness
+   rule about what a severity claim asserts.
 3. For each real finding: state the likely cause, the evidence line(s) it rests
    on, and which escalation tier it falls into (see the ladder below). Do not
    invent a repair authorization the ladder does not grant.
@@ -158,10 +161,63 @@ Rules:
 Point 4 is not decoration. Roughly half of what looks alarming in a first report is
 benign, and a monitor that cries wolf gets ignored within a week.
 
+## Who reads this, and how to write it
+
+Decide the audience before writing a word, because it changes what is worth saying.
+
+This report is for whoever **maintains** the machine. On a fleet, that is the operator,
+who is often NOT the person who uses the agent day to day. Route it to an operations
+channel, never to an end user's chat: a maintenance note that reaches the person who
+depends on the agent reads as "your assistant is about to die", which is alarming,
+useless to them, and usually wrong.
+
+If the delivery target is not explicitly configured, that is a bug to fix before
+scheduling, not a default to accept. `origin` on someone else's agent means THEIR chat.
+
+### Severity has an absolute floor
+
+A severity claim is a factual assertion about consequences. Getting it wrong is a
+correctness error, not a tone problem.
+
+Before labelling anything worse than a note, BOTH must hold:
+
+1. **An absolute floor is breached** — not a percentage, not a rate, not a trend. For
+   disk: under ~10 GB free or under ~5% free. "80% used" with 40 GB free is healthy; say
+   nothing.
+2. **It is user-visible or imminent** — failing now, or clearly will within ~48h.
+
+A ratio alone never qualifies. Neither does a number moving the wrong way.
+
+**Short-window trends are not trends.** Free space fluctuates by gigabytes as caches
+fill and drain; a 24-hour delta sampled off a noisy series will happily "prove" a disk
+dies in 17 days while the 3-day series shows it gaining space. Do not extrapolate a
+time-to-exhaustion from a short window, and never lead with a countdown.
+
+### Banned phrasing
+
+- ALL-CAPS severity banners (`WILL BREAK SOON`, `BROKEN NOW`, `CRITICAL`)
+- `will break`, `about to fail`, `urgent`, `emergency`, `immediately`
+- any `N days until full` countdown when the absolute floor is not already breached
+
+Write plainly, lowercase, like an engineer noting something in a log. Reserve strong
+words for events that genuinely warrant them, or they stop meaning anything.
+
+### Default to silence
+
+Say nothing unless you fixed something or a human must decide something. "Healthy",
+"healthy but a number looks odd", and "I could not verify everything" are all silence.
+An unverified check is not a finding. A monitor that speaks every hour trains its reader
+to skim past the one message that mattered.
+
 ## Interpretation traps
 
 These are wrong readings that were made against real data. The collector emits the
 disambiguating fact in each case — use it.
+
+1. **A disk percentage is not a disk problem.** A real fleet job paged an end user with
+   "WILL BREAK SOON" over a volume at 80% used with 40 GB free, projecting exhaustion
+   from a 24-hour delta. The longer series showed free space _increasing_. Percentages
+   and short-window deltas both fail as triggers; use the absolute floor above.
 
 1. **A permissive credential-file mode is not automatically an incident.** The collector
    reports `env_file_mode` as a plain fact because it cannot know the trust boundary. On
