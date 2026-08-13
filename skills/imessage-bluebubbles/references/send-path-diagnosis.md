@@ -57,7 +57,8 @@ sleep 30
 ```
 
 `bb.py send` now does this automatically: 120s timeout, then polls the thread for 30s
-matching on the sent text, and reports `CONFIRMED` or an explicit `UNCONFIRMED`.
+matching on the sent text, and reports `CONFIRMED delivered` or an explicit
+`UNKNOWN -- DO NOT RETRY`.
 
 **Never retry a timed-out send without verifying first.** Retrying an in-flight send
 delivers the message twice to a real person, and that cannot be undone.

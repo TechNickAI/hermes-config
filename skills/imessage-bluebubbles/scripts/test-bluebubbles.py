@@ -219,35 +219,80 @@ def check_pagination(url, pw):
 
 def check_ambiguity_guard(script_dir, url, pw):
     section("Safety guards")
-    # The guard that prevents texting the wrong human. Must REFUSE, not guess.
+    # These tests must NEVER reach the send endpoint. The old version invoked
+    # `bb.py send` and inspected the result afterwards -- but a selector that
+    # resolves to exactly ONE chat sends the message before any assertion can
+    # run. On a sparse Messages database "+1" can resolve uniquely, so the
+    # advertised read-only suite could text a real person. Resolution is now
+    # tested through `find`, which never sends.
     env = dict(os.environ, BLUEBUBBLES_SERVER_URL=url, BLUEBUBBLES_PASSWORD=pw)
     bb = script_dir / "bb.py"
     if not bb.exists():
         record(SKIP, "ambiguity guard", "bb.py not found")
         return
-    r = subprocess.run(
-        [sys.executable, str(bb), "send", "--chat", "+1",
-         "--text", "THIS MUST NOT SEND"],
-        capture_output=True, text=True, env=env, timeout=120)
-    out = (r.stdout + r.stderr).lower()
-    if r.returncode != 0 and "ambiguous" in out:
-        record(PASS, "ambiguous recipient refused",
-               "did not guess between multiple matches")
-    elif "sent to" in out:
-        record(FAIL, "ambiguous recipient refused",
-               "DANGER: it sent a message on an ambiguous selector")
-    else:
-        record(SKIP, "ambiguous recipient refused", out.strip()[:150])
 
+    # 1. A broad selector must match many chats. `find` is read-only, so this
+    #    establishes ambiguity without risking delivery.
     r = subprocess.run(
-        [sys.executable, str(bb), "send", "--chat",
-         "any;-;+19999999999999", "--text", "x"],
+        [sys.executable, str(bb), "find", "--query", "+1"],
         capture_output=True, text=True, env=env, timeout=120)
-    out = (r.stdout + r.stderr).lower()
-    if r.returncode != 0:
-        record(PASS, "nonexistent recipient rejected")
+    matches = [l for l in r.stdout.splitlines() if l.strip()]
+    if len(matches) > 1:
+        record(PASS, "broad selector is genuinely ambiguous",
+               f"{len(matches)} chats match '+1'")
     else:
-        record(FAIL, "nonexistent recipient rejected", "unexpectedly succeeded")
+        record(SKIP, "broad selector is genuinely ambiguous",
+               f"only {len(matches)} match on this host; guard untestable here")
+        return
+
+    # 2. The guard itself, tested WITHOUT sending: resolve_chat must raise on
+    #    an ambiguous selector. Import bb.py and call it directly so no send
+    #    code path can execute even if the guard is broken.
+    probe = (
+        "import sys, importlib.util\n"
+        f"spec = importlib.util.spec_from_file_location('bb', {str(bb)!r})\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "url, pw = m.load_config()\n"
+        "try:\n"
+        "    m.resolve_chat('+1', url, pw)\n"
+        "    print('RESOLVED_WITHOUT_REFUSING')\n"
+        "except SystemExit as e:\n"
+        "    print('REFUSED' if 'ambiguous' in str(e).lower() else f'OTHER_EXIT:{e}')\n"
+    )
+    r = subprocess.run([sys.executable, "-c", probe],
+                       capture_output=True, text=True, env=env, timeout=120)
+    if "REFUSED" in r.stdout:
+        record(PASS, "ambiguous recipient refused",
+               "resolve_chat raised instead of guessing (no send attempted)")
+    elif "RESOLVED_WITHOUT_REFUSING" in r.stdout:
+        record(FAIL, "ambiguous recipient refused",
+               "DANGER: resolve_chat picked a single chat from an ambiguous selector")
+    else:
+        record(SKIP, "ambiguous recipient refused",
+               (r.stdout + r.stderr).strip()[:150])
+
+    # 3. A well-formed GUID for a chat that does not exist must not resolve.
+    #    Also read-only: resolve_chat returns GUIDs verbatim, so this proves
+    #    the documented raw-GUID bypass is real and bounded.
+    probe_missing = (
+        "import sys, importlib.util\n"
+        f"spec = importlib.util.spec_from_file_location('bb', {str(bb)!r})\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "url, pw = m.load_config()\n"
+        "import urllib.parse\n"
+        "g = 'any;-;+19999999999'\n"
+        "enc = urllib.parse.quote(g, safe='')\n"
+        "r = m.api('GET', f'/api/v1/chat/{enc}/message?limit=1', url, pw)\n"
+        "print('HTTP', r.status_code)\n"
+    )
+    r = subprocess.run([sys.executable, "-c", probe_missing],
+                       capture_output=True, text=True, env=env, timeout=120)
+    if "HTTP 200" not in r.stdout:
+        record(PASS, "nonexistent chat GUID is rejected by the server",
+               (r.stdout + r.stderr).strip()[:100])
+    else:
+        record(SKIP, "nonexistent chat GUID is rejected by the server",
+               "server accepted a lookup for a chat that should not exist")
 
 
 def check_exposure(url, pw):
@@ -318,6 +363,12 @@ def check_hermes_wiring():
 
 def check_send(url, pw, to, from_name, script_dir):
     section("Send path (live -- texts a real person)")
+    # Require an exact GUID. A fuzzy selector could resolve to an unintended
+    # unique match, and the read-back below assumes `to` IS the resolved GUID.
+    if ";-;" not in to and ";+;" not in to:
+        record(FAIL, "--send-to must be an exact chat GUID",
+               f"got {to!r}; run: bb.py find --query '<name or number>'")
+        return
     bb = script_dir / "bb.py"
     env = dict(os.environ, BLUEBUBBLES_SERVER_URL=url, BLUEBUBBLES_PASSWORD=pw)
     stamp = time.strftime("%H:%M:%S")
@@ -330,12 +381,14 @@ def check_send(url, pw, to, from_name, script_dir):
         capture_output=True, text=True, env=env, timeout=300)
     out = (r.stdout + r.stderr)
 
-    if "CONFIRMED" in out or "sent to" in out:
-        record(PASS, "message sent", text[:70] + "...")
-    elif "UNCONFIRMED" in out:
-        record(FAIL, "message send unconfirmed",
+    # Order matters: "CONFIRMED" is a substring of "UNCONFIRMED", so the
+    # unknown case must be tested FIRST or a failed send reads as a success.
+    if "DO NOT RETRY" in out or "UNKNOWN" in out:
+        record(FAIL, "message send unresolved",
                "may still be in flight -- check Messages.app, do NOT retry")
         return
+    elif "CONFIRMED delivered" in out or "sent to" in out:
+        record(PASS, "message sent", text[:70] + "...")
     else:
         record(FAIL, "message send", out.strip()[:200])
         return

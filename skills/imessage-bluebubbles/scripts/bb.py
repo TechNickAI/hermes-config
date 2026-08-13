@@ -198,6 +198,11 @@ def cmd_history(args, url, pw):
 def cmd_send(args, url, pw):
     guid = resolve_chat(args.chat, url, pw)
     import uuid
+    import time as _time
+    # Record the send time BEFORE dispatching so read-back can distinguish the
+    # new message from an older identical one. Matching on text alone falsely
+    # "confirms" when the same words were sent before ("ok", "on my way").
+    sent_after = _time.time() - 5
     payload = {
         "chatGuid": guid,
         "message": args.text,
@@ -209,7 +214,7 @@ def cmd_send(args, url, pw):
     # COMPLETES. A timeout here means UNKNOWN, never failed.
     try:
         api("POST", "/api/v1/message/text", url, pw, json=payload, timeout=120)
-        print(f"sent to {guid}: {args.text}")
+        print(f"sent to {guid}")
         return
     except SystemExit as exc:
         # api() exits on timeout. Do not propagate that as failure and do NOT
@@ -217,22 +222,36 @@ def cmd_send(args, url, pw):
         if "timed out" not in str(exc):
             raise
 
-    # Resolve the unknown by reading the thread back, after a delay long
-    # enough for a slow send to land. This is the ONLY safe way to find out.
     print("send timed out -- verifying whether it landed (do not retry)...")
-    import time
     enc = urllib.parse.quote(guid, safe="")
-    for attempt in range(3):
-        time.sleep(10)
-        data = api("GET", f"/api/v1/chat/{enc}/message?limit=5", url, pw)
+    for _ in range(3):
+        _time.sleep(10)
+        # Any failure while polling must NOT abort with a bare error: that
+        # reads as "send failed" and invites a retry. Swallow and keep trying,
+        # then fall through to the explicit UNKNOWN result below.
+        try:
+            data = api("GET", f"/api/v1/chat/{enc}/message?limit=25", url, pw)
+        except SystemExit:
+            continue
         for m in data.get("data", []) or []:
-            if m.get("isFromMe") and (m.get("text") or "") == args.text:
-                print(f"CONFIRMED sent to {guid}: {args.text}")
-                return
+            if not m.get("isFromMe") or (m.get("text") or "") != args.text:
+                continue
+            # dateCreated is epoch milliseconds; only accept a message created
+            # after this send began.
+            created = m.get("dateCreated") or 0
+            if created and created / 1000.0 < sent_after:
+                continue
+            print(f"CONFIRMED delivered to {guid}")
+            return
+
+    # Deliberately not the word CONFIRMED anywhere in this string: callers
+    # substring-match on output, and "CONFIRMED" is a substring of
+    # "UNCONFIRMED", which silently turns this failure into a success.
     sys.exit(
-        f"UNCONFIRMED: no matching message found in {guid} after 30s.\n"
+        f"UNKNOWN -- DO NOT RETRY. No matching message found in {guid} "
+        "after 30s.\n"
         "  The send may still be in flight. Check Messages.app before\n"
-        "  retrying -- retrying may deliver the message twice."
+        "  sending again -- retrying may deliver the message twice."
     )
 
 

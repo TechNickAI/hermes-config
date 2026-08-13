@@ -157,7 +157,11 @@ wire_hermes() {
 
   mkdir -p "$(dirname "$HERMES_ENV")"
   touch "$HERMES_ENV"
-  cp "$HERMES_ENV" "$HERMES_ENV.bak.$(date +%Y%m%d%H%M%S)"
+  # cp preserves the SOURCE mode: a pre-existing 644 .env would produce a
+  # world-readable backup containing credentials. Force 600 on the copy.
+  local bak="$HERMES_ENV.bak.$(date +%Y%m%d%H%M%S)"
+  cp "$HERMES_ENV" "$bak"
+  chmod 600 "$bak"
 
   # Idempotent: strip prior BLUEBUBBLES_* lines, then append fresh block.
   local tmp; tmp=$(mktemp)
@@ -170,8 +174,12 @@ wire_hermes() {
     echo "BLUEBUBBLES_WEBHOOK_HOST=127.0.0.1"
     echo "BLUEBUBBLES_WEBHOOK_PORT=8645"
     echo "BLUEBUBBLES_WEBHOOK_PATH=/bluebubbles-webhook"
-    echo "BLUEBUBBLES_SEND_READ_RECEIPTS=true"
-    echo "BLUEBUBBLES_REQUIRE_MENTION=false"
+    # Conservative inbound defaults. REQUIRE_MENTION=false would let the agent
+    # answer every message in every thread, including group chats, and read
+    # receipts silently mark a human's messages read on their behalf. Both are
+    # opt-in, not opt-out.
+    echo "BLUEBUBBLES_SEND_READ_RECEIPTS=false"
+    echo "BLUEBUBBLES_REQUIRE_MENTION=true"
   } >> "$tmp"
   mv "$tmp" "$HERMES_ENV"
   chmod 600 "$HERMES_ENV"
@@ -200,14 +208,38 @@ verify() {
     c_fail "no server password known -- cannot test the API"; return 1
   fi
 
-  # ping: proves the server is listening and the password is right.
-  local ping
-  ping=$(curl -sS -m 10 "${url}/api/v1/ping?password=${pw}" 2>&1)
-  if echo "$ping" | grep -q '"message"'; then
+  # ping: proves the server is listening AND the password is right.
+  # Do NOT grep the body for "message" -- BlueBubbles' 401 response is
+  # {"status":401,"message":"You are not authorized..."} which contains
+  # "message", so a wrong password would be reported as success. Assert on
+  # the HTTP status code instead.
+  local ping_code
+  ping_code=$(curl -sS -m 10 -o /tmp/bb-ping.$$ -w '%{http_code}' \
+                "${url}/api/v1/ping?password=${pw}" 2>/dev/null)
+  if [[ "$ping_code" == "200" ]]; then
     c_ok "API ping succeeded"
+  elif [[ "$ping_code" == "401" ]]; then
+    c_fail "API ping rejected: wrong server password"
+    rm -f /tmp/bb-ping.$$
+    return 1
   else
-    c_fail "API ping failed: ${ping:0:200}"
-    c_warn "  wrong password, or the server has not finished first-run setup"
+    c_fail "API ping failed (HTTP ${ping_code:-000})"
+    c_warn "  server may not have finished first-run setup"
+    rm -f /tmp/bb-ping.$$
+    return 1
+  fi
+  rm -f /tmp/bb-ping.$$
+
+  # An auth check that cannot FAIL proves nothing: confirm a deliberately
+  # wrong password is actually rejected, so we know auth is switched on.
+  local bad_code
+  bad_code=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' \
+               "${url}/api/v1/ping?password=deliberately-wrong-$$" 2>/dev/null)
+  if [[ "$bad_code" == "401" ]]; then
+    c_ok "auth is enforced (wrong password rejected)"
+  else
+    c_fail "auth NOT enforced: wrong password returned HTTP ${bad_code:-000}"
+    c_warn "  anyone who reaches this port can read every message"
     return 1
   fi
 
@@ -236,10 +268,19 @@ verify() {
   fi
 
   check_tcc
-  check_exposure
+
+  # Exposure is a REQUIRED check, not advisory. Ignoring its exit status made
+  # --verify print "healthy" while a public tunnel still served the whole
+  # message archive.
+  if ! check_exposure; then
+    hdr "Result"
+    c_fail "BlueBubbles works, but the server is PUBLICLY EXPOSED"
+    c_warn "  close the tunnel (see above), then re-run --verify"
+    return 1
+  fi
 
   hdr "Result"
-  c_ok "BlueBubbles is healthy and reachable by Hermes"
+  c_ok "BlueBubbles is healthy, reachable by Hermes, and not publicly exposed"
 }
 
 # ---------------------------------------------------------------- tcc state

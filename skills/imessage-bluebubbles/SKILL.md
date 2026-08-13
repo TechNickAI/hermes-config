@@ -67,23 +67,25 @@ the same two credentials.
 
 ### What cannot be automated, ever
 
-macOS protects the TCC database with SIP; it is unreadable and unwritable even under
-`sudo`. **Permission grants are a human click.** Do not attempt to script them, and do
-not claim setup is done until a real API call proves access. Budget a screenshare for a
-remote fleet member.
+macOS protects the TCC database with SIP. It can be **read** with `sudo` for diagnosis,
+but it cannot be **written** -- there is no supported way to grant a permission from a
+script. **Permission grants are a human click.** Do not claim setup is done until a real
+API call proves access. Budget a screenshare for a remote machine.
 
-The human steps are exactly four:
+The human steps are exactly three:
 
 1. Set a **server password** in BlueBubbles' first-run wizard.
 2. Grant **Full Disk Access** to BlueBubbles when macOS prompts.
-3. Grant **Automation > Messages** to BlueBubbles. Reading works without this; **sending
-   hangs forever without it.** See `references/send-path-diagnosis.md`.
-4. Turn the **public tunnel off** (see Hardening).
+3. Turn the **public tunnel off** (see Hardening).
 
-Steps 2 and 3 are different permissions with different failure modes. Full Disk Access
-governs reading `chat.db`; Automation governs driving Messages.app to send. A bridge
-that reads perfectly can still be unable to send a single message, so verify both before
-declaring the bridge working.
+**On Automation > Messages:** BlueBubbles may also prompt for Automation access to
+Messages. Grant it if asked. Do **not** preemptively send someone to System Settings for
+it, and do not diagnose a slow send as a missing Automation grant: sending has been
+verified working with **no** Automation TCC entry present, because an app can inherit
+the right from an authorized parent process. Full Disk Access governs reading `chat.db`;
+Automation governs driving Messages.app. They are different permissions, but only the
+first is reliably required up front. See `references/send-path-diagnosis.md` before
+acting on a hang.
 
 ### Skip the Google / Firebase sign-in -- Hermes does not use it
 
@@ -221,8 +223,7 @@ kill <pid>
 ```
 
 Match on the **BlueBubbles.app path**, never on `cloudflared` alone -- the operator may
-run their own unrelated tunnels on the same box (the operator does). Killing those is
-collateral damage.
+run their own unrelated tunnels on the same box . Killing those is collateral damage.
 
 **Proof is a dead public URL, not a changed setting:**
 
@@ -334,8 +335,8 @@ Two rules follow:
    unrecoverable.
 
 `bb.py send` handles this: 120s timeout, then polls the thread for 30s looking for the
-sent text, printing `CONFIRMED` or an explicit `UNCONFIRMED` that tells the operator to
-check Messages.app before retrying.
+sent text, printing `CONFIRMED delivered` or an explicit `UNKNOWN -- DO NOT RETRY` that
+tells the operator to check Messages.app before retrying.
 
 By hand, the same discipline:
 
