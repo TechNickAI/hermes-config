@@ -99,9 +99,24 @@ def resolve_chat(selector, url, pw):
     if ";-;" in selector or ";+;" in selector:
         return selector
 
-    data = api("POST", "/api/v1/chat/query", url, pw,
-               json={"limit": 1000, "offset": 0, "with": ["participants"]})
-    chats = data.get("data", []) or []
+    # Paginate. chat/query caps at 1000 rows, and stopping at page one is
+    # unsafe in BOTH directions: a real recipient past row 1000 reads as "no
+    # match", and a selector that is ambiguous across the full set can look
+    # deceptively unique within the first page -- which would let the guard
+    # send to a single wrong match.
+    chats = []
+    offset = 0
+    while True:
+        page = api("POST", "/api/v1/chat/query", url, pw,
+                   json={"limit": 1000, "offset": offset,
+                         "with": ["participants"]}, timeout=40)
+        rows = page.get("data", []) or []
+        chats.extend(rows)
+        if len(rows) < 1000:
+            break
+        offset += 1000
+        if offset >= 20000:      # sanity bound on pathological accounts
+            break
 
     needle = selector.lower()
     matches = []
@@ -157,11 +172,22 @@ def cmd_chats(args, url, pw):
 
 
 def cmd_find(args, url, pw):
-    data = api("POST", "/api/v1/chat/query", url, pw,
-               json={"limit": 1000, "offset": 0, "with": ["participants"]})
+    chats = []
+    offset = 0
+    while True:
+        page = api("POST", "/api/v1/chat/query", url, pw,
+                   json={"limit": 1000, "offset": offset,
+                         "with": ["participants"]}, timeout=40)
+        rows = page.get("data", []) or []
+        chats.extend(rows)
+        if len(rows) < 1000:
+            break
+        offset += 1000
+        if offset >= 20000:
+            break
     needle = args.query.lower()
     hits = 0
-    for c in data.get("data", []) or []:
+    for c in chats:
         name = (c.get("displayName") or "").lower()
         parts = " ".join(
             (p.get("address") or "") for p in (c.get("participants") or [])

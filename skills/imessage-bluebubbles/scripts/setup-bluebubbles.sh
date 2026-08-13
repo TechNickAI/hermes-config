@@ -68,7 +68,10 @@ preflight() {
   holder=$( { lsof -nP -iTCP:"$BB_PORT" -sTCP:LISTEN 2>/dev/null || true; } | awk 'NR==2{print $1}')
   if [[ -z "$holder" ]]; then
     c_ok "port $BB_PORT free"
-  elif [[ "$holder" == *BlueBubbles* ]]; then
+  elif [[ "$holder" == BlueBubbl* ]]; then
+    # macOS lsof truncates the COMMAND column to 9 characters, so a running
+    # server shows as "BlueBubbl" -- matching on the full name never fires
+    # and a healthy install fails preflight.
     c_ok "port $BB_PORT already served by BlueBubbles"
   else
     c_fail "port $BB_PORT held by '$holder' -- set BB_PORT to something else"
