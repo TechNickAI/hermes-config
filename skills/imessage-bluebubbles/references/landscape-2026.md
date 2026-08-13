@@ -1,4 +1,4 @@
-# Programmatic iMessage landscape (researched 2026-08)
+# Programmatic iMessage landscape (researched mid-2026)
 
 Why BlueBubbles won. Keep this so a future session does not redo the dive.
 

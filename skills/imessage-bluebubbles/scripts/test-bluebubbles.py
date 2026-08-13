@@ -272,27 +272,35 @@ def check_ambiguity_guard(script_dir, url, pw):
                (r.stdout + r.stderr).strip()[:150])
 
     # 3. A well-formed GUID for a chat that does not exist must not resolve.
-    #    Also read-only: resolve_chat returns GUIDs verbatim, so this proves
-    #    the documented raw-GUID bypass is real and bounded.
+    #    Read-only. NOTE: bb.api() returns PARSED JSON, not a response object,
+    #    so checking `.status_code` here would always be falsy and the test
+    #    would pass unconditionally. Assert on the payload instead: a real
+    #    lookup returns a non-empty data array, a bogus GUID does not.
     probe_missing = (
-        "import sys, importlib.util\n"
+        "import sys, importlib.util, urllib.parse\n"
         f"spec = importlib.util.spec_from_file_location('bb', {str(bb)!r})\n"
         "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
         "url, pw = m.load_config()\n"
-        "import urllib.parse\n"
         "g = 'any;-;+19999999999'\n"
         "enc = urllib.parse.quote(g, safe='')\n"
-        "r = m.api('GET', f'/api/v1/chat/{enc}/message?limit=1', url, pw)\n"
-        "print('HTTP', r.status_code)\n"
+        "try:\n"
+        "    d = m.api('GET', f'/api/v1/chat/{enc}/message?limit=1', url, pw)\n"
+        "    rows = d.get('data') if isinstance(d, dict) else None\n"
+        "    print('ACCEPTED_WITH_DATA' if rows else 'NO_DATA')\n"
+        "except SystemExit as e:\n"
+        "    print(f'SERVER_REJECTED:{e}')\n"
     )
     r = subprocess.run([sys.executable, "-c", probe_missing],
                        capture_output=True, text=True, env=env, timeout=120)
-    if "HTTP 200" not in r.stdout:
-        record(PASS, "nonexistent chat GUID is rejected by the server",
-               (r.stdout + r.stderr).strip()[:100])
+    if "SERVER_REJECTED" in r.stdout or "NO_DATA" in r.stdout:
+        record(PASS, "nonexistent chat GUID returns nothing",
+               "a bogus GUID cannot silently resolve to a real thread")
+    elif "ACCEPTED_WITH_DATA" in r.stdout:
+        record(FAIL, "nonexistent chat GUID returns nothing",
+               "server returned messages for a GUID that should not exist")
     else:
-        record(SKIP, "nonexistent chat GUID is rejected by the server",
-               "server accepted a lookup for a chat that should not exist")
+        record(SKIP, "nonexistent chat GUID returns nothing",
+               (r.stdout + r.stderr).strip()[:150])
 
 
 def check_exposure(url, pw):

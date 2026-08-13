@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up BlueBubbles as the iMessage bridge for a Hermes fleet member.
+# Set up BlueBubbles as the iMessage bridge for a machine running an agent.
 #
 # Automates every step that CAN be automated, and stops with clear
 # instructions at each step that genuinely requires a human at the GUI
@@ -194,8 +194,21 @@ verify() {
   local url="http://127.0.0.1:${BB_PORT}"
   local pw="${BB_PASSWORD:-}"
 
+  # Percent-encode the password for query-string use. Without this a valid
+  # password containing & # + % or a space changes the request BlueBubbles
+  # receives, so the installer reports a wrong password while bb.py (which
+  # does encode) authenticates fine.
+  urlencode() {
+    python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$1"
+  }
+
   if [[ -z "$pw" && -f "$HERMES_ENV" ]]; then
     pw=$( { grep '^BLUEBUBBLES_PASSWORD=' "$HERMES_ENV" || true; } | head -1 | cut -d= -f2-)
+  fi
+
+  local pw_enc=""
+  if [[ -n "$pw" ]]; then
+    pw_enc=$(urlencode "$pw")
   fi
 
   if ! bb_running; then
@@ -215,7 +228,7 @@ verify() {
   # the HTTP status code instead.
   local ping_code
   ping_code=$(curl -sS -m 10 -o /tmp/bb-ping.$$ -w '%{http_code}' \
-                "${url}/api/v1/ping?password=${pw}" 2>/dev/null)
+                "${url}/api/v1/ping?password=${pw_enc}" 2>/dev/null)
   if [[ "$ping_code" == "200" ]]; then
     c_ok "API ping succeeded"
   elif [[ "$ping_code" == "401" ]]; then
@@ -245,7 +258,7 @@ verify() {
 
   # server/info: proves FDA is working and reports Private API state.
   local info
-  info=$(curl -sS -m 10 "${url}/api/v1/server/info?password=${pw}" 2>&1)
+  info=$(curl -sS -m 10 "${url}/api/v1/server/info?password=${pw_enc}" 2>&1)
   if echo "$info" | grep -q 'private_api'; then
     local papi
     papi=$(echo "$info" | grep -o '"private_api":[a-z]*' | head -1 | cut -d: -f2)
@@ -256,10 +269,13 @@ verify() {
 
   # chat/query is the REAL Full Disk Access test -- it reads chat.db.
   local chats
-  chats=$(curl -sS -m 15 -X POST "${url}/api/v1/chat/query?password=${pw}" \
+  chats=$(curl -sS -m 15 -X POST "${url}/api/v1/chat/query?password=${pw_enc}" \
             -H 'Content-Type: application/json' -d '{"limit":1,"offset":0}' 2>&1)
-  if echo "$chats" | grep -q '"data"'; then
-    c_ok "chat/query returned data -- Full Disk Access is working"
+  # Do NOT grep for '"data"'. A blind server returns {"status":200,"data":[]},
+  # which contains that key -- the exact shape this check exists to catch.
+  # Require at least one chat object.
+  if echo "$chats" | grep -qE '"data"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{'; then
+    c_ok "chat/query returned chats -- Full Disk Access is working"
   else
     c_fail "chat/query failed -- Full Disk Access likely NOT granted"
     c_warn "  ${chats:0:200}"
@@ -341,8 +357,21 @@ check_exposure() {
   addr=$(sqlite3 "$db" "select value from config where name='server_address';" 2>/dev/null)
   proxy=$(sqlite3 "$db" "select value from config where name='proxy_service';" 2>/dev/null)
 
+  # Config alone is NOT proof. Check for a live tunnel process first: an
+  # orphaned cloudflared survives an app restart and keeps serving the old
+  # public URL even after server_address reads as loopback.
+  local tunnel_pid
+  tunnel_pid=$( { pgrep -f "BlueBubbles.app.*(cloudflared|ngrok)" || true; } | head -1)
+  if [[ -n "$tunnel_pid" ]]; then
+    c_fail "a BlueBubbles tunnel process is STILL RUNNING (pid $tunnel_pid)"
+    c_warn "  config may read loopback while the old public URL still serves."
+    c_act "kill $tunnel_pid   # BlueBubbles' own tunnel only -- match on the
+     BlueBubbles.app path so unrelated tunnels on this host are untouched"
+    return 1
+  fi
+
   if [[ "$addr" == http://localhost* || "$addr" == http://127.0.0.1* ]]; then
-    c_ok "server is loopback-only ($addr)"
+    c_ok "server is loopback-only ($addr), no tunnel process running"
   elif [[ -n "$addr" ]]; then
     c_fail "server is PUBLICLY EXPOSED via ${proxy:-a tunnel}: $addr"
     c_warn "  Hermes only needs loopback. A public URL fronts the whole message"

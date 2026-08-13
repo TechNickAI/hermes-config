@@ -61,8 +61,8 @@ the one that matches a name search.
 ## Never guess on ambiguity
 
 `bb.py` prints candidates and exits when a selector matches more than one chat. This is
-deliberate and must not be softened into "pick the best match". Verified live: the
-selector `+1` matched **852** chats.
+deliberate and must not be softened into "pick the best match". Observed: the selector
+`+1` matched **852** chats.
 
 If the user's phrasing does not resolve to exactly one thread, ask. A question costs one
 turn; a misdirected personal message cannot be taken back.
