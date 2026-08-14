@@ -11,6 +11,8 @@ anywhere CI does. Nothing here can send a message.
 from __future__ import annotations
 
 import importlib.util
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,46 @@ SCRIPT = (
     / "scripts"
     / "bb.py"
 )
+
+# bb.py imports `requests` at module scope. This repo deliberately installs no
+# third-party packages in CI so the suite passes from a bare clone, and an
+# ImportError during collection aborts the ENTIRE pytest session rather than
+# just this file. Skipping instead would mean these guards never run in CI,
+# which defeats the point of committing them -- so inject a minimal stub. Every
+# test stubs bb.api anyway, so no HTTP is ever performed.
+if "requests" not in sys.modules:
+    _requests = types.ModuleType("requests")
+
+    class _RequestException(Exception):
+        pass
+
+    class _Timeout(_RequestException):
+        pass
+
+    class _ConnectionError(_RequestException):
+        pass
+
+    def _unavailable(*_args, **_kwargs):
+        raise AssertionError(
+            "a test performed a real HTTP call; bb.api must be stubbed"
+        )
+
+    _requests.exceptions = types.SimpleNamespace(
+        RequestException=_RequestException,
+        Timeout=_Timeout,
+        ConnectionError=_ConnectionError,
+        ConnectTimeout=_Timeout,
+        ReadTimeout=_Timeout,
+        HTTPError=_RequestException,
+    )
+    _requests.RequestException = _RequestException
+    _requests.Timeout = _Timeout
+    _requests.ConnectionError = _ConnectionError
+    _requests.request = _unavailable
+    _requests.get = _unavailable
+    _requests.post = _unavailable
+    sys.modules["requests"] = _requests
+
 SPEC = importlib.util.spec_from_file_location("imessage_bluebubbles_bb", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
