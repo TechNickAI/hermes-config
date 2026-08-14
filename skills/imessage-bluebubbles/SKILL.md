@@ -328,9 +328,9 @@ Verify in three layers, because each proves something the others do not:
    `UNKNOWN -- DO NOT RETRY`).
 
 When counting name duplicates, separate **same-root** duplicates (real, breaks the
-loader) from **local-shadows-bundled** pairs (normal -- the local copy wins). A Mac with
-a full skill library routinely shows 30-70 of the latter; reporting those as collisions
-is a false alarm.
+loader) from **local-shadows-bundled** pairs (normal -- the local copy wins). Any
+machine whose local skill library overlaps the bundled one shows many of the latter, and
+reporting them as collisions is a false alarm. Only a same-root duplicate is a defect.
 
 Profile layout trap: on a single-agent host the agent IS the root profile and skills
 live at `~/.hermes/skills/`, with no `profiles/<name>/` directory. Sub-profiles use
