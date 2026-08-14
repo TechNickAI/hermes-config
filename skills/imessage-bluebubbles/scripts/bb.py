@@ -156,7 +156,13 @@ def cmd_health(args, url, pw):
     print(f"version:     {info.get('server_version', 'unknown')}")
     print(f"macos:       {info.get('os_version', 'unknown')}")
     print(f"private_api: {info.get('private_api', 'unknown')}")
-    print(f"chat access: {'ok' if chats else 'NO DATA -- check Full Disk Access'}")
+    if chats:
+        print("chat access: ok")
+    else:
+        # Exit non-zero. Callers gate on the status code, and returning 0 here
+        # would report success for the precise failure this command exists to
+        # detect: server up, password fine, cannot read chat.db.
+        sys.exit("chat access: NO DATA -- check Full Disk Access")
 
 
 def cmd_chats(args, url, pw):

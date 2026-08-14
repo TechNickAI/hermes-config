@@ -340,8 +340,10 @@ def check_exposure(url, pw):
 
     if addr.startswith("https://") and "trycloudflare" in addr:
         try:
-            resp = requests.get(f"{addr}/api/v1/ping", timeout=25,
-                                params={"password": pw})
+            # NEVER send the real password to a public URL: it would land in
+            # Cloudflare/proxy access logs, and this check does not need it.
+            # Any HTTP response at all proves the tunnel is still serving.
+            resp = requests.get(f"{addr}/api/v1/ping", timeout=25)
             record(FAIL, "public URL unreachable",
                    f"STILL LIVE: HTTP {resp.status_code} from the internet")
         except Exception:
