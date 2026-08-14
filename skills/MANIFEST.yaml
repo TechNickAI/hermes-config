@@ -11,7 +11,7 @@
 #   use_when              the trigger conditions, for selective installation
 _generated_by: scripts/generate_manifest.py
 _do_not_edit: Regenerate with `python scripts/generate_manifest.py`; CI checks it.
-count: 23
+count: 24
 skills:
 - name: address-pr-comments
   version: 1.0.0
@@ -148,6 +148,25 @@ skills:
   - twitter
   - x
   path: skills/grok-search
+- name: imessage-bluebubbles
+  version: 1.0.0
+  scope: solo
+  summary: Use when sending, reading, or searching iMessages from an agent on macOS, or when setting up, hardening, or debugging the BlueBubbles iMessage bridge.
+  use_when: sending, reading, or searching iMessages from an agent on macOS, or when setting up, hardening, or debugging the BlueBubbles iMessage bridge. Also use when an existing chat.db/imsg approach breaks with permissionDenied, "authorization denied (code 23)", or hangs with no output after a macOS or Pytho…
+  requires:
+  - macOS with Messages.app signed into iMessage
+  - BlueBubbles server app (installed by scripts/setup-bluebubbles.sh)
+  - Full Disk Access granted by hand (macOS permission prompts cannot be scripted)
+  - python3 with the requests package
+  works_out_of_the_box: false
+  tags:
+  - imessage
+  - bluebubbles
+  - apple
+  - messaging
+  - bridge
+  - tcc
+  path: skills/imessage-bluebubbles
 - name: keep-going
   version: 1.0.0
   scope: solo
