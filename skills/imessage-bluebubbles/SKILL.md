@@ -272,9 +272,10 @@ recoverable, so it never guesses.
 ```
 
 `chat access: ok` is the only line that proves Full Disk Access works. A green ping with
-empty chats means the app is running but blind.
+empty chats means the app is running but blind. `health` exits non-zero in that case, so
+a caller can gate on the status code.
 
-## Verification
+### Full test suite
 
 Run the suite. It exercises the bridge the way an agent actually uses it and reports
 PASS/FAIL/SKIP per check.
@@ -305,6 +306,35 @@ failure:
   pointing it at a wrong password and a wrong port; both must FAIL. A suite that cannot
   fail proves nothing. `bb.py health` remains the quick single check; `chat access: ok`
   is the only line that proves Full Disk Access.
+
+## Fleet rollout
+
+This skill is **macOS-only** -- BlueBubbles is a Mac app. Delivering it to a Linux host
+produces a skill that can never work, which is worse than absent. Resolve the OS per
+host before copying (`ssh <host> 'uname -s'`, Darwin only).
+
+Deliver a tarball rather than per-file copies, extract to a staging directory, and only
+swap the live directory once `SKILL.md` is confirmed present -- a partial transfer must
+never half-replace a working skill. Back up any existing copy first.
+
+Verify in three layers, because each proves something the others do not:
+
+1. **Delivery** -- sha256 every file against the source. File-present is not
+   file-correct.
+2. **Loader** -- resolve the skill BY NAME on the target and confirm exactly one
+   definition. A duplicate name makes `skill_view` refuse, so a perfectly delivered
+   skill can still be unloadable.
+3. **Body** -- assert a distinctive string survived (`chat access: ok`,
+   `UNKNOWN -- DO NOT RETRY`).
+
+When counting name duplicates, separate **same-root** duplicates (real, breaks the
+loader) from **local-shadows-bundled** pairs (normal -- the local copy wins). Any
+machine whose local skill library overlaps the bundled one shows many of the latter, and
+reporting them as collisions is a false alarm. Only a same-root duplicate is a defect.
+
+Profile layout trap: on a single-agent host the agent IS the root profile and skills
+live at `~/.hermes/skills/`, with no `profiles/<name>/` directory. Sub-profiles use
+`~/.hermes/profiles/<name>/skills/`.
 
 ## Pitfalls
 
