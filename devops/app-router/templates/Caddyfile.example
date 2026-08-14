@@ -90,8 +90,15 @@
     }
 
     # Well-known secrets filenames at any depth, case insensitive.
+    # The trailing /? is load bearing. Caddy's file_server answers a
+    # directory-style request for an existing file with a 308 redirect to
+    # the slash-less form, and answers a nonexistent one with the SPA
+    # index. Without /? the matcher misses /credentials.json/ and that
+    # 308-versus-200 split becomes an existence oracle: a probe learns
+    # the file is there without ever reading it. Matching the slash form
+    # here 404s both cases identically.
     @secrets_probe {
-        path_regexp (?i)(^|/)([^/]*\.(env|tfstate|pem|key)(\.[^/]*)?|credentials\.json|secrets\.(json|ya?ml)|key\.json|service[-_]account\.json|serviceaccountkey\.json|firebase-(adminsdk|service-account)\.json|rclone\.conf|dockerfile|docker-compose\.ya?ml)$
+        path_regexp (?i)(^|/)([^/]*\.(env|tfstate|pem|key)(\.[^/]*)?|credentials\.json|secrets\.(json|ya?ml)|key\.json|service[-_]account\.json|serviceaccountkey\.json|firebase-(adminsdk|service-account)\.json|rclone\.conf|dockerfile|docker-compose\.ya?ml)/?$
     }
     handle @secrets_probe {
         respond 404
