@@ -70,18 +70,28 @@ mid-task and you need exact state — the actual file paths touched, the last to
 the precise question the assistant was waiting on, the diff that was proposed but not
 yet applied — the summary will be too coarse. Go to the raw transcript.
 
-Transcripts live in the SQLite state store, shared by every profile on the host:
+Transcripts live in a SQLite state store. **Resolve it from the active Hermes home, not
+a hardcoded path** — a named profile keeps its own store, and reading the wrong one
+returns an empty result that looks exactly like a missing session:
 
 ```
-~/.hermes/state.db      # tables: sessions, messages
+$HERMES_HOME/state.db          # active profile, when HERMES_HOME is set
+~/.hermes/state.db             # root agent, when it is not
 ```
 
 Read the tail of a session directly:
 
 ```python
 import sqlite3, os
-db = os.path.expanduser("~/.hermes/state.db")
+
+# Resolve the store the way the running agent does, or a profile session
+# will appear to be missing when it is simply in another file.
+home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+db = os.path.join(home, "state.db")
+
 con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)   # read-only: never disturb a live session
+
+session_id = "..."   # from session_search
 rows = con.execute("""
     SELECT role, tool_name, content
     FROM messages
@@ -89,12 +99,16 @@ rows = con.execute("""
     ORDER BY id DESC
     LIMIT 12
 """, (session_id,)).fetchall()
+
 for role, tool, content in reversed(rows):
     print(f"=== {role}{'/' + tool if tool else ''} ===")
     print(str(content)[:3500])
 ```
 
 Open the DB **read-only** (`mode=ro`). A live session may be writing to it.
+
+If a lookup comes back empty, check the other store before concluding anything is gone.
+`find $HOME/.hermes -maxdepth 3 -name state.db` lists every store on the host.
 
 Useful columns: `messages.role`, `content`, `tool_name`, `timestamp`, `session_id`;
 `sessions.id`, `source`, `model`, `started_at`, `ended_at`, `message_count`. The store
