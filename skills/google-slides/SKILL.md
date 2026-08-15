@@ -3,7 +3,7 @@ name: google-slides
 description:
   "Use when creating, importing, exporting, or quality-checking Google Slides decks via
   markdown-to-PPTX conversion and Drive import."
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [macos, linux]

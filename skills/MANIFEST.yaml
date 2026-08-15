@@ -116,7 +116,7 @@ skills:
   - productivity
   path: skills/google-sheets
 - name: google-slides
-  version: 1.0.0
+  version: 1.1.0
   scope: solo
   summary: Use when creating, importing, exporting, or quality-checking Google Slides decks via markdown-to-PPTX conversion and Drive import.
   use_when: creating, importing, exporting, or quality-checking Google Slides decks via markdown-to-PPTX conversion and Drive import.
