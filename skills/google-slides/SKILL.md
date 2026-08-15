@@ -203,10 +203,10 @@ Confirm:
    lacks `#` per-slide headings. Each slide needs its own top-level heading.
 
 7. **Credential lookup fails (`missing_credentials`).** If the helper can't find gog's
-   token, pass credentials explicitly: export gog's refresh token to a 0600 file. On
-   current gog releases use
-   `gog auth tokens export <account> --out /tmp/tok.json --overwrite`; inspect
-   `gog auth tokens export --help` on older releases. Then run the helper with
+   token, pass credentials explicitly: export gog's refresh token to a 0600 file with
+   `gog auth tokens export <account> --output /tmp/tok.json --force` (newer releases
+   also accept `--out` / `--overwrite`; check `gog auth tokens export --help`). Then run
+   the helper with
    `--refresh-token-file /tmp/tok.json --client-secret-file <gog credentials.json>`. The
    helper refuses explicit credential files that are group/world-readable or not owned
    by you — `chmod 600` them. These flags work before or after the subcommand. For a gog
