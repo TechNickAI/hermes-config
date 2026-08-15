@@ -306,7 +306,11 @@ actually wired up — the skill cares about _family diversity_, not the exact al
 Before launching reviewers, validate the plumbing in this order:
 
 1. Resolve the reviewer executable from the running gateway's loaded `site-packages`,
-   not a remembered path, `which` result, or version string alone.
+   not a remembered path, `which` result, or version string alone. **This step applies
+   when a gateway is running.** On a TUI or standalone CLI install with no gateway
+   process, there is no PID to derive `site-packages` from: fall back to the interpreter
+   that sits beside the resolved `hermes` binary, confirm it imports the Hermes package,
+   and note in the run that provenance was resolved without a gateway.
 2. Enumerate the active profile's provider aliases/models; never hard-code a custom
    alias across panel runs. Smoke-test the exact alias/model pair and require exit `0`
    plus non-empty output.
