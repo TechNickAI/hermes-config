@@ -61,6 +61,25 @@ skills:
   - multi-source
   - orchestration
   path: skills/deep-dive
+- name: diagram-rendering
+  version: 1.0.0
+  scope: solo
+  summary: Use when a fast hosted-render path is needed to turn D2, Mermaid, Graphviz, or Chart.js text into an inline-ready PNG for chat (Telegram, Discord, Slack) or a saved image.
+  use_when: a fast hosted-render path is needed to turn D2, Mermaid, Graphviz, or Chart.js text into an inline-ready PNG for chat (Telegram, Discord, Slack) or a saved image. Handles the hosted-render + local-rasterize plumbing and platform gotchas (snap-chromium sandbox, D2-is-SVG-only, blank-render detection…
+  requires:
+  - chromium binary on PATH (or CHROMIUM_BIN) for local rasterize
+  - network access to a Kroki host (KROKI_BASE) and QuickChart (QUICKCHART_BASE)
+  works_out_of_the_box: false
+  tags:
+  - diagrams
+  - charts
+  - visualization
+  - telegram
+  - mermaid
+  - d2
+  - graphviz
+  - quickchart
+  path: skills/diagram-rendering
 - name: email-steward
   version: 1.0.0
   scope: solo
@@ -198,8 +217,8 @@ skills:
 - name: mini-app
   version: 0.3.0
   scope: fleet
-  summary: Use when adding, removing, password-protecting, or troubleshooting a mini-app served by the Hermes app-router (Caddy + PM2 + an Express auth sidecar + Tailscale Serve/Funnel) on a host.
-  use_when: adding, removing, password-protecting, or troubleshooting a mini-app served by the Hermes app-router (Caddy + PM2 + an Express auth sidecar + Tailscale Serve/Funnel) on a host. Covers install, the Caddy route pattern, the auth sidecar conventions, exposing Hermes dashboards behind a password, the we…
+  summary: Use when adding, removing, password-protecting, or troubleshooting a mini-app served by the openclaw-config app-router (Caddy + PM2 + auth sidecar + Tailscale Serve/Funnel) on a fleet machine.
+  use_when: adding, removing, password-protecting, or troubleshooting a mini-app served by the openclaw-config app-router (Caddy + PM2 + auth sidecar + Tailscale Serve/Funnel) on a fleet machine. Covers install, the Caddy route pattern, the auth sidecar conventions, exposing apps publicly via Funnel, Hermes das…
   requires:
   - 'host services: Caddy + PM2'
   - Tailscale Serve/Funnel
@@ -260,24 +279,6 @@ skills:
   - synthesis
   - safety
   path: skills/multi-review
-- name: omnirouter
-  version: 1.0.0
-  scope: fleet
-  summary: Use when operating, configuring, migrating to, or auditing OmniRoute — the self-hosted multi-provider LLM router that fronts Claude, OpenAI/Codex, Gemini, OpenRouter, and local models behind one OpenAI-compatible (and Anthropic Messages-compatible) endpoint.
-  use_when: operating, configuring, migrating to, or auditing OmniRoute — the self-hosted multi-provider LLM router that fronts Claude, OpenAI/Codex, Gemini, OpenRouter, and local models behind one OpenAI-compatible (and Anthropic Messages-compatible) endpoint. Covers pointing a Hermes agent at OmniRoute, impor…
-  requires:
-  - a self-hosted OmniRoute LLM router
-  works_out_of_the_box: false
-  tags:
-  - omniroute
-  - router
-  - llm
-  - providers
-  - oauth
-  - migration
-  - model-routing
-  - devops
-  path: skills/omnirouter
 - name: pr-review-sweep
   version: 0.1.0
   scope: fleet

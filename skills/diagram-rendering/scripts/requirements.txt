@@ -1,0 +1,4 @@
+# Optional: enables blank-render detection. Without it, render.py falls back to a
+# file-size heuristic. Chromium (system binary) and network to kroki.io/quickchart.io
+# are the real requirements; both are documented in SKILL.md.
+pillow>=10.0

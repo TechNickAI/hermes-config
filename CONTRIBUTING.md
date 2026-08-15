@@ -145,6 +145,29 @@ Where things go:
 | Infrastructure patterns and helpers | `devops/`                               |
 | Per-machine notes                   | `CLAUDE.local.md` (gitignored)          |
 
+### Public repo, or a private one?
+
+**Default to this repo.** A skill only belongs somewhere private when it meets one of
+three tests:
+
+1. **Not reasonably generalizable.** The procedure only makes sense against one specific
+   deployment, and rewriting it with placeholders would leave nothing useful behind.
+   Genuine operator knowledge that merely _mentions_ real hosts is not this — scrub the
+   names and it usually generalizes fine.
+2. **Proprietary or alpha-bearing.** Anything used to make money where the edge is the
+   point: trading strategy, financial decision rules, screening criteria. Publishing it
+   destroys its value.
+3. **Unavoidably PII-dense.** A fleet inventory or a session log that _is_ a list of who
+   runs what. Not "contains a hostname" — that gets a placeholder.
+
+A skill lives in exactly **one** repo. If a sanitized copy is worth publishing, publish
+it and delete the private twin; do not maintain both. Two copies of the same skill name
+diverge, and the loader has no way to tell which one you meant.
+
+When a skill fails a test above but parts of it are generally useful, split along the
+seam: generic technique here, the environment-specific reference files in the private
+repo.
+
 ## Working in parallel
 
 Multiple agent sessions can work this repo at once without collisions. The unit of work
