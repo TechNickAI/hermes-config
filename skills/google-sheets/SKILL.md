@@ -3,7 +3,7 @@ name: google-sheets
 description:
   "Use when creating, populating, formatting, importing, exporting, or quality-checking
   Google Sheets from CSV, JSON arrays, or computed tabular data."
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [macos, linux]
