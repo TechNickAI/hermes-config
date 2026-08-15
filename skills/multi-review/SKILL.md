@@ -168,9 +168,9 @@ Certain targets should never get only a quick pass:
 Prefer a reviewer from a **different model family** than the calling agent. Independence
 matters more than raw benchmark rank.
 
-Use the models configured in the local Hermes profile. Do not hard-code API keys. If the
-profile has aliases such as `custom:grok`, `custom:gemini`, or `custom:openrouter`, use
-those; otherwise inspect the local config and choose equivalent provider/model pairs.
+Use the models configured in the local Hermes profile. Do not hard-code API keys or
+provider aliases. Enumerate the live profile's `providers` mapping for every panel, then
+choose an alias/model pair that is present now; aliases may be renamed or removed.
 
 Pair each alias with the provider block the local config actually wires it to, and do
 not "normalize" a reviewer onto a different provider for tidiness. When one router is
@@ -231,8 +231,8 @@ verify its claims rather than rubber-stamping them.
 ### Running reviewers as Hermes one-shots
 
 The cleanest way to run an independent reviewer is a headless `hermes -z` call against a
-chosen provider/model. Confirm the local profile actually has the provider before using
-it: `hermes config get model.providers` (or read `~/.hermes/config.yaml`).
+chosen provider/model. Enumerate the live profile's `providers` mapping before using an
+alias; do not copy aliases from an older panel or another profile.
 
 **Keep reviewers on the configured router path — a slow reviewer is not a broken one.**
 A `hermes -z` reviewer call pays chat-session startup (config load, memory/Cortex
@@ -274,8 +274,9 @@ execution rules that prevent silent failures:**
    constraints into the reviewer prompt** so the headless reviewer doesn't echo
    sensitive data into its output or any follow-up text. Independence of lens, not loss
    of safety.
-5. **Confirm the provider exists first** with `hermes config get model.providers` (or
-   read `~/.hermes/config.yaml`) before selecting it.
+5. **Confirm the provider exists first** by enumerating the live profile's `providers`
+   mapping before selecting it. Aliases are profile-local and can be renamed or removed;
+   use the tested recipe under **Panel infrastructure traps**.
 
 6. **Run a cross-family panel in parallel background processes — but never with shell
    `&`.** For a genuine multi-family panel, wall time should be the _slowest single
@@ -315,10 +316,31 @@ fallback) prefers subscription quota, but **can still fall back to metered usage
 verify routing and cost policy rather than assuming a review is free.
 
 If the profile routes everything through a custom multi-provider router, the providers
-will instead be custom aliases (for example `custom:grok`, `custom:gemini`,
-`custom:openrouter`) with router-qualified model IDs. Inspect the config and use
-whatever families are actually wired up — the skill cares about _family diversity_, not
-the exact alias.
+will instead be custom aliases. Enumerate the live config and use whatever families are
+actually wired up — the skill cares about _family diversity_, not the exact alias.
+
+### Panel infrastructure traps
+
+Before launching reviewers, validate the plumbing in this order:
+
+1. Resolve the reviewer executable from the running gateway's loaded `site-packages`,
+   not a remembered path, `which` result, or version string alone. **This step applies
+   when a gateway is running.** On a TUI or standalone CLI install with no gateway
+   process, there is no PID to derive `site-packages` from: fall back to the interpreter
+   that sits beside the resolved `hermes` binary, confirm it imports the Hermes package,
+   and note in the run that provenance was resolved without a gateway.
+2. Enumerate the active profile's provider aliases/models; never hard-code a custom
+   alias across panel runs. Smoke-test the exact alias/model pair and require exit `0`
+   plus non-empty output.
+3. Bound every background reviewer poll with both a wall-clock deadline and a maximum
+   iteration count. Break explicitly on completion and timeout; surface non-zero exit
+   status and stderr.
+
+The command-first, executed recipes and observed symptoms are in
+[references/panel-infrastructure-traps.md](references/panel-infrastructure-traps.md).
+For slow-but-valid reviewers, router-path and 300/600-second degradation policy remains
+in
+[references/slow-reviewer-timeouts-router-path.md](references/slow-reviewer-timeouts-router-path.md).
 
 ## Lens Selection by Scenario
 
@@ -615,17 +637,21 @@ smallest path to unblock.
    different ways.
 6. **Forgetting the approval gate.** A review can recommend an action, but irreversible
    changes, public sends, secrets, money, and broad rollouts still need human approval.
-7. **Ignoring missing setup.** If the environment lacks Grok/Gemini/GPT routing, fall
+7. **Ignoring panel plumbing.** A wrong executable, a stale provider alias, or an
+   unbounded watcher can imitate model failure. Run the binary-provenance, alias-smoke,
+   and bounded-poll checks under **Panel infrastructure traps** before degrading the
+   review.
+8. **Ignoring missing setup.** If the environment lacks Grok/Gemini/GPT routing, fall
    back honestly and note how to improve the panel next time.
-8. **Confusing optimization with defect discovery.** The goal is meaningful risk
+9. **Confusing optimization with defect discovery.** The goal is meaningful risk
    reduction, not generating feedback for its own sake.
-9. **Letting `--ignore-rules` strip safety, not just persona.** It also removes project
-   privacy/PII rules. Re-inject any privacy or safety constraints the artifact needs
-   into each reviewer prompt before ignoring rules.
-10. **Delegating open-ended I/O-heavy review work.** Subagents are best for bounded
+10. **Letting `--ignore-rules` strip safety, not just persona.** It also removes project
+    privacy/PII rules. Re-inject any privacy or safety constraints the artifact needs
+    into each reviewer prompt before ignoring rules.
+11. **Delegating open-ended I/O-heavy review work.** Subagents are best for bounded
     reasoning. For crawls, searches, downloads, or broad file inspection, gather and
     reduce in the parent first, then send reviewers a self-contained brief.
-11. **Committing private routing notes to a public skill.** Profile-specific provider
+12. **Committing private routing notes to a public skill.** Profile-specific provider
     aliases, private endpoints, key env names, and owner-specific panel recipes belong
     in private profile references, not the public repo. Public guidance should describe
     the pattern and safety constraints, not private infrastructure.
@@ -638,6 +664,9 @@ smallest path to unblock.
 - [ ] At least two model families used when available (or degradation stamped if not)
 - [ ] Privacy/PII constraints re-injected into every isolated reviewer prompt
 - [ ] Reviewers ran independently
+- [ ] Reviewer binary provenance matches the running gateway
+- [ ] Provider aliases/models were enumerated from the live profile and smoke-tested
+- [ ] Background reviewer polling has a deadline, iteration bound, and verified timeout
 - [ ] Findings synthesized into auto-fix / ask / defer / wontfix
 - [ ] Safe auto-fixes applied when authorized
 - [ ] Material fixes re-reviewed
