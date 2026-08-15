@@ -1,13 +1,19 @@
 # Standalone Stock Screens mini-app session notes
 
-Context: User asked for a stock-screen UI as a **mini-app**, not merely as a Hermes dashboard plugin. Initial build as a dashboard plugin was useful, but the corrected deliverable was a standalone HTTP app behind the app-router.
+Context: User asked for a stock-screen UI as a **mini-app**, not merely as a Hermes
+dashboard plugin. Initial build as a dashboard plugin was useful, but the corrected
+deliverable was a standalone HTTP app behind the app-router.
 
 ## Key distinction learned
 
-- **Hermes dashboard plugin**: lives inside the Hermes dashboard SPA (`~/.hermes/plugins/<name>/dashboard`) and registers with `window.__HERMES_PLUGINS__`. It is not itself a router mini-app.
-- **Router mini-app**: its own localhost HTTP service, supervised by PM2 and exposed by Caddy/Tailscale at a clean path like `/stock-screens/`.
+- **Hermes dashboard plugin**: lives inside the Hermes dashboard SPA
+  (`~/.hermes/plugins/<name>/dashboard`) and registers with `window.__HERMES_PLUGINS__`.
+  It is not itself a router mini-app.
+- **Router mini-app**: its own localhost HTTP service, supervised by PM2 and exposed by
+  Caddy/Tailscale at a clean path like `/stock-screens/`.
 
-If the user says “as a mini app, not as a Hermes plugin,” build the standalone service. Do not satisfy the request by mounting a dashboard plugin inside `/hermes-<name>/...`.
+If the user says "as a mini app, not as a Hermes plugin," build the standalone service.
+Do not satisfy the request by mounting a dashboard plugin inside `/hermes-<name>/...`.
 
 ## Working shape from this session
 
@@ -57,7 +63,9 @@ GET /api/schedule-draft/<query-id>
 GET /               # static frontend
 ```
 
-Because Caddy strips `/stock-screens`, the browser frontend should use relative URLs, e.g. compute `new URL('./api/', window.location.href).pathname`, rather than hardcoding `/api/...` or `/stock-screens/api/...`.
+Because Caddy strips `/stock-screens`, the browser frontend should use relative URLs,
+e.g. compute `new URL('./api/', window.location.href).pathname`, rather than hardcoding
+`/api/...` or `/stock-screens/api/...`.
 
 ## Data facts from this session
 
@@ -79,7 +87,9 @@ These are example data, not durable investment conclusions.
 
 ## Router/Tailscale lessons
 
-- `tailscale serve --bg --https=443 http://127.0.0.1:8080` followed by `tailscale funnel --bg 443` can rewrite the backend to `127.0.0.1:443`. Prefer the direct command:
+- `tailscale serve --bg --https=443 http://127.0.0.1:8080` followed by
+  `tailscale funnel --bg 443` can rewrite the backend to `127.0.0.1:443`. Prefer the
+  direct command:
 
 ```bash
 tailscale serve reset
@@ -94,9 +104,12 @@ https://<host>.ts.net (Funnel on)
 |-- / proxy http://127.0.0.1:8080
 ```
 
-- Caddyfile inline HTML heredoc can be brittle / fail parsing (`unrecognized directive: <!doctype`). Use a static `router/public/index.html` served with `root` + `file_server` for router home pages.
+- Caddyfile inline HTML heredoc can be brittle / fail parsing
+  (`unrecognized directive: <!doctype`). Use a static `router/public/index.html` served
+  with `root` + `file_server` for router home pages.
 - Caddy should run under PM2, not as a bare process.
-- Always export literal `PM2_HOME=/Users/<user>/.pm2` from Hermes tools before `pm2` operations.
+- Always export literal `PM2_HOME=/Users/<user>/.pm2` from Hermes tools before `pm2`
+  operations.
 
 ## Verification pattern
 
@@ -125,4 +138,5 @@ $CHROME --headless=new --disable-gpu --virtual-time-budget=8000 \
   --dump-dom https://<host>.ts.net/stock-screens/ > /tmp/ss-dom.html
 ```
 
-Confirm DOM contains expected app strings (`Gil equity screens`, `Standalone mini-app`, query tabs, visible tickers) and **does not** contain `__HERMES_PLUGIN_SDK__`.
+Confirm DOM contains expected app strings (`Gil equity screens`, `Standalone mini-app`,
+query tabs, visible tickers) and **does not** contain `__HERMES_PLUGIN_SDK__`.

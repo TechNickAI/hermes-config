@@ -1,12 +1,15 @@
 # Renaming the mini-app framework root directory
 
-Nick's rule: **NO symlinks for path migrations.** Symlinks rot and hide drift. Do the real rename and update every reference.
+Nick's rule: **NO symlinks for path migrations.** Symlinks rot and hide drift. Do the
+real rename and update every reference.
 
-This is the playbook used 2026-05-27 to rename `~/openclaw-apps` → `~/mini-apps`. Same shape applies to any future framework root move.
+This is the playbook used 2026-05-27 to rename `~/openclaw-apps` → `~/mini-apps`. Same
+shape applies to any future framework root move.
 
 ## Pre-flight: find every reference BEFORE you touch anything
 
-Don't run a recursive grep over `/Users/<user>` — it'll hit node_modules and time out (180s+). Be surgical:
+Don't run a recursive grep over `/Users/<user>` — it'll hit node_modules and time out
+(180s+). Be surgical:
 
 ```bash
 # 1. In-dir live config files (the ones that matter)
@@ -34,7 +37,8 @@ ps -p $(pgrep -f "caddy run" | head -1) -o ppid=,command=
 # If no plist, you'll restart it as a background process (see below).
 ```
 
-Historical journal/memory files (e.g. `.openclaw/workspace-sterling/memory/**`) — **don't patch**. Those are dated notes, not active config. Let them age.
+Historical journal/memory files (e.g. `.openclaw/workspace-sterling/memory/**`) —
+**don't patch**. Those are dated notes, not active config. Let them age.
 
 ## The rename
 
@@ -81,7 +85,8 @@ grep -l "OLDNAME" \
 
 ## Restart
 
-**Caddy** — must run as background process, NOT via `nohup ... &` (Hermes harness rejects shell-level backgrounding):
+**Caddy** — must run as background process, NOT via `nohup ... &` (Hermes harness
+rejects shell-level backgrounding):
 
 ```python
 # Use terminal(background=true, watch_patterns=["serving initial configuration"]):
@@ -112,12 +117,22 @@ python3 -c "import urllib.request as u; r=u.urlopen('http://127.0.0.1:8080/hello
 PM2_HOME=/Users/<user>/.pm2 pm2 jlist | python3 -c "import json,sys; [print(f\"{a['name']:20} {a['pm2_env']['status']:8} restarts={a['pm2_env']['restart_time']}\") for a in json.load(sys.stdin)]"
 ```
 
-If any app shows `restart_time > 0` or `status != online`, check `pm2 logs <name>` — usually a missed path patch.
+If any app shows `restart_time > 0` or `status != online`, check `pm2 logs <name>` —
+usually a missed path patch.
 
 ## Pitfalls
 
-- **Don't use `set -e` with a verification `ls` that's *supposed* to fail.** I had `ls -d /Users/<user>/NEWNAME /Users/<user>/OLDNAME` after the `mv` to prove the old one was gone — that `ls` exited 1 (correctly) and `set -e` killed the whole script before the patches ran. Either drop `set -e` for verifications or use `ls ... || true`.
-- **Don't try `nohup ... &` in foreground mode.** Hermes harness intercepts and refuses. Use `terminal(background=true, watch_patterns=[...])` for Caddy.
-- **Don't recursive-grep all of `/Users/<user>`.** Times out on node_modules. Target known config files instead.
-- **Skip historical memory/journal files.** `.openclaw/workspace-*/memory/**` are dated notes; patching them rewrites history for no benefit.
-- **`.next/` build artifacts will have stale paths** (e.g. `markdown-viewer/.next/required-server-files.json`). Don't patch them — they regenerate on next `next build`. PM2 restart of a Next.js app handles it.
+- **Don't use `set -e` with a verification `ls` that's _supposed_ to fail.** I had
+  `ls -d /Users/<user>/NEWNAME /Users/<user>/OLDNAME` after the `mv` to prove the old
+  one was gone — that `ls` exited 1 (correctly) and `set -e` killed the whole script
+  before the patches ran. Either drop `set -e` for verifications or use
+  `ls ... || true`.
+- **Don't try `nohup ... &` in foreground mode.** Hermes harness intercepts and refuses.
+  Use `terminal(background=true, watch_patterns=[...])` for Caddy.
+- **Don't recursive-grep all of `/Users/<user>`.** Times out on node_modules. Target
+  known config files instead.
+- **Skip historical memory/journal files.** `.openclaw/workspace-*/memory/**` are dated
+  notes; patching them rewrites history for no benefit.
+- **`.next/` build artifacts will have stale paths** (e.g.
+  `markdown-viewer/.next/required-server-files.json`). Don't patch them — they
+  regenerate on next `next build`. PM2 restart of a Next.js app handles it.
