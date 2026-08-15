@@ -85,6 +85,21 @@ A good multi-review run does these things, in order:
 Never claim "multi-model review" unless multiple model families actually ran. If model
 routing is unavailable, say `degraded: single-model` and explain what still ran.
 
+**Count a reviewer only when it returned substantive review output.** A seat that merely
+started, printed setup or shell noise, hung, or was killed is a _failed_ seat, not an
+independent lens. A same-family external reviewer does not by itself clear a
+`single-model-family` degradation. Report completed seats and distinct model-family
+coverage separately — they are different numbers and conflating them overstates the
+review.
+
+**Do not stall silently.** Give each reviewer a deadline. Once the expected window
+passes, poll for partial output rather than waiting indefinitely. If a seat times out or
+returns empty, replace it when the selected depth still requires that coverage;
+otherwise synthesize only if the completed seats still meet the depth floor for this
+target. A degraded panel that drops below its floor is not a finished review — say so
+instead of shipping it. Report which seats completed, which failed, and which families
+are missing, and lower confidence to match what actually survived.
+
 ### Execution hierarchy
 
 Use the strongest practical isolation mechanism available, but match it to the task's
@@ -441,6 +456,32 @@ Merge findings when they share the same root cause, same practical fix, or same
 operational impact. Keep the highest severity/confidence from the merged set and note
 which reviewers caught it. Do not count the same bug three times just because three
 models saw it.
+
+### When reviewers disagree, reproduce — do not arbitrate
+
+Two reviewers contradicting each other on a factual point is not a tie to be broken by
+seniority, model reputation, or vote count. Go back to the artifact and check. The
+cheapest decisive probe beats the most confident reviewer, and a reviewer asserting that
+a real citation is fabricated is itself a common review error — verify before deleting
+anything on a reviewer's say-so. Only genuine preference forks, where both positions
+survive contact with the evidence, go to the user as a choice.
+
+### Quantified claims need an evidence matrix
+
+When a finding claims impact, separate four things that are easy to blur together:
+
+| Question               | What it establishes                                  |
+| ---------------------- | ---------------------------------------------------- |
+| **Existence**          | the problem is real, with a located instance         |
+| **Observed frequency** | how often it actually occurred, measured not guessed |
+| **Measured impact**    | what it cost where it occurred                       |
+| **Addressable impact** | what the proposed fix would actually recover         |
+
+Existence does not imply frequency, and measured impact does not imply the fix recovers
+it. Do not stack several estimates that all draw from the same underlying pool and then
+report the sum — that double-counts. If only existence is established, say so and label
+the rest as unquantified rather than attaching a number that will be quoted later as if
+it were measured.
 
 ### Action buckets
 
