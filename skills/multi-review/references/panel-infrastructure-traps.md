@@ -122,6 +122,13 @@ else
   PROFILE_CONFIG="${HERMES_HOME:-$HERMES_ROOT}/config.yaml"
 fi
 [[ -f "$PROFILE_CONFIG" ]] || { echo "no config at $PROFILE_CONFIG" >&2; exit 1; }
+
+# Build the selector once, here. Every later reviewer launch reuses it, so
+# enumeration and review cannot drift onto different profiles. Empty PROFILE
+# means "let Hermes resolve it" and correctly omits the flag entirely.
+PROFILE_ARGS=()
+[[ -n "$PROFILE" ]] && PROFILE_ARGS=(--profile "$PROFILE")
+
 echo "enumerating: $PROFILE_CONFIG (profile='${PROFILE:-<resolved-by-env>}')"
 
 # Hermes' interpreter: the venv/uv-tool python that sits beside the hermes binary.
@@ -147,11 +154,9 @@ the supported `--profile` selector so the reviewer runs against the same config 
 enumerated. Names below are placeholders, not defaults:
 
 ```bash
-# PROFILE carries over from the enumeration block above.
+# PROFILE / PROFILE_ARGS carry over from the enumeration block above.
 PROVIDER=custom:<enumerated-alias>
 MODEL=<model-listed-under-that-alias>
-PROFILE_ARGS=()
-[[ -n "$PROFILE" ]] && PROFILE_ARGS=(--profile "$PROFILE")
 
 "$HERMES_BIN" -z 'Reply with exactly: PANEL_ALIAS_OK' \
   "${PROFILE_ARGS[@]}" \
