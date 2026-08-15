@@ -50,7 +50,6 @@ MANIFEST = SKILLS / "MANIFEST.yaml"
 FLEET_SCOPED = {
     "cron-healthcheck",
     "mini-app",
-    "omnirouter",
     "pr-review-sweep",
     "report",
 }
