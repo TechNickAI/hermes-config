@@ -11,6 +11,9 @@ version: 0.3.0
 license: MIT
 metadata:
   hermes:
+    requires:
+      - "host services: Caddy + PM2"
+      - Tailscale Serve/Funnel
     tags: [devops, app-router, caddy, pm2, tailscale, funnel, mini-app, fleet]
     related_skills: [cron-healthcheck]
 ---
@@ -208,20 +211,20 @@ pm2 delete my-app
 Then drop the Caddyfile `handle` block, the ecosystem entry, and any `APP_*_MY_APP` env
 vars from the auth-service block. Reload PM2 + Caddy.
 
-## Slug convention for Hermes dashboards (Nick's fleet)
+## Slug convention for Hermes dashboards
 
-Hermes agent dashboards use the slug `hermes-<agent>` — `hermes-bosun`, `hermes-argus`,
-`hermes-cora`, `hermes-sterling`. Two reasons:
+Hermes agent dashboards use the slug `hermes-<agent>` — `hermes-atlas`, `hermes-scout`,
+`hermes-vega`. Two reasons:
 
 1. **Grouping** — every Hermes dashboard sorts together under one prefix.
-2. **Collision avoidance** — a non-Hermes app may already own the bare agent name. On
-   Mac Studio `/sterling/` is the CFO web app (port 3004); the Sterling _agent's_ Hermes
-   dashboard is `/hermes-sterling/` (profile `sterling`, port 9122). Never mount a
-   Hermes dashboard at a bare name that collides with an existing app slug.
+2. **Collision avoidance** — a non-Hermes app may already own the bare agent name. If
+   `/vega/` is already a web app on some port, the Vega _agent's_ Hermes dashboard still
+   goes at `/hermes-vega/` (profile `vega`, its own port). Never mount a Hermes
+   dashboard at a bare name that collides with an existing app slug.
 
-Port convention for the dashboards: `9119`+ (argus 9119, bosun 9120, cora 9121, sterling
-9122). The env slug-to-password rule still applies: `hermes-bosun` ⇒
-`APP_PASSWORD_HERMES_BOSUN`.
+Assign the dashboards a contiguous port block (for example `9119`+, one per agent) and
+keep the mapping in your own registry. The env slug-to-password rule still applies:
+`hermes-atlas` ⇒ `APP_PASSWORD_HERMES_ATLAS`.
 
 ## Front-door outage: Caddy died (the #1 silent failure)
 
@@ -305,8 +308,8 @@ paths) rather than shell `ls`/`cat` when the shell is sandboxed.
 > the end-to-end verification sequence. Read it before any new `hermes-<name>` rollout.
 
 **Slug convention:** mount Hermes dashboards at `/hermes-<agent>/` (e.g.
-`/hermes-bosun/`, `/hermes-ace/`) so the agent dashboard never collides with a
-same-named product app (`/sterling/` = CFO app; `/hermes-sterling/` = the agent).
+`/hermes-atlas/`, `/hermes-orion/`) so the agent dashboard never collides with a
+same-named product app (`/nova/` = CFO app; `/hermes-nova/` = the agent).
 
 **Critical: the auth cookie is `Secure`, so the dashboard MUST be reached over HTTPS.**
 A plain-HTTP tailnet door (Tailscale `serve --http=PORT`) silently breaks login:
@@ -382,9 +385,9 @@ pre-flight; some machines have it pre-built, others don't.
 
 **3b. Verify there are sessions to show — don't assume the profile name.** Some fleet
 agents run as root cron jobs against the root `~/.hermes/state.db`, not against
-`~/.hermes/profiles/<name>/state.db` (Argus, Ace, Ali use the root DB with NO
-`--profile` flag; Bosun/Cora/Sterling use `--profile <name>`). Pinning the wrong DB
-shows an empty dashboard. Quick triage:
+`~/.hermes/profiles/<name>/state.db` (Scout, Orion, Ali use the root DB with NO
+`--profile` flag; Atlas/Vega/Nova use `--profile <name>`). Pinning the wrong DB shows an
+empty dashboard. Quick triage:
 
 ```bash
 for db in $(find ~/.hermes -name state.db 2>/dev/null); do
@@ -430,7 +433,7 @@ dashboard. Confirm data the honest way:
 
 ```bash
 sqlite3 /Users/<user>/.hermes/profiles/<profile>/state.db "SELECT COUNT(*) FROM sessions;"
-# argus runs against the ROOT db: /Users/<user>/.hermes/state.db
+# scout runs against the ROOT db: /Users/<user>/.hermes/state.db
 ```
 
 The end-to-end proof for a Hermes dashboard is: backend port returns 200 on loopback +
@@ -719,9 +722,9 @@ Note: a box hitting its OWN tailnet hostname from inside an SSH session can hang
 ## When NOT to take over the public `:443` funnel
 
 If the target machine's openclaw gateway already owns the public `:443` funnel (check
-`tailscale serve status` → `:443 … proxy http://127.0.0.1:18789` and
+`tailscale serve status` → `:443 … proxy http://127.0.0.1:18080` and
 `~/.openclaw/openclaw.json` gateway.tailscale.mode), do NOT seize `:443` for Caddy
-without asking — it disrupts her gateway. Default to a **tailnet-only HTTPS `:8443`
+without asking — it disrupts their gateway. Default to a **tailnet-only HTTPS `:8443`
 door** (works on any device signed into the tailnet, not public). Add a public funnel
 later only on explicit request. This is the safe, reversible resting state.
 
@@ -978,9 +981,10 @@ show `CN=<your-domain>` issued by Let's Encrypt (Cloudflare). PM2 logs should sh
 
 - Source of truth for the stack: `~/src/openclaw-config/devops/app-router/`
   (`README.md`, `templates/`, `scripts/`, `auth-service/`)
-- `references/fleet-hermes-dashboards.md` — per-machine map of every fleet member's
-  Hermes dashboard (slug, port, root-vs-profile DB, door type, index-page markup style).
-  Read this before adding/rolling out a dashboard on a fleet host.
+- `references/hermes-dashboard-rollout.md` — standing up a Hermes dashboard behind the
+  router: slug choice, root-vs-profile DB, door type, and index-page markup. Keep your
+  own per-machine map (slug, port, profile) alongside your deployment; it is
+  site-specific and deliberately not shipped here.
 - Tailscale Funnel docs: https://tailscale.com/kb/1223/funnel
 - Caddy `forward_auth` docs:
   https://caddyserver.com/docs/caddyfile/directives/forward_auth

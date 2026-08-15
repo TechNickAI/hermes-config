@@ -14,6 +14,9 @@ license: MIT
 platforms: [linux, macos]
 metadata:
   hermes:
+    requires:
+      - "chromium binary on PATH (or CHROMIUM_BIN) for local rasterize"
+      - "network access to a Kroki host (KROKI_BASE) and QuickChart (QUICKCHART_BASE)"
     tags: [diagrams, charts, visualization, telegram, mermaid, d2, graphviz, quickchart]
     related_skills: []
     # referenced but not shipped here (Hermes core / another source): architecture-diagram, excalidraw

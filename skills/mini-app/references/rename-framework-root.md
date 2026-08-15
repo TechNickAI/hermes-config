@@ -1,7 +1,7 @@
 # Renaming the mini-app framework root directory
 
-Nick's rule: **NO symlinks for path migrations.** Symlinks rot and hide drift. Do the
-real rename and update every reference.
+the operator's rule: **NO symlinks for path migrations.** Symlinks rot and hide drift.
+Do the real rename and update every reference.
 
 This is the playbook used 2026-05-27 to rename `~/openclaw-apps` → `~/mini-apps`. Same
 shape applies to any future framework root move.
@@ -23,7 +23,7 @@ grep -l "OLDNAME" \
   /Users/<user>/OLDNAME/auth-service/server.js
 
 # 2. Outside refs (skills + PM2 state)
-grep -l "OLDNAME" /Users/<user>/.hermes/profiles/bosun/skills/mini-app/SKILL.md
+grep -l "OLDNAME" /Users/<user>/.hermes/profiles/atlas/skills/mini-app/SKILL.md
 grep -c "OLDNAME" /Users/<user>/.pm2/dump.pm2
 
 # 3. Launchd/cron/shellrc — usually empty, but check
@@ -37,8 +37,8 @@ ps -p $(pgrep -f "caddy run" | head -1) -o ppid=,command=
 # If no plist, you'll restart it as a background process (see below).
 ```
 
-Historical journal/memory files (e.g. `.openclaw/workspace-sterling/memory/**`) —
-**don't patch**. Those are dated notes, not active config. Let them age.
+Historical journal/memory files (e.g. `.openclaw/workspace-nova/memory/**`) — **don't
+patch**. Those are dated notes, not active config. Let them age.
 
 ## The rename
 
@@ -68,7 +68,7 @@ sed -i '' 's|OLDNAME|NEWNAME|g' \
 sed -i '' 's|/Users/<user>/OLDNAME|/Users/<user>/NEWNAME|g' /Users/<user>/.pm2/dump.pm2
 
 # 6. Patch outside refs (mini-app skill is the only known one)
-sed -i '' 's|OLDNAME|NEWNAME|g' /Users/<user>/.hermes/profiles/bosun/skills/mini-app/SKILL.md
+sed -i '' 's|OLDNAME|NEWNAME|g' /Users/<user>/.hermes/profiles/atlas/skills/mini-app/SKILL.md
 
 # 7. Verify zero stale refs
 grep -l "OLDNAME" \
@@ -79,7 +79,7 @@ grep -l "OLDNAME" \
   /Users/<user>/NEWNAME/_registry/apply-tailscale-serve.sh \
   /Users/<user>/NEWNAME/README.md \
   /Users/<user>/.pm2/dump.pm2 \
-  /Users/<user>/.hermes/profiles/bosun/skills/mini-app/SKILL.md \
+  /Users/<user>/.hermes/profiles/atlas/skills/mini-app/SKILL.md \
   && echo FAIL || echo OK
 ```
 

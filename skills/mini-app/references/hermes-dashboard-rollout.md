@@ -1,6 +1,6 @@
 # Hermes Dashboard Rollout (fresh machine)
 
-Rolling a Hermes dashboard mini-app onto a NEW fleet host (e.g. exposing Ace on a peer
+Rolling a Hermes dashboard mini-app onto a NEW fleet host (e.g. exposing Orion on a peer
 host). The base `mini-app` recipe assumes the dashboard frontend is already built and an
 HTTPS door exists. On a fresh box, neither is guaranteed. These are the two traps that
 cost real time, plus the supporting checks.
@@ -81,7 +81,7 @@ curl -sk -o /dev/null -w "%{http_code}\n" -b $JAR "$BASE/<slug>/"   # 200 = WORK
 ## Check who owns :443 BEFORE making exposure decisions
 
 Do not assume Caddy owns the public door. On hosts running the openclaw gateway, the
-gateway often owns the `:443` funnel (→ its own gateway port, e.g. 18789), and the Caddy
+gateway often owns the `:443` funnel (→ its own gateway port, e.g. 18080), and the Caddy
 router is only on a tailnet port. Check first:
 
 ```bash
@@ -95,9 +95,9 @@ is a one-way-door, ask-first decision.
 
 ## Profile vs root state.db — pin the dashboard to where sessions actually live
 
-Some agents (Argus, Ace) run cron against the ROOT `~/.hermes/state.db` with NO profile;
-others (Bosun, Cora, Sterling) use `~/.hermes/profiles/<name>/state.db`. Pinning the
-wrong DB shows an empty dashboard. Triage:
+Some agents (Scout, Orion) run cron against the ROOT `~/.hermes/state.db` with NO
+profile; others (Atlas, Vega, Nova) use `~/.hermes/profiles/<name>/state.db`. Pinning
+the wrong DB shows an empty dashboard. Triage:
 
 ```bash
 for db in ~/.hermes/state.db ~/.hermes/profiles/*/state.db; do
@@ -127,10 +127,10 @@ so it resurrects. Verify with `ps aux | grep "caddy.*run"` and
 
 ## Slug naming for fleet Hermes dashboards
 
-Use `hermes-<name>` (e.g. `hermes-bosun`, `hermes-ace`) to namespace agent dashboards
-and avoid colliding with same-named product apps (e.g. the `/sterling/` CFO app vs the
-`hermes-sterling` agent dashboard). Auth env key derives by uppercasing + `-`→`_`:
-`hermes-ace` ⇒ `APP_PASSWORD_HERMES_ACE`.
+Use `hermes-<name>` (e.g. `hermes-atlas`, `hermes-orion`) to namespace agent dashboards
+and avoid colliding with same-named product apps (e.g. the `/nova/` CFO app vs the
+`hermes-nova` agent dashboard). Auth env key derives by uppercasing + `-`→`_`:
+`hermes-orion` ⇒ `APP_PASSWORD_HERMES_ORION`.
 
 ## Custom index pages: match the host's existing design system
 

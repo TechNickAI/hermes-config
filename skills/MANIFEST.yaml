@@ -66,8 +66,10 @@ skills:
   scope: solo
   summary: Use when a fast hosted-render path is needed to turn D2, Mermaid, Graphviz, or Chart.js text into an inline-ready PNG for chat (Telegram, Discord, Slack) or a saved image.
   use_when: a fast hosted-render path is needed to turn D2, Mermaid, Graphviz, or Chart.js text into an inline-ready PNG for chat (Telegram, Discord, Slack) or a saved image. Handles the hosted-render + local-rasterize plumbing and platform gotchas (snap-chromium sandbox, D2-is-SVG-only, blank-render detection…
-  requires: []
-  works_out_of_the_box: true
+  requires:
+  - chromium binary on PATH (or CHROMIUM_BIN) for local rasterize
+  - network access to a Kroki host (KROKI_BASE) and QuickChart (QUICKCHART_BASE)
+  works_out_of_the_box: false
   tags:
   - diagrams
   - charts
@@ -217,8 +219,10 @@ skills:
   scope: fleet
   summary: Use when adding, removing, password-protecting, or troubleshooting a mini-app served by the openclaw-config app-router (Caddy + PM2 + auth sidecar + Tailscale Serve/Funnel) on a fleet machine.
   use_when: adding, removing, password-protecting, or troubleshooting a mini-app served by the openclaw-config app-router (Caddy + PM2 + auth sidecar + Tailscale Serve/Funnel) on a fleet machine. Covers install, the Caddy route pattern, the auth sidecar conventions, exposing apps publicly via Funnel, Hermes das…
-  requires: []
-  works_out_of_the_box: true
+  requires:
+  - 'host services: Caddy + PM2'
+  - Tailscale Serve/Funnel
+  works_out_of_the_box: false
   tags:
   - devops
   - app-router
