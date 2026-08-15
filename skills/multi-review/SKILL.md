@@ -261,8 +261,11 @@ execution rules that prevent silent failures:**
    longer than normal chat, especially with long prompts or slow/deep models. When
    launching via an agent terminal tool, set the tool timeout to **300 seconds for
    normal reviews** and **600 seconds for deep/slow panels**. If the run still times
-   out, shrink the artifact or split the panel; don't silently fall back to a partial
-   review.
+   out, first try to recover the coverage — shrink the artifact, split the panel, or
+   replace the seat — rather than accepting the loss. Only when that fails does the
+   degradation rule in the Core Contract apply: synthesize solely if the completed seats
+   still meet this target's depth floor, and label the gap. Never silently fall back to
+   a partial review.
 4. **Use `--ignore-rules` deliberately, and re-inject any safety rules you still need.**
    It stops the calling profile's persona from washing out the review lens — but it also
    strips project rules. If the artifact may contain private data (real names, host
