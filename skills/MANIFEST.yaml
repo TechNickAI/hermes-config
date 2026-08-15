@@ -311,7 +311,7 @@ skills:
   - delegation
   path: skills/project-steward
 - name: recall
-  version: 0.2.1
+  version: 0.3.0
   scope: solo
   summary: Restore context from prior sessions, memories, and transcripts.
   use_when: a bare-pronoun follow-up like "ship it", "do it", or "send that" likely points at a prior-session artifact. Designed to never dead-end — if one source has nothing, keep searching others until you have a useful picture.
