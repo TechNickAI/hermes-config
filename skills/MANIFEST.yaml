@@ -96,7 +96,7 @@ skills:
   - productivity
   path: skills/google-docs
 - name: google-sheets
-  version: 1.0.0
+  version: 1.1.0
   scope: solo
   summary: Use when creating, populating, formatting, importing, exporting, or quality-checking Google Sheets from CSV, JSON arrays, or computed tabular data.
   use_when: creating, populating, formatting, importing, exporting, or quality-checking Google Sheets from CSV, JSON arrays, or computed tabular data.
