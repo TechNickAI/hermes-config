@@ -3,7 +3,7 @@ name: google-slides
 description:
   "Use when creating, importing, exporting, or quality-checking Google Slides decks via
   markdown-to-PPTX conversion and Drive import."
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [macos, linux]
@@ -178,32 +178,42 @@ Confirm:
    create/info/copy/export — no content or layout editing. Authoring goes through
    conversion or the Slides API.
 
-2. **Missing Slides scope.** The local gog OAuth token lacked the Slides scope in
+2. **Slides API not enabled (403 `accessNotConfigured`).** `gog slides` commands require
+   the Slides API to be enabled on the OAuth project backing the gog credentials. The
+   error reads
+   `Google Slides API has not been used in project <project> before or it is disabled`,
+   with a console URL to enable it. **Fix:** whoever owns the OAuth project opens that
+   URL, clicks Enable, and waits a couple of minutes for propagation. This is a one-time
+   setup step per OAuth project. Drive-only commands (`gog drive` upload/download) keep
+   working without it, which is why the pptx import path is the default.
+
+3. **Missing Slides scope.** The local gog OAuth token lacked the Slides scope in
    testing. Raw Slides API calls need a token authorized for
    `https://www.googleapis.com/auth/presentations`. Drive import of a pptx does not need
    the Slides scope, only Drive — another reason the pptx import path is the default.
 
-3. **Uploading pptx without conversion.** `gog drive upload deck.pptx` keeps it a
+4. **Uploading pptx without conversion.** `gog drive upload deck.pptx` keeps it a
    PowerPoint file. Use target MIME `application/vnd.google-apps.presentation` to get
    native Slides.
 
-4. **Overstuffed slides.** pandoc does not auto-fit text. Keep slides short; split dense
+5. **Overstuffed slides.** pandoc does not auto-fit text. Keep slides short; split dense
    content across multiple headings.
 
-5. **Wrong heading levels.** If everything lands on one slide, your Markdown probably
+6. **Wrong heading levels.** If everything lands on one slide, your Markdown probably
    lacks `#` per-slide headings. Each slide needs its own top-level heading.
 
-6. **Credential lookup fails (`missing_credentials`).** If the helper can't find gog's
+7. **Credential lookup fails (`missing_credentials`).** If the helper can't find gog's
    token, pass credentials explicitly: export gog's refresh token to a 0600 file with
-   `gog auth tokens export <account> --output /tmp/tok.json --force`, then run the
-   helper with
+   `gog auth tokens export <account> --output /tmp/tok.json --force` (newer releases
+   also accept `--out` / `--overwrite`; check `gog auth tokens export --help`). Then run
+   the helper with
    `--refresh-token-file /tmp/tok.json --client-secret-file <gog credentials.json>`. The
    helper refuses explicit credential files that are group/world-readable or not owned
    by you — `chmod 600` them. These flags work before or after the subcommand. For a gog
    named client or a non-default gog home, use `--gog-client <name>` /
    `--gog-home <dir>` (or the `GOG_CLIENT` / `GOG_HOME` env vars).
 
-7. **Sharing is irreversible.**
+8. **Sharing is externally consequential.** Permissions can be revoked, but
    `scripts/gworkspace.py share PRESENTATION_ID --email ... --role ...` grants real
    Drive access. Confirm recipient and role with the user before using it.
 
