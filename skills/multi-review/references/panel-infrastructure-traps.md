@@ -92,23 +92,37 @@ Enumerate the live profile before assembling the panel. Two details matter here:
   building `$HERMES_HOME/profiles/foo/config.yaml` double-nests the path and silently
   reports the config as missing. Derive the base from `HERMES_HOME` only when no
   explicit profile is being selected.
+- **A sticky `active_profile` can make enumeration and review disagree.** When
+  `HERMES_HOME` is unset, Hermes falls back to `~/.hermes/active_profile` to decide
+  which profile is live. Reading `~/.hermes/config.yaml` while the smoke test runs
+  without `--profile` enumerates the root providers map and then reviews against a
+  different profile entirely — the same silent mismatch this document exists to prevent.
+  Resolve the profile explicitly and pass it to every reviewer launch.
 - **Use Hermes' own interpreter, not the system `python3`.** On uv-tool and venv
   installs, PyYAML is present in the Hermes environment but need not be on the system
   interpreter, so an unqualified `python3` stops at `import yaml`.
 
 ```bash
-# Leave PROFILE empty to review whatever profile this shell already resolves to.
+# Leave PROFILE empty to resolve the live profile the way Hermes itself does.
 PROFILE=<profile-or-empty>
+HERMES_ROOT="$HOME/.hermes"
+
+if [[ -z "$PROFILE" && -z "${HERMES_HOME:-}" && -f "$HERMES_ROOT/active_profile" ]]; then
+  # Sticky profile: Hermes will use this, so enumerate the same one.
+  PROFILE=$(tr -d '[:space:]' <"$HERMES_ROOT/active_profile")
+  [[ "$PROFILE" == "default" ]] && PROFILE=""
+fi
 
 if [[ -n "$PROFILE" ]]; then
   # Named profile: always rooted at the INSTALL root, never at $HERMES_HOME
   # (which may itself already be a profile home).
-  PROFILE_CONFIG="$HOME/.hermes/profiles/$PROFILE/config.yaml"
+  PROFILE_CONFIG="$HERMES_ROOT/profiles/$PROFILE/config.yaml"
 else
   # Whatever this shell resolves to: HERMES_HOME if exported, else the root profile.
-  PROFILE_CONFIG="${HERMES_HOME:-$HOME/.hermes}/config.yaml"
+  PROFILE_CONFIG="${HERMES_HOME:-$HERMES_ROOT}/config.yaml"
 fi
 [[ -f "$PROFILE_CONFIG" ]] || { echo "no config at $PROFILE_CONFIG" >&2; exit 1; }
+echo "enumerating: $PROFILE_CONFIG (profile='${PROFILE:-<resolved-by-env>}')"
 
 # Hermes' interpreter: the venv/uv-tool python that sits beside the hermes binary.
 HERMES_PY="$(dirname "$(command -v "${HERMES_BIN:-hermes}")")/python3"
@@ -128,11 +142,12 @@ PY
 ```
 
 Choose a printed alias/model pair, then smoke-test the exact route before the full
-review. Pass the profile with the supported `--profile` selector rather than relying on
-an environment variable alone. Names below are placeholders, not defaults:
+review. **Reuse the `PROFILE` resolved above** — do not re-declare it — and pass it with
+the supported `--profile` selector so the reviewer runs against the same config you just
+enumerated. Names below are placeholders, not defaults:
 
 ```bash
-PROFILE=<profile-or-empty>
+# PROFILE carries over from the enumeration block above.
 PROVIDER=custom:<enumerated-alias>
 MODEL=<model-listed-under-that-alias>
 PROFILE_ARGS=()
@@ -170,7 +185,7 @@ orchestrator should give each reviewer its own state/output file and apply the s
 bound independently.
 
 ```bash
-PROFILE=<profile>
+# PROFILE / PROFILE_ARGS carry over from the enumeration block above.
 PROVIDER=custom:<enumerated-alias>
 MODEL=<model-listed-under-that-alias>
 OUT=$(mktemp "${TMPDIR:-/tmp}/panel-reviewer.XXXXXX")
@@ -184,7 +199,7 @@ deadline=$((start + DEADLINE_SECONDS))
 # Keep stdout and stderr in SEPARATE files. Merging them with 2>&1 makes a
 # warning-on-stderr run look like a non-empty review, so an empty reviewer
 # passes the -s check below and gets counted as a completed seat.
-"$HERMES_BIN" -z "$PROMPT" --profile "$PROFILE" \
+"$HERMES_BIN" -z "$PROMPT" "${PROFILE_ARGS[@]}" \
   --provider "$PROVIDER" -m "$MODEL" --ignore-rules -t '' >"$OUT" 2>"$ERR" &
 pid=$!
 
