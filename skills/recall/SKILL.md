@@ -63,51 +63,61 @@ one(s). Read through it and extract:
 - Open questions or blockers left unresolved
 - What the user's last message / intent was
 
-### 2b. Raw session jsonl (when summaries are too lossy)
+### 2b. Raw transcript (when summaries are too lossy)
 
 `session_search` returns **summaries**, not transcripts. When the previous session ended
 mid-task and you need exact state — the actual file paths touched, the last todo state,
 the precise question the assistant was waiting on, the diff that was proposed but not
-yet applied — the summary will be too coarse. Go to the raw jsonl.
+yet applied — the summary will be too coarse. Go to the raw transcript.
 
-Sessions live at:
+Transcripts live in the SQLite state store, shared by every profile on the host:
 
 ```
-~/.hermes/profiles/<profile>/sessions/<session_id>.jsonl
+~/.hermes/state.db      # tables: sessions, messages
 ```
 
-Each line is one JSON object (`session_meta`, `user`, `assistant`, `tool`). `content` is
-either a string or a list of `{type, text}` chunks. Read the last N messages to recover
-exact state:
+Read the tail of a session directly:
 
 ```python
-import json, os
-path = os.path.expanduser("~/.hermes/profiles/<profile>/sessions/<session_id>.jsonl")
-msgs = [json.loads(l) for l in open(path) if l.strip()]
-for i, m in enumerate(msgs[-6:], start=len(msgs)-6):
-    role = m.get('role', '?')
-    content = m.get('content', '')
-    if isinstance(content, list):
-        text = ' '.join(c.get('text', '') if isinstance(c, dict) else str(c) for c in content)
-    else:
-        text = str(content)
-    print(f"=== [{i}] {role} ({len(text)}ch) ===")
-    print(text[:3500])
+import sqlite3, os
+db = os.path.expanduser("~/.hermes/state.db")
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)   # read-only: never disturb a live session
+rows = con.execute("""
+    SELECT role, tool_name, content
+    FROM messages
+    WHERE session_id = ?
+    ORDER BY id DESC
+    LIMIT 12
+""", (session_id,)).fetchall()
+for role, tool, content in reversed(rows):
+    print(f"=== {role}{'/' + tool if tool else ''} ===")
+    print(str(content)[:3500])
 ```
+
+Open the DB **read-only** (`mode=ro`). A live session may be writing to it.
+
+Useful columns: `messages.role`, `content`, `tool_name`, `timestamp`, `session_id`;
+`sessions.id`, `source`, `model`, `started_at`, `ended_at`, `message_count`. The store
+also carries an FTS index, which is what `session_search` queries — prefer the tool over
+hand-rolled SQL for search, and use SQL for exact tail recovery.
 
 **When this beats session_search:**
 
 - Compaction failed mid-session and the summary is a stub
-- A fleet rollout / multi-step task paused mid-sequence; you need the exact "where"
+- A rollout / multi-step task paused mid-sequence; you need the exact "where"
 - The last assistant message was a pause-for-approval; you need the proposed diff
   verbatim
 - Tool outputs (which summaries drop) hold the recon data you'd otherwise re-run
 
-**Finding the file:** `session_search` returns `session_id`. Construct the path with the
-active profile, or `find $HOME/.hermes -name "<session_id>*.jsonl"` if unsure which
-profile. The shell sandbox sometimes resolves `~` to a fake home — when in doubt, expand
-`$HOME` explicitly (`os.path.expanduser` in Python) so reads always hit the real home
-directory.
+**Legacy per-profile JSONL.** Older installs wrote
+`~/.hermes/profiles/<profile>/sessions/<session_id>.jsonl`. Those files may still exist
+but are **not** written by current versions, so treat them as a historical archive only.
+Checking them first is a common way to conclude a session is "missing" when it is
+present in `state.db` — verify against the DB before reporting anything absent.
+
+**Finding a session:** `session_search` returns `session_id`; query `state.db` with it
+directly. The shell sandbox sometimes resolves `~` to a fake home — expand `$HOME`
+explicitly (`os.path.expanduser` in Python) so reads always hit the real home directory.
 
 ### 3. Memory and cortex
 
