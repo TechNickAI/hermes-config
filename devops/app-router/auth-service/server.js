@@ -22,6 +22,14 @@
  *   AUTH_SECRET           — HMAC key for session tokens (openssl rand -hex 32).
  *                           Refuses to start if NODE_ENV=production and unset,
  *                           unless AUTH_ALLOW_RANDOM_SECRET=1 is set.
+ *
+ * Optional hardening:
+ *   AUTH_REQUIRE_PASSWORD=1
+ *                           Fail closed instead of open when an app behind
+ *                           forward_auth has no APP_PASSWORD_<SLUG> and is not
+ *                           named in NO_AUTH_APPS. Default off, so unset
+ *                           behavior is unchanged. See "Auth Model" in
+ *                           devops/app-router/README.md.
  */
 
 const express = require("express");
@@ -68,6 +76,13 @@ const envFor = (prefix, slug) =>
 const getAppPassword = (slug) => envFor("APP_PASSWORD", slug) || null;
 const getAppTitle = (slug) => envFor("APP_TITLE", slug) || slug;
 const getAppDesc = (slug) => envFor("APP_DESC", slug) || "";
+
+// Strict mode: an app behind forward_auth with no configured password and no
+// entry in NO_AUTH_APPS fails closed instead of open. Read per call rather than
+// captured at module load so a test can exercise both polarities in one
+// process, and so an operator flipping the PM2 env does not depend on import
+// order to take effect.
+const requirePasswordMode = () => process.env.AUTH_REQUIRE_PASSWORD === "1";
 
 const cookieName = (slug) => `oc_auth_${slug.replace(/-/g, "_")}`;
 
@@ -221,6 +236,31 @@ const renderLoginPage = ({ slug, title, desc, nextUrl, error }) => {
 </html>`;
 };
 
+// Strict mode landing page. Deliberately says what is wrong and who fixes it,
+// without naming the env var value or leaking whether other apps exist.
+const renderUnconfiguredPage = (slug) => {
+  const safeSlug = escapeHtml(slug);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Not configured</title>
+</head>
+<body>
+  <h1>This app is not configured for access</h1>
+  <p>
+    The router requires a password for <code>${safeSlug}</code>, but none is
+    configured. This is a server configuration issue, not a wrong password.
+  </p>
+  <p>
+    The operator should set <code>APP_PASSWORD_&lt;SLUG&gt;</code> for this app,
+    or add the slug to <code>NO_AUTH_APPS</code> to open it on purpose.
+  </p>
+</body>
+</html>`;
+};
+
 const buildApp = () => {
   const app = express();
   app.disable("x-powered-by");
@@ -245,9 +285,17 @@ const buildApp = () => {
     if (NO_AUTH_APPS.has(slug)) return res.status(200).send("ok");
 
     const password = getAppPassword(slug);
-    // No password configured = app is open. Caddy still calls verify because
-    // the operator wired up forward_auth, but we let it through.
-    if (!password) return res.status(200).send("ok");
+    // No password configured. Default is open: Caddy still calls verify because
+    // the operator wired up forward_auth, but we let it through. With
+    // AUTH_REQUIRE_PASSWORD=1 the same case fails closed, so a typo in an
+    // APP_PASSWORD_<SLUG> name cannot silently publish an app.
+    if (!password) {
+      if (!requirePasswordMode()) return res.status(200).send("ok");
+      console.log(
+        `[auth-service] verify-401-unconfigured slug=${slug} ip=${clientIp(req)}`
+      );
+      return res.status(401).send("unauthorized");
+    }
 
     const token = req.cookies[cookieName(slug)];
     const expected = makeSessionToken(slug, password);
@@ -262,8 +310,15 @@ const buildApp = () => {
     if (!isValidSlug(slug)) return res.status(400).send("invalid app");
     const nextUrl = safeNext(slug, req.query.next);
     // Open apps don't need a login form — bounce straight through.
-    if (NO_AUTH_APPS.has(slug) || !getAppPassword(slug)) {
-      return res.redirect(303, nextUrl);
+    if (NO_AUTH_APPS.has(slug)) return res.redirect(303, nextUrl);
+    if (!getAppPassword(slug)) {
+      if (!requirePasswordMode()) return res.redirect(303, nextUrl);
+      // Strict mode: bouncing through would land the visitor back on a verify
+      // that now returns 401, so explain the cause instead of looping.
+      return res
+        .status(403)
+        .type("html")
+        .send(renderUnconfiguredPage(slug));
     }
     res
       .status(200)
@@ -293,9 +348,12 @@ const buildApp = () => {
 
     // Open app: no password configured. Don't mint a cookie — just pass through
     // so a stray POST never seeds a deterministic-token cookie that survives
-    // future password configuration.
-    if (NO_AUTH_APPS.has(slug) || !correct) {
-      return res.redirect(303, nextUrl);
+    // future password configuration. In strict mode the same case is a
+    // configuration error, so say so rather than passing through.
+    if (NO_AUTH_APPS.has(slug)) return res.redirect(303, nextUrl);
+    if (!correct) {
+      if (!requirePasswordMode()) return res.redirect(303, nextUrl);
+      return res.status(403).type("html").send(renderUnconfiguredPage(slug));
     }
 
     const submitted = typeof req.body.password === "string" ? req.body.password : "";
@@ -354,6 +412,19 @@ if (require.main === module) {
       .sort();
     console.log(`[auth-service] listening on http://127.0.0.1:${PORT}`);
     console.log(`[auth-service] protected apps: ${registered.join(", ") || "(none)"}`);
+    console.log(
+      `[auth-service] unconfigured apps: ${
+        requirePasswordMode() ? "denied (AUTH_REQUIRE_PASSWORD=1)" : "open (default)"
+      }`
+    );
+    // A security flag set to a truthy-looking value that is not exactly "1" is
+    // worse than one left unset: the operator believes the hole is closed.
+    const requireRaw = process.env.AUTH_REQUIRE_PASSWORD;
+    if (requireRaw !== undefined && requireRaw !== "1") {
+      console.warn(
+        `[auth-service] WARNING: AUTH_REQUIRE_PASSWORD is set to a value other than "1", so strict mode is OFF`
+      );
+    }
     if (!process.env.AUTH_SECRET) {
       console.warn(
         "[auth-service] WARNING: AUTH_SECRET not set — sessions reset on restart"
