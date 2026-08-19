@@ -304,3 +304,151 @@ test("end-to-end: correct password → cookie → verify=200", async () => {
     server.close();
   }
 });
+
+// ── AUTH_REQUIRE_PASSWORD strict mode ────────────────────────────────────────
+//
+// The flag is read per request, not captured at module load, so these tests set
+// and clear it around each case in the same process. The default-off case is
+// asserted explicitly because the whole safety argument for this flag is that
+// unset behavior is byte-for-byte what it was before.
+
+const withStrictMode = async (fn) => {
+  process.env.AUTH_REQUIRE_PASSWORD = "1";
+  try {
+    await fn();
+  } finally {
+    delete process.env.AUTH_REQUIRE_PASSWORD;
+  }
+};
+
+test("strict mode off: unconfigured app still verifies 200 (no behavior change)", async () => {
+  assert.equal(process.env.AUTH_REQUIRE_PASSWORD, undefined);
+  const { server, base } = await startServer();
+  try {
+    const r = await fetch(`${base}/auth/verify?app=ghost`);
+    assert.equal(r.status, 200);
+    assert.equal(await r.text(), "ok");
+  } finally {
+    server.close();
+  }
+});
+
+test("strict mode on: unconfigured app verifies 401 instead of 200", async () => {
+  const { server, base } = await startServer();
+  try {
+    await withStrictMode(async () => {
+      const r = await fetch(`${base}/auth/verify?app=ghost`);
+      assert.equal(r.status, 401);
+      assert.equal(await r.text(), "unauthorized");
+    });
+    // And the flag is genuinely per-request: clearing it restores the 200.
+    const after = await fetch(`${base}/auth/verify?app=ghost`);
+    assert.equal(after.status, 200);
+  } finally {
+    server.close();
+  }
+});
+
+test("strict mode on: NO_AUTH_APPS slug is still deliberately open", async () => {
+  const { server, base } = await startServer();
+  try {
+    await withStrictMode(async () => {
+      const r = await fetch(`${base}/auth/verify?app=openapp`);
+      assert.equal(r.status, 200);
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test("strict mode on: a configured app is unaffected in both directions", async () => {
+  const { server, base } = await startServer();
+  try {
+    await withStrictMode(async () => {
+      const bad = await fetch(`${base}/auth/verify?app=dash`);
+      assert.equal(bad.status, 401);
+
+      const login = await sameOriginPost(
+        base,
+        "/auth/login",
+        "app=dash&next=/dash/&password=letmein"
+      );
+      assert.equal(login.status, 303);
+      const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
+      const good = await fetch(`${base}/auth/verify?app=dash`, {
+        headers: { Cookie: cookie },
+      });
+      assert.equal(good.status, 200);
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test("strict mode on: login GET explains the misconfiguration instead of looping", async () => {
+  const { server, base } = await startServer();
+  try {
+    await withStrictMode(async () => {
+      const r = await fetchManual(`${base}/auth/login?app=ghost&next=/ghost/x`);
+      // Redirecting through would bounce the visitor back into a 401 verify.
+      assert.equal(r.status, 403);
+      const body = await r.text();
+      assert.match(body, /not configured/i);
+      assert.equal(body.includes("letmein"), false);
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test("strict mode on: login POST for an unconfigured app mints no cookie", async () => {
+  const { server, base } = await startServer();
+  try {
+    await withStrictMode(async () => {
+      const r = await sameOriginPost(
+        base,
+        "/auth/login",
+        "app=ghost&password=anything"
+      );
+      assert.equal(r.status, 403);
+      assert.equal(r.headers.get("set-cookie"), null);
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test("strict mode on: an unconfigured slug is not distinguishable by password guessing", async () => {
+  const { server, base } = await startServer();
+  try {
+    await withStrictMode(async () => {
+      // Whatever the caller submits, the answer is the same 403. No oracle that
+      // separates "wrong password" from "no password configured".
+      for (const pw of ["", "a", "letmein"]) {
+        const r = await sameOriginPost(
+          base,
+          "/auth/login",
+          `app=ghost&password=${encodeURIComponent(pw)}`
+        );
+        assert.equal(r.status, 403, pw);
+        assert.equal(r.headers.get("set-cookie"), null, pw);
+      }
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test("strict mode ignores values other than exactly 1", async () => {
+  const { server, base } = await startServer();
+  try {
+    for (const value of ["0", "true", "yes", ""]) {
+      process.env.AUTH_REQUIRE_PASSWORD = value;
+      const r = await fetch(`${base}/auth/verify?app=ghost`);
+      assert.equal(r.status, 200, JSON.stringify(value));
+    }
+  } finally {
+    delete process.env.AUTH_REQUIRE_PASSWORD;
+    server.close();
+  }
+});
