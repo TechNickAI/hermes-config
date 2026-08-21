@@ -1006,6 +1006,17 @@ def selftest() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="jobrun-selftest-"))
     results = []
 
+    # Self-test fixtures deliberately fail. Keep them out of the real ledger
+    # and log dir, or `--failures` reports test noise as production incidents.
+    global STATE_DIR, LOG_DIR, LOCK_DIR, LEDGER
+    _saved_dirs = (STATE_DIR, LOG_DIR, LOCK_DIR, LEDGER)
+    STATE_DIR = tmp / "state"
+    LOG_DIR = STATE_DIR / "logs"
+    LOCK_DIR = STATE_DIR / "locks"
+    LEDGER = STATE_DIR / "runs.jsonl"
+    for _d in (STATE_DIR, LOG_DIR, LOCK_DIR):
+        _d.mkdir(parents=True, exist_ok=True)
+
     def check(name, got, want):
         ok = got == want
         results.append((name, got, want, ok))
@@ -1154,6 +1165,7 @@ def selftest() -> int:
     check("ledger-recorded", n >= 6, True)
 
     shutil.rmtree(tmp, ignore_errors=True)
+    STATE_DIR, LOG_DIR, LOCK_DIR, LEDGER = _saved_dirs
     failed = [r for r in results if not r[3]]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     return 1 if failed else 0

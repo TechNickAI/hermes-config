@@ -238,3 +238,23 @@ def test_capture_is_bounded_by_bytes_not_lines(home):
     log = next((home / "jobstate" / "logs").glob("big-*.log"))
     # 40MB of output must not produce a 40MB log
     assert log.stat().st_size < 2_000_000, log.stat().st_size
+
+
+def test_selftest_does_not_pollute_the_real_ledger(home):
+    """Self-test fixtures fail on purpose; they must not look like incidents.
+
+    Without isolation, `--failures` reports st-fail/st-timeout as production
+    failures forever, which is exactly the false-alarm noise the runner exists
+    to remove.
+    """
+    _run(home, "--selftest", timeout=600)
+    ledger = home / "jobstate" / "runs.jsonl"
+    if ledger.exists():
+        assert "st-fail" not in ledger.read_text()
+        assert "st-timeout" not in ledger.read_text()
+    logs = home / "jobstate" / "logs"
+    if logs.is_dir():
+        assert not list(logs.glob("st-*.log"))
+    # and the operator view stays quiet
+    r = _run(home, "--failures", "24")
+    assert r.stdout.strip() == ""
