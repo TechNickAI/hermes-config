@@ -128,6 +128,15 @@ class State:
                  chat INTEGER, topic INTEGER, last_id INTEGER,
                  last_run TEXT, PRIMARY KEY(chat, topic))"""
         )
+        # Which exact messages we have already counted for a signature.
+        # Retries re-fetch the same messages (the cursor is deliberately held
+        # after a failure), so counting CALLS would inflate the total and
+        # could trip escalation on a message that never actually repeated.
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS seen(
+                 chat INTEGER, sig TEXT, msg_id INTEGER,
+                 PRIMARY KEY(chat, sig, msg_id))"""
+        )
         self.db.commit()
 
     # -- per-topic cursor ------------------------------------------------
@@ -146,26 +155,36 @@ class State:
         )
         self.db.commit()
 
-    def observe(self, chat: int, sig: str, when: str, sample: str, n: int = 1):
-        """Record n NEW sightings, ACCUMULATING across runs.
+    def observe(self, chat: int, sig: str, when: str, sample: str, msg_ids=()):
+        """Record sightings by MESSAGE ID, accumulating across runs.
 
-        Counts must accumulate, not take a max of per-batch sizes: with an
-        incremental cursor each sweep normally sees a single new copy, so
-        max() would leave the count pinned at 1 forever and repetition-based
-        escalation could never fire.
+        Two failure modes this guards against:
+          - taking max() of per-batch sizes: with an incremental cursor each
+            sweep sees ~1 new copy, so the count would pin at 1 forever and
+            repetition-based escalation could never fire.
+          - counting calls: a held cursor means a retry re-fetches the same
+            messages, inflating the total and tripping escalation spuriously.
+        Counting distinct ids is idempotent under retry.
         """
+        new = 0
+        for mid in msg_ids:
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO seen(chat,sig,msg_id) VALUES(?,?,?)", (chat, sig, mid)
+            )
+            new += cur.rowcount or 0
         row = self.db.execute(
-            "SELECT count, first_seen FROM alarm WHERE chat=? AND sig=?", (chat, sig)
+            "SELECT count FROM alarm WHERE chat=? AND sig=?", (chat, sig)
         ).fetchone()
         if row:
-            self.db.execute(
-                "UPDATE alarm SET count=count+?, last_seen=? WHERE chat=? AND sig=?",
-                (n, when, chat, sig),
-            )
+            if new:
+                self.db.execute(
+                    "UPDATE alarm SET count=count+?, last_seen=? WHERE chat=? AND sig=?",
+                    (new, when, chat, sig),
+                )
         else:
             self.db.execute(
                 "INSERT INTO alarm(chat,sig,first_seen,last_seen,count,sample) VALUES(?,?,?,?,?,?)",
-                (chat, sig, when, when, n, sample[:400]),
+                (chat, sig, when, when, new, sample[:400]),
             )
         self.db.commit()
 
@@ -326,9 +345,13 @@ async def list_topics(client, ent):
             )
         )
     except Exception as e:
-        # Distinguish LOOKUP FAILURE from 'this is not a forum'. Returning []
-        # for both would fabricate read_max=0/unread=0 and let a transient API
-        # error delete messages the owner never saw.
+        # Distinguish the THREE cases. Collapsing them was the original bug:
+        #   - genuinely not a forum  -> [] so the caller uses chat-level state
+        #   - transient/other error  -> raise, caller skips the chat entirely
+        # Returning [] for a real failure would fabricate read_max=0/unread=0
+        # and let an API error delete messages the owner never saw.
+        if "NOT_FORUM" in str(e).upper():
+            return []
         raise ForumLookupError(str(e)) from e
     for t in r.topics:
         if isinstance(t, types.ForumTopic):
@@ -342,11 +365,16 @@ async def chat_read_state(client, ent):
     Never guess zero: zero means 'nothing read', and treating it as 'all read'
     is the unsafe direction.
     """
+    # Ask for THIS peer's dialog directly. Scanning the most recent N dialogs
+    # silently misses any chat outside that window, which then gets skipped
+    # forever on a busy account.
     try:
-        d = await client.get_dialogs(limit=200)
-        for dlg in d:
-            if dlg.entity and getattr(dlg.entity, "id", None) == getattr(ent, "id", None):
-                return (dlg.dialog.read_inbox_max_id or 0), (dlg.unread_count or 0)
+        from telethon.tl import functions, types
+
+        r = await client(functions.messages.GetPeerDialogsRequest(peers=[ent]))
+        for dlg in r.dialogs:
+            if isinstance(dlg, types.Dialog):
+                return (dlg.read_inbox_max_id or 0), (dlg.unread_count or 0)
     except Exception:
         pass
     return None, None
@@ -568,7 +596,10 @@ async def process_batch(
         # accumulate.
         short_sig = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:32]
         if apply:
-            state.observe(chat_id, short_sig, newest.date.isoformat(), sig[:400], n=len(group))
+            state.observe(
+                chat_id, short_sig, newest.date.isoformat(), sig[:400],
+                msg_ids=[m.id for m in group],
+            )
             if acked:
                 state.ack(chat_id, short_sig)
 

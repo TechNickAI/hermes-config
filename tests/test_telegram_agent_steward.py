@@ -152,13 +152,33 @@ def test_cursor_round_trips_and_never_moves_backwards(tmp_path, steward):
 
 def test_alarm_state_survives_and_tracks_ack(tmp_path, steward):
     st = steward.State(tmp_path / "s.db")
-    st.observe(-100, "sig", "2026-01-01T00:00:00+00:00", "SEV-1 HALTED", n=54)
+    st.observe(-100, "sig", "2026-01-01T00:00:00+00:00", "SEV-1 HALTED", msg_ids=range(54))
     row = st.get(-100, "sig")
     assert row[2] == 54 and row[3] == 0
     assert len(st.open_alarms(-100)) == 1
     st.ack(-100, "sig")
     assert st.get(-100, "sig")[3] == 1
     assert st.open_alarms(-100) == []
+
+
+def test_observe_is_idempotent_under_retry(steward, tmp_path):
+    """A held cursor means retries re-fetch the same messages.
+
+    Counting calls instead of distinct ids would inflate the total and could
+    trip escalation on a message that never actually repeated.
+    """
+    st = steward.State(tmp_path / "s.db")
+    ids = [10, 11, 12]
+    for _ in range(5):  # same batch re-processed after failures
+        st.observe(-100, "sig", "2026-01-01T00:00:00+00:00", "x", msg_ids=ids)
+    assert st.get(-100, "sig")[2] == 3
+
+
+def test_observe_counts_only_new_ids(steward, tmp_path):
+    st = steward.State(tmp_path / "s.db")
+    st.observe(-100, "sig", "2026-01-01T00:00:00+00:00", "x", msg_ids=[1, 2])
+    st.observe(-100, "sig", "2026-01-01T01:00:00+00:00", "x", msg_ids=[2, 3])
+    assert st.get(-100, "sig")[2] == 3
 
 
 def test_observe_accumulates_across_runs(steward, tmp_path):
@@ -171,15 +191,15 @@ def test_observe_accumulates_across_runs(steward, tmp_path):
     """
     st = steward.State(tmp_path / "s.db")
     for i in range(12):
-        st.observe(-100, "sig", f"2026-01-01T{i:02d}:00:00+00:00", "SEV-1", n=1)
+        st.observe(-100, "sig", f"2026-01-01T{i:02d}:00:00+00:00", "SEV-1", msg_ids=[i])
     assert st.get(-100, "sig")[2] == 12
 
 
 def test_observe_preserves_first_seen(steward, tmp_path):
     """Elapsed span is measured from first sighting, across runs."""
     st = steward.State(tmp_path / "s.db")
-    st.observe(-100, "sig", "2026-01-01T00:00:00+00:00", "x", n=1)
-    st.observe(-100, "sig", "2026-01-05T00:00:00+00:00", "x", n=1)
+    st.observe(-100, "sig", "2026-01-01T00:00:00+00:00", "x", msg_ids=[1])
+    st.observe(-100, "sig", "2026-01-05T00:00:00+00:00", "x", msg_ids=[2])
     assert st.get(-100, "sig")[0].startswith("2026-01-01")
 
 
