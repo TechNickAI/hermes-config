@@ -116,7 +116,7 @@ Two more gotchas worth knowing:
 - **One coherent concept per PR** — one knowledge doc group, one template set, one
   plugin. Small PRs get reviewed; large ones get stalled.
 - All changes land via PR. No direct commits to `main`.
-- CI must be green: pre-commit linting, Python tests on 3.11 and 3.13, and Node tests.
+- CI must be green: pre-commit linting, Python tests on 3.13, and Node tests.
 - The Claude Code Review action runs on every PR. Mention `@claude` in a comment to
   invoke the agent for follow-up work.
 

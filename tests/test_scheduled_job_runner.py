@@ -1,0 +1,181 @@
+"""Tests for the scheduled-job-runner skill's jobrun.py execution adapter.
+
+These exercise the real script against real subprocesses — no mocks — because the
+whole point of the runner is that its terminal states are trustworthy.
+"""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+SKILL = Path(__file__).parent.parent / "skills" / "scheduled-job-runner"
+JOBRUN = SKILL / "scripts" / "jobrun.py"
+
+EXIT_OK = 0
+EXIT_CONFIG = 2
+EXIT_CHILD = 3
+EXIT_TIMEOUT = 4
+
+
+def test_skill_files_exist():
+    assert (SKILL / "SKILL.md").is_file()
+    assert JOBRUN.is_file()
+
+
+def test_jobrun_compiles():
+    subprocess.run(
+        [sys.executable, "-m", "py_compile", str(JOBRUN)], check=True
+    )
+
+
+@pytest.fixture
+def home(tmp_path):
+    """An isolated HERMES_HOME so tests never touch real job state."""
+    (tmp_path / "jobs.d").mkdir()
+    (tmp_path / "scripts").mkdir()
+    return tmp_path
+
+
+def _run(home, *args, timeout=180):
+    env = dict(os.environ, HERMES_HOME=str(home))
+    return subprocess.run(
+        [sys.executable, str(JOBRUN), *args],
+        capture_output=True, text=True, env=env, timeout=timeout,
+    )
+
+
+def _spec(home, name, body):
+    (home / "jobs.d" / f"{name}.toml").write_text(body)
+
+
+def test_selftest_passes(home):
+    """The runner's own self-test must be green; it is the rollout gate."""
+    r = _run(home, "--selftest", timeout=600)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "passed" in r.stdout
+
+
+def test_success_is_verbatim(home):
+    """stdout must survive byte-for-byte, including a trailing control line."""
+    script = home / "scripts" / "gate.py"
+    script.write_text('print("diagnostic")\nprint(\'{"wakeAgent": false}\')\n')
+    _spec(home, "gate", f'job_id = "gate"\nscript = "{script}"\nruntime = "python"\n')
+    r = _run(home, "--spec", "gate")
+    assert r.returncode == EXIT_OK
+    assert r.stdout.strip().splitlines()[-1] == '{"wakeAgent": false}'
+
+
+def test_silent_policy_suppresses_successful_output(home):
+    """A noisy job is silenced in the SPEC, without editing the script."""
+    script = home / "scripts" / "noisy.py"
+    script.write_text('print("chatter nobody asked for")\n')
+    _spec(home, "noisy",
+          f'job_id = "noisy"\nscript = "{script}"\nruntime = "python"\n'
+          'output_policy = "silent"\n')
+    r = _run(home, "--spec", "noisy")
+    assert r.returncode == EXIT_OK
+    assert r.stdout == ""
+
+
+def test_child_failure_exit_code_and_incident_card(home):
+    script = home / "scripts" / "boom.py"
+    script.write_text('import sys\nsys.stderr.write("kaboom\\n")\nsys.exit(7)\n')
+    _spec(home, "boom", f'job_id = "boom"\nscript = "{script}"\nruntime = "python"\n')
+    r = _run(home, "--spec", "boom")
+    assert r.returncode == EXIT_CHILD
+    assert "boom" in r.stdout and "exited 7" in r.stdout
+
+
+def test_timeout_is_distinct_from_failure(home):
+    script = home / "scripts" / "slow.py"
+    script.write_text("import time\ntime.sleep(30)\n")
+    _spec(home, "slow",
+          f'job_id = "slow"\nscript = "{script}"\nruntime = "python"\ntimeout = 2\n')
+    r = _run(home, "--spec", "slow")
+    assert r.returncode == EXIT_TIMEOUT
+
+
+def test_missing_script_is_config_error_not_child_failure(home):
+    _spec(home, "gone",
+          f'job_id = "gone"\nscript = "{home}/scripts/nope.py"\nruntime = "python"\n')
+    r = _run(home, "--spec", "gone")
+    assert r.returncode == EXIT_CONFIG
+
+
+def test_unknown_spec_field_is_rejected(home):
+    """A misspelled control must fail loudly, never silently do nothing."""
+    script = home / "scripts" / "ok.py"
+    script.write_text("pass\n")
+    _spec(home, "typo",
+          f'job_id = "typo"\nscript = "{script}"\ntimeoutt = 5\n')
+    r = _run(home, "--spec", "typo")
+    assert r.returncode == EXIT_CONFIG
+    assert "unknown spec field" in r.stdout.lower()
+
+
+def test_args_are_passed_through(home):
+    script = home / "scripts" / "args.py"
+    script.write_text('import sys\nprint(" ".join(sys.argv[1:]))\n')
+    _spec(home, "args",
+          f'job_id = "args"\nscript = "{script}"\nruntime = "python"\n'
+          'args = ["--mode", "backfill"]\n')
+    r = _run(home, "--spec", "args")
+    assert r.returncode == EXIT_OK
+    assert "--mode backfill" in r.stdout
+
+
+def test_ledger_records_exit_code_and_duration(home):
+    script = home / "scripts" / "ok.py"
+    script.write_text('print("done")\n')
+    _spec(home, "ok", f'job_id = "ok"\nscript = "{script}"\nruntime = "python"\n')
+    _run(home, "--spec", "ok")
+    ledger = home / "jobstate" / "runs.jsonl"
+    assert ledger.is_file()
+    rows = [json.loads(x) for x in ledger.read_text().splitlines() if x.strip()]
+    fin = [r for r in rows if r.get("event") == "job.finished"]
+    assert fin, "no terminal event recorded"
+    assert fin[-1]["state"] == "success"
+    assert fin[-1]["exit_code"] == 0
+    assert isinstance(fin[-1]["duration_ms"], int)
+
+
+def test_dry_run_reveals_resolved_interpreter(home):
+    """--dry-run must show which interpreter will run: the whole point."""
+    script = home / "scripts" / "ok.py"
+    script.write_text("pass\n")
+    _spec(home, "dry", f'job_id = "dry"\nscript = "{script}"\nruntime = "python"\n')
+    r = _run(home, "--dry-run", "--spec", "dry")
+    assert r.returncode == EXIT_OK
+    payload = json.loads(r.stdout)
+    assert payload["job_id"] == "dry"
+    assert payload["preflight"] == "ok"
+    assert payload["argv"][0] == sys.executable
+
+
+def test_failures_command_is_silent_when_clean(home):
+    """Safe to schedule: prints nothing when nothing is wrong."""
+    r = _run(home, "--failures", "24")
+    assert r.returncode == EXIT_OK
+    assert r.stdout.strip() == ""
+
+
+def test_redaction_masks_secrets_without_mangling_normal_output(home):
+    script = home / "scripts" / "leak.py"
+    script.write_text(
+        'import sys\n'
+        'sys.stderr.write("api_key=supersecretvalue\\n")\n'
+        'sys.stderr.write("session started and processed 42 rows\\n")\n'
+        'sys.exit(1)\n'
+    )
+    _spec(home, "leak", f'job_id = "leak"\nscript = "{script}"\nruntime = "python"\n')
+    r = _run(home, "--spec", "leak")
+    assert r.returncode == EXIT_CHILD
+    log = next((home / "jobstate" / "logs").glob("leak-*.log")).read_text()
+    assert "supersecretvalue" not in log
+    assert "[REDACTED]" in log
+    # a normal line containing a broad word must survive intact
+    assert "session started and processed 42 rows" in log

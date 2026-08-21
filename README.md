@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Hermes-Config-7F5AF0?style=for-the-badge&labelColor=1a1a2e" alt="Hermes Config">
   <br><br>
-  <img src="https://img.shields.io/badge/python-3.11+-3776ab?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/python-3.13+-3776ab?style=flat-square&logo=python&logoColor=white" alt="Python 3.13+">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
   <a href="https://github.com/TechNickAI/hermes-config/actions/workflows/build.yml"><img src="https://github.com/TechNickAI/hermes-config/actions/workflows/build.yml/badge.svg" alt="Build"></a>
   <a href="https://github.com/TechNickAI/hermes-config/stargazers"><img src="https://img.shields.io/github/stars/TechNickAI/hermes-config?style=flat-square&color=7F5AF0" alt="Stars"></a>
@@ -112,7 +112,7 @@ Four `SOUL.md` starters: `personal-assistant`, `engineer`, `it-admin`,
 the single highest-leverage file in your setup. Copy one, then make it yours. See
 [`templates/soul/README.md`](templates/soul/README.md).
 
-### `skills/`: 24 procedural skills
+### `skills/`: 25 procedural skills
 
 Skills are markdown procedures the agent loads on demand. **A skill is just a
 directory** — `cp -r` it into `~/.hermes/skills/` and it works.
@@ -177,13 +177,14 @@ directory** — `cp -r` it into `~/.hermes/skills/` and it works.
 
 **Fleet / infrastructure — for multi-host setups**
 
-| Skill               | What it does                                                  |                 |
-| ------------------- | ------------------------------------------------------------- | --------------- |
-| `cron-healthcheck`  | Detect broken cron jobs; triage cheap, fix expensive          | **needs setup** |
-| `robustify-doctor`  | Collect agent health facts, then read them for real incidents |                 |
-| `mini-app`          | Add/protect/troubleshoot an app on the mini-app router        | **needs setup** |
-| `diagram-rendering` | Render D2/Mermaid/Graphviz/Chart.js text to an inline PNG     |                 |
-| `report`            | File a bug or piece of feedback from any platform session     |                 |
+| Skill                  | What it does                                                                                         |                 |
+| ---------------------- | ---------------------------------------------------------------------------------------------------- | --------------- |
+| `cron-healthcheck`     | Detect broken cron jobs; triage cheap, fix expensive                                                 | **needs setup** |
+| `scheduled-job-runner` | Run every scheduled job through one adapter: silence-on-success, overlap locks, timeouts, run ledger |                 |
+| `robustify-doctor`     | Collect agent health facts, then read them for real incidents                                        |                 |
+| `mini-app`             | Add/protect/troubleshoot an app on the mini-app router                                               | **needs setup** |
+| `diagram-rendering`    | Render D2/Mermaid/Graphviz/Chart.js text to an inline PNG                                            |                 |
+| `report`               | File a bug or piece of feedback from any platform session                                            |                 |
 
 **Migration**
 
@@ -298,7 +299,7 @@ pre-commit run --all-files
 ```
 
 Both suites run on every push and pull request
-([`build.yml`](.github/workflows/build.yml)), on Python 3.11 and 3.13.
+([`build.yml`](.github/workflows/build.yml)), on Python 3.13.
 
 ## Contributing
 
