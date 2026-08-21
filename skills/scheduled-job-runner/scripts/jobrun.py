@@ -1016,13 +1016,17 @@ def selftest() -> int:
     ver = _interpreter_version(sys.executable)
     check("python-floor-met", bool(ver and ver >= MIN_PYTHON), True)
 
-    # uv discovery finds uv even when PATH is stripped (cron reality)
-    _saved = os.environ.get("PATH", "")
-    try:
-        os.environ["PATH"] = "/nonexistent"
-        check("uv-found-without-PATH", bool(find_uv()), True)
-    finally:
-        os.environ["PATH"] = _saved
+    # uv discovery must not depend on PATH (cron's PATH is not a login shell's).
+    # Only assertable where uv is actually installed — CI runners have none.
+    if find_uv():
+        _saved = os.environ.get("PATH", "")
+        try:
+            os.environ["PATH"] = "/nonexistent"
+            check("uv-found-without-PATH", bool(find_uv()), True)
+        finally:
+            os.environ["PATH"] = _saved
+    else:
+        print("  SKIP  uv-found-without-PATH: uv not installed on this host")
 
     # uv argv shape: --python floor present, script last before args
     if find_uv():
