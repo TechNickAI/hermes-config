@@ -1,0 +1,30 @@
+{
+  "_comment": "Copy to <profile>/steward/config.json, chmod 600, fill in. One config per agent.",
+
+  "telethon_config": "~/.tgcli/config.json",
+  "telethon_session": "~/.tgcli/telethon-session.session",
+
+  "_bot_token": "This agent's OWN bot token. A bot can only delete its own messages.",
+  "bot_token": "<bot-token>",
+
+  "_owner_id": "Numeric Telegram user id of the human who owns these rooms.",
+  "owner_id": 0,
+
+  "_chats": "Chat ids this agent is a member of. Never another agent's rooms.",
+  "chats": [],
+
+  "archive_dir": "~/.hermes/profiles/<profile>/steward/archive",
+
+  "_respect_unread": "Skip topics with unread messages so nothing is deleted before the owner reads it.",
+  "respect_unread": true,
+
+  "_collapse_duplicates": "Collapsing is opt-in AND requires a signature in collapse_allowlist.",
+  "collapse_duplicates": false,
+  "collapse_allowlist": [],
+  "cluster_min": 3,
+
+  "_stale_hours": "Unacknowledged critical older than this gets escalated.",
+  "stale_hours": 12,
+
+  "scan_limit": 3000
+}
