@@ -142,6 +142,8 @@ _PEM_RE = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
     re.S,
 )
+# `--token VALUE` style flags whose NEXT argv element is the secret.
+_SECRET_FLAG_RE = re.compile(rf"(?i)(?:{_HINT_ALT})")
 
 
 def _now() -> datetime:
@@ -172,6 +174,29 @@ def redact(text: str) -> str:
         return out
     except Exception:
         return "[REDACTED - redaction failed]"
+
+
+def redact_argv(argv: list) -> list:
+    """Redact secrets passed as command-line arguments.
+
+    Covers both shapes: `--token=VALUE` (handled by redact) and the separated
+    `--token VALUE`, where the secret is its own argv element and carries no
+    key to match on. argv is recorded in the ledger, so this runs before it is
+    ever written to disk.
+    """
+    out = []
+    flag_expects_secret = False
+    for item in argv:
+        text = str(item)
+        if flag_expects_secret and not text.startswith("-"):
+            out.append("[REDACTED]")
+            flag_expects_secret = False
+            continue
+        flag_expects_secret = bool(
+            text.startswith("-") and _SECRET_FLAG_RE.search(text)
+        ) and "=" not in text
+        out.append(redact(text))
+    return out
 
 
 def _clamp(text: str, limit: int = MAX_CAPTURE_BYTES) -> str:
@@ -333,10 +358,15 @@ class Spec:
         self.owner = data.get("owner")
         self.heartbeat_url = data.get("heartbeat_url")
         self.env = dict(data.get("env") or {})
-        # TZ/LANG are unset in the cron subprocess env; jobs that format dates
-        # or parse text need them. Default them unless the spec overrides.
-        self.env.setdefault("TZ", data.get("timezone", "America/Chicago"))
+        # LANG is defaulted because the cron subprocess env has none, and a job
+        # that formats or parses text should not depend on the C locale.
         self.env.setdefault("LANG", "en_US.UTF-8")
+        # TZ is NOT defaulted. Forcing a timezone would silently shift the
+        # day boundary for any job computing a date, partition, or deadline.
+        # Set it explicitly per spec when a job needs a specific zone.
+        tz = data.get("timezone")
+        if tz:
+            self.env.setdefault("TZ", str(tz))
         self.notify_on_success = bool(data.get("notify_on_success", False))
         self.retries = int(data.get("retries", 0))
         self.retry_backoff = float(data.get("retry_backoff", 5.0))
@@ -411,7 +441,11 @@ def resolve_argv(spec: Spec) -> list[str]:
                 head = script.read_text(encoding="utf-8", errors="replace")[:4096]
             except OSError:
                 pass
-            runtime = "uv" if ("# /// script" in head and find_uv()) else "python"
+            # A PEP 723 script declares dependencies the agent venv will not
+            # have. Route it to uv even when uv is currently missing —
+            # ensure_uv() installs it. Falling back to `python` here would run
+            # the script in the wrong environment and fail on its own imports.
+            runtime = "uv" if "# /// script" in head else "python"
 
     if runtime == "uv":
         uv = ensure_uv(auto_install=spec.auto_install_uv)
@@ -552,33 +586,45 @@ def write_logs(job_id: str, run_id: str, out: str, err: str) -> str:
 class _BoundedReader:
     """Drain a pipe into a bounded head+tail buffer WHILE the child runs.
 
-    The previous implementation used communicate(), which accumulates the whole
-    stream in memory and only clamped afterwards — a runaway job could exhaust
-    the host before any limit applied. This keeps memory bounded during
-    execution while still draining the pipe so the child never blocks on a full
-    buffer.
+    Bounded by BYTES, not lines: a single newline-free multi-gigabyte line, or
+    many large lines, must not exhaust the host. Reads fixed-size chunks so no
+    unbounded intermediate string is ever materialized, and keeps a byte-capped
+    head and tail while still draining the pipe so the child never blocks.
     """
+
+    CHUNK = 65536
 
     def __init__(self, stream, limit: int = MAX_CAPTURE_BYTES):
         self.stream = stream
-        self.limit = limit
+        self.half = max(1024, limit // 2)
         self.head: list[str] = []
-        self.tail: "deque[str]" = deque(maxlen=4096)
         self.head_len = 0
+        self.tail: "deque[str]" = deque()
+        self.tail_len = 0
         self.dropped = 0
         self.thread = threading.Thread(target=self._pump, daemon=True)
         self.thread.start()
 
     def _pump(self) -> None:
         try:
-            for line in self.stream:
-                if self.head_len < self.limit // 2:
-                    self.head.append(line)
-                    self.head_len += len(line)
-                else:
-                    if len(self.tail) == self.tail.maxlen:
-                        self.dropped += 1
-                    self.tail.append(line)
+            while True:
+                chunk = self.stream.read(self.CHUNK)
+                if not chunk:
+                    break
+                if self.head_len < self.half:
+                    take = min(len(chunk), self.half - self.head_len)
+                    self.head.append(chunk[:take])
+                    self.head_len += take
+                    chunk = chunk[take:]
+                    if not chunk:
+                        continue
+                self.tail.append(chunk)
+                self.tail_len += len(chunk)
+                # Evict from the front until the tail fits its byte budget.
+                while self.tail_len > self.half and self.tail:
+                    gone = self.tail.popleft()
+                    self.tail_len -= len(gone)
+                    self.dropped += len(gone)
         except Exception:
             pass
         finally:
@@ -592,7 +638,7 @@ class _BoundedReader:
         head = "".join(self.head)
         tail = "".join(self.tail)
         if self.dropped:
-            return f"{head}\n...[{self.dropped} lines elided]...\n{tail}"
+            return f"{head}\n...[{self.dropped} bytes elided]...\n{tail}"
         return head + tail
 
 
@@ -862,7 +908,13 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             time.sleep(spec.retry_backoff * attempt)
 
         finished_at = _now()
-        out = _clamp(redact(out or ""))
+        # Two views of the same run, deliberately kept separate:
+        #   raw_out  — exactly what the job wrote. Delivered verbatim on the
+        #              passthrough path so a control payload survives intact.
+        #   out/err  — redacted + clamped. Used for logs, the ledger, and the
+        #              failure card, where secrets must never land on disk.
+        raw_out = out or ""
+        out = _clamp(redact(raw_out))
         err = _clamp(redact(err or ""))
         log_path = write_logs(spec.job_id, run_id, out, err)
 
@@ -884,7 +936,7 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             "exit_code": rc,
             "signal": signame,
             "attempt": attempt,
-            "argv": argv,
+            "argv": redact_argv(argv),
             "runtime": spec.runtime,
             "scheduled_at": _iso(scheduled_at),
             "started_at": _iso(started_at),
@@ -910,11 +962,11 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         if state == "success":
             if spec.output_policy == "silent" and not spec.notify_on_success:
                 return EXIT_OK
-            if out:
-                # VERBATIM: no strip, no truncation, no reformatting. A control
-                # payload on the last line must survive exactly as emitted.
-                sys.stdout.write(out)
-                if not out.endswith("\n"):
+            if raw_out:
+                # VERBATIM: the original bytes, not the redacted/clamped copy.
+                # A control payload on the last line must survive exactly.
+                sys.stdout.write(raw_out)
+                if not raw_out.endswith("\n"):
                     sys.stdout.write("\n")
             return EXIT_OK
 

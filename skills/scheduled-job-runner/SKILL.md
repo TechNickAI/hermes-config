@@ -26,8 +26,9 @@ run", "add a scheduled job", "should this use uv".
 ## Overview
 
 One execution adapter for every scheduled job. Hermes cron remains the **scheduler**;
-`jobrun.py` is the **runner** the job's `script:` field points at. It exists because 320
-jobs across 9 hosts each re-implemented the same seven things badly.
+`jobrun.py` is the **runner** the job's `script:` field points at. It exists because
+scheduled jobs tend to each re-implement the same handful of concerns, badly and
+inconsistently, once a setup grows past a few of them.
 
 **Do not build another scheduler.** Do not adopt `cronic` — it exits 0 after a child
 failure, which blinds the Hermes failure alert.
@@ -40,7 +41,7 @@ Each was previously hand-rolled per script:
 
 1. **Interpreter/dependency resolution** — kills the `.sh` wrapper hack
 2. **Silence-on-success** — kills hand-rolled `if [ $RC -ne 0 ]` blocks
-3. **Overlap prevention** — flock; only 3 of 201 audited scripts had it
+3. **Overlap prevention** — flock; hand-rolled in only a tiny minority of scripts
 4. **Hard timeout + signal handling** — timeout distinguishable from failure
 5. **Structured run ledger** — exit code, duration, outcome
 6. **Bounded log capture + secret redaction** — quiet ≠ discard evidence

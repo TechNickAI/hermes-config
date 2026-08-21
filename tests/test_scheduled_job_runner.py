@@ -179,3 +179,62 @@ def test_redaction_masks_secrets_without_mangling_normal_output(home):
     assert "[REDACTED]" in log
     # a normal line containing a broad word must survive intact
     assert "session started and processed 42 rows" in log
+
+
+def test_ledger_does_not_record_secret_arguments(home):
+    """argv lands on disk, so a `--token VALUE` pair must be masked."""
+    script = home / "scripts" / "ok.py"
+    script.write_text("pass\n")
+    _spec(home, "sec",
+          f'job_id = "sec"\nscript = "{script}"\nruntime = "python"\n'
+          'args = ["--token", "hunter2secret", "--verbose"]\n')
+    r = _run(home, "--spec", "sec")
+    assert r.returncode == EXIT_OK
+    ledger = (home / "jobstate" / "runs.jsonl").read_text()
+    assert "hunter2secret" not in ledger
+    assert "[REDACTED]" in ledger
+    # non-secret arguments stay readable for debugging
+    assert "--verbose" in ledger
+
+
+def test_timezone_is_not_forced_when_unset(home):
+    """Forcing a TZ would shift the day boundary for date-computing jobs."""
+    script = home / "scripts" / "tz.py"
+    script.write_text('import os\nprint("TZ=" + os.environ.get("TZ", "<unset>"))\n')
+    _spec(home, "tz", f'job_id = "tz"\nscript = "{script}"\nruntime = "python"\n')
+    r = _run(home, "--spec", "tz")
+    assert "TZ=<unset>" in r.stdout, r.stdout
+
+    _spec(home, "tz2",
+          f'job_id = "tz2"\nscript = "{script}"\nruntime = "python"\n'
+          'timezone = "UTC"\n')
+    r2 = _run(home, "--spec", "tz2")
+    assert "TZ=UTC" in r2.stdout
+
+
+def test_passthrough_survives_a_redaction_pattern(home):
+    """Verbatim delivery must not be rewritten by the log-sanitizing pass."""
+    script = home / "scripts" / "tok.py"
+    script.write_text('print("token=abc123 is my literal output")\n')
+    _spec(home, "tok", f'job_id = "tok"\nscript = "{script}"\nruntime = "python"\n')
+    r = _run(home, "--spec", "tok")
+    assert r.returncode == EXIT_OK
+    # delivered stdout is the original
+    assert "token=abc123 is my literal output" in r.stdout
+    # but the on-disk log is sanitized
+    log = next((home / "jobstate" / "logs").glob("tok-*.log")).read_text()
+    assert "abc123" not in log
+
+
+def test_capture_is_bounded_by_bytes_not_lines(home):
+    """A single enormous newline-free line must not exhaust memory."""
+    script = home / "scripts" / "onebigline.py"
+    script.write_text("import sys\nsys.stdout.write('z' * 40_000_000)\n")
+    _spec(home, "big",
+          f'job_id = "big"\nscript = "{script}"\nruntime = "python"\n'
+          'output_policy = "silent"\ntimeout = 120\n')
+    r = _run(home, "--spec", "big")
+    assert r.returncode == EXIT_OK
+    log = next((home / "jobstate" / "logs").glob("big-*.log"))
+    # 40MB of output must not produce a 40MB log
+    assert log.stat().st_size < 2_000_000, log.stat().st_size
