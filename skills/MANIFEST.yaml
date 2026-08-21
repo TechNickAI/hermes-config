@@ -378,8 +378,13 @@ skills:
   scope: solo
   summary: Use when an agent's Telegram rooms have become unreadable — walls of text, cron output nobody reads, progress bubbles burying real findings, or an owner who returns to hundreds of unread messages and cannot tell what needs a decision.
   use_when: 'an agent''s Telegram rooms have become unreadable — walls of text, cron output nobody reads, progress bubbles burying real findings, or an owner who returns to hundreds of unread messages and cannot tell what needs a decision. Sweeps an agent''s OWN messages: deletes UI ephemera, escalates repeated un…'
-  requires: []
-  works_out_of_the_box: true
+  requires:
+  - 'python: telethon'
+  - Telegram API credentials (app_id / app_hash)
+  - an authorized Telegram USER session (bots cannot read history)
+  - the agent's own Telegram bot token, admin in its rooms
+  - a populated config.json (see templates/config.example.json)
+  works_out_of_the_box: false
   tags:
   - telegram
   - noise

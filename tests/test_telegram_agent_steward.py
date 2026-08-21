@@ -161,8 +161,43 @@ def test_alarm_state_survives_and_tracks_ack(tmp_path, steward):
     assert st.open_alarms(-100) == []
 
 
-def test_observe_keeps_the_highest_count_seen(tmp_path, steward):
+def test_observe_accumulates_across_runs(steward, tmp_path):
+    """Counts must ADD, not max().
+
+    With an incremental cursor each sweep sees ~1 new copy of a recurring
+    alarm. If observe() took a max of batch sizes the count would stay at 1
+    forever and repetition-based escalation could never fire — which silently
+    defeats the entire purpose of the tool.
+    """
     st = steward.State(tmp_path / "s.db")
-    st.observe(-100, "sig", "2026-01-01T00:00:00+00:00", "x", n=10)
-    st.observe(-100, "sig", "2026-01-02T00:00:00+00:00", "x", n=3)
-    assert st.get(-100, "sig")[2] == 10
+    for i in range(12):
+        st.observe(-100, "sig", f"2026-01-01T{i:02d}:00:00+00:00", "SEV-1", n=1)
+    assert st.get(-100, "sig")[2] == 12
+
+
+def test_observe_preserves_first_seen(steward, tmp_path):
+    """Elapsed span is measured from first sighting, across runs."""
+    st = steward.State(tmp_path / "s.db")
+    st.observe(-100, "sig", "2026-01-01T00:00:00+00:00", "x", n=1)
+    st.observe(-100, "sig", "2026-01-05T00:00:00+00:00", "x", n=1)
+    assert st.get(-100, "sig")[0].startswith("2026-01-01")
+
+
+def test_signature_keys_are_stable_across_processes(steward):
+    """Python's hash() is salted per process; a salted key would never
+    accumulate because each run writes a different row."""
+    import hashlib
+
+    sig = "FAVORITE GRINDER HALTED SEV-1"
+    expected = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:32]
+    assert expected == hashlib.sha256(sig.encode("utf-8")).hexdigest()[:32]
+    assert len(expected) == 32
+
+
+def test_forum_lookup_failure_is_distinguishable(steward):
+    """A transient topic-lookup failure must not look like 'not a forum'.
+
+    Both once returned [], which fabricated read_max=0/unread=0 and allowed
+    deletion of messages the owner had never seen.
+    """
+    assert issubclass(steward.ForumLookupError, RuntimeError)

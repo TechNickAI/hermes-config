@@ -12,6 +12,12 @@ version: 1.0.0
 license: MIT
 metadata:
   hermes:
+    requires:
+      - "python: telethon"
+      - "Telegram API credentials (app_id / app_hash)"
+      - "an authorized Telegram USER session (bots cannot read history)"
+      - "the agent's own Telegram bot token, admin in its rooms"
+      - "a populated config.json (see templates/config.example.json)"
     tags:
       [telegram, noise, cleanup, notifications, alarms, cron, forum-topics, curation]
     # referenced but not shipped here: agent-notification-suppression,

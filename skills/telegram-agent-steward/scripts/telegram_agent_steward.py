@@ -26,6 +26,7 @@ import datetime as dt
 import json
 import os
 import re
+import hashlib
 import sqlite3
 import sys
 import time
@@ -56,7 +57,7 @@ EPHEMERAL_PATTERNS = [
 # Reason codes meaning money, execution, or monitoring blindness.
 # Anchored to MACHINE-EMITTED alarm shapes, not prose: an earlier version
 # matched any message merely CONTAINING "halt"/"escalate" and flagged 385
-# ordinary conversational messages on KenBot as critical.
+# ordinary conversational messages in a live room as critical.
 NEVER_TOUCH = re.compile(
     r"(?:^|\n)\s*(?:⚠️|🔴|❌)?\s*"
     r"(?:SEV-[012]\b|[A-Z][A-Z ]*HALTED|[A-Z][A-Z ]*BROKEN|MONITOR BLIND|"
@@ -78,7 +79,7 @@ REACT_ROLLUP = "💯"  # survivor of a collapsed cluster
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 
-# A cluster this large/old is escalated, never collapsed — the KenBot case
+# A cluster this large/old is escalated, never collapsed — the measured case
 # (54 copies over 95h, never acknowledged) must trip this.
 ESCALATE_COUNT = 5
 ESCALATE_HOURS = 6
@@ -146,12 +147,20 @@ class State:
         self.db.commit()
 
     def observe(self, chat: int, sig: str, when: str, sample: str, n: int = 1):
-        cur = self.db.execute("SELECT count, first_seen FROM alarm WHERE chat=? AND sig=?", (chat, sig))
-        row = cur.fetchone()
+        """Record n NEW sightings, ACCUMULATING across runs.
+
+        Counts must accumulate, not take a max of per-batch sizes: with an
+        incremental cursor each sweep normally sees a single new copy, so
+        max() would leave the count pinned at 1 forever and repetition-based
+        escalation could never fire.
+        """
+        row = self.db.execute(
+            "SELECT count, first_seen FROM alarm WHERE chat=? AND sig=?", (chat, sig)
+        ).fetchone()
         if row:
             self.db.execute(
-                "UPDATE alarm SET count=?, last_seen=? WHERE chat=? AND sig=?",
-                (max(row[0], n), when, chat, sig),
+                "UPDATE alarm SET count=count+?, last_seen=? WHERE chat=? AND sig=?",
+                (n, when, chat, sig),
             )
         else:
             self.db.execute(
@@ -180,6 +189,10 @@ class State:
 
 
 # ---------------------------------------------------------------- bot side
+
+
+class ForumLookupError(RuntimeError):
+    """Topic enumeration failed; we cannot prove what the owner has read."""
 
 
 class Bot:
@@ -299,7 +312,7 @@ async def list_topics(client, ent):
 
     read_inbox_max_id is the highest message id the owner has actually read
     in that topic — Telegram tracks this per topic, per device-synced. It is
-    the only trustworthy 'has Nick seen this' signal: presence (UserStatus)
+    the only trustworthy 'has the owner seen this' signal: presence (UserStatus)
     is useless here because the reading session IS the owner's account and
     therefore always reports Online.
     """
@@ -312,12 +325,31 @@ async def list_topics(client, ent):
                 peer=ent, offset_date=None, offset_id=0, offset_topic=0, limit=100
             )
         )
-        for t in r.topics:
-            if isinstance(t, types.ForumTopic):
-                out.append(t)
-    except Exception:
-        return []
+    except Exception as e:
+        # Distinguish LOOKUP FAILURE from 'this is not a forum'. Returning []
+        # for both would fabricate read_max=0/unread=0 and let a transient API
+        # error delete messages the owner never saw.
+        raise ForumLookupError(str(e)) from e
+    for t in r.topics:
+        if isinstance(t, types.ForumTopic):
+            out.append(t)
     return out
+
+
+async def chat_read_state(client, ent):
+    """Chat-level (read_max, unread) for a NON-forum group.
+
+    Never guess zero: zero means 'nothing read', and treating it as 'all read'
+    is the unsafe direction.
+    """
+    try:
+        d = await client.get_dialogs(limit=200)
+        for dlg in d:
+            if dlg.entity and getattr(dlg.entity, "id", None) == getattr(ent, "id", None):
+                return (dlg.dialog.read_inbox_max_id or 0), (dlg.unread_count or 0)
+    except Exception:
+        pass
+    return None, None
 
 
 async def sweep(cfg, apply: bool) -> int:
@@ -356,11 +388,25 @@ async def sweep(cfg, apply: bool) -> int:
     for chat_id in cfg["chats"]:
         try:
             ent = await client.get_entity(chat_id)
-            topics = await list_topics(client, ent)
-            # No forum topics (plain group): treat the whole chat as one topic.
+            try:
+                topics = await list_topics(client, ent)
+            except ForumLookupError as e:
+                # FAIL CLOSED: without topic state we cannot prove what the
+                # owner has read, so we touch nothing in this chat.
+                report.setdefault("chat_errors", []).append(
+                    f"{chat_id}: topic lookup failed, skipped for safety: {e}"
+                )
+                continue
             walk = [(t.id, t.top_message, t.read_inbox_max_id, t.unread_count) for t in topics]
             if not walk:
-                walk = [(0, 0, 0, 0)]
+                # Plain (non-forum) group: get REAL chat-level read state.
+                read_max, unread = await chat_read_state(client, ent)
+                if read_max is None:
+                    report.setdefault("chat_errors", []).append(
+                        f"{chat_id}: no read state available, skipped for safety"
+                    )
+                    continue
+                walk = [(0, 0, read_max, unread)]
 
             for topic_id, top_msg, read_max, unread in walk:
                 cursor = state.cursor_for(chat_id, topic_id)
@@ -402,13 +448,27 @@ async def sweep(cfg, apply: bool) -> int:
                         state.set_cursor(chat_id, topic_id, top_msg, now.isoformat())
                     continue
 
+                before_arch = report["archive_failures"]
+                before_api = len(bot.failures)
                 await process_batch(
                     msgs, chat_id, topic_id, read_max, bot, bot_id, owner_id,
                     client, ent, state, root, now, cfg, apply, report,
                 )
+                # Only advance past work that actually succeeded. Advancing
+                # after a failed archive or API call would make the next run
+                # skip that range forever, so the failure could never be
+                # retried once the transient cause cleared.
+                clean = (
+                    report["archive_failures"] == before_arch
+                    and len(bot.failures) == before_api
+                )
                 newest_id = max(m.id for m in msgs)
-                if apply:
+                if apply and clean:
                     state.set_cursor(chat_id, topic_id, newest_id, now.isoformat())
+                elif apply:
+                    report.setdefault("cursor_held", []).append(
+                        {"chat": chat_id, "topic": topic_id}
+                    )
         except Exception as e:  # one bad room must not abort the rest
             report.setdefault("chat_errors", []).append(f"{chat_id}: {e}")
 
@@ -439,7 +499,11 @@ async def process_batch(
     except Exception:
         pinned = {m.id for m in msgs if getattr(m, "pinned", False)}
 
-    ours = [m for m in msgs if m.sender_id == bot_id and m.id not in pinned]
+    # Anything the owner replied to is preserved — otherwise his reply is left
+    # pointing at a deleted message. This must exclude from DELETION, not only
+    # from cluster escalation.
+    protected = pinned | replied_to
+    ours = [m for m in msgs if m.sender_id == bot_id and m.id not in protected]
 
     ephemeral, critical, routine = [], [], []
     for m in ours:
@@ -498,16 +562,35 @@ async def process_batch(
     for sig, group in clusters.items():
         group.sort(key=lambda m: (m.date, m.id))
         newest = group[-1]
-        span_h = (now - group[0].date).total_seconds() / 3600
         acked = any(m.id in replied_to for m in group)
-        short_sig = str(abs(hash(sig)) % (10**12))
-        state.observe(chat_id, short_sig, newest.date.isoformat(), sig[:400], n=len(group))
-        if acked:
-            state.ack(chat_id, short_sig)
+        # hashlib, not hash(): Python's hash() is salted per process, so a
+        # signature would get a different key on every run and never
+        # accumulate.
+        short_sig = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:32]
+        if apply:
+            state.observe(chat_id, short_sig, newest.date.isoformat(), sig[:400], n=len(group))
+            if acked:
+                state.ack(chat_id, short_sig)
+
+        # Repetition and elapsed time come from PERSISTED state, not this
+        # batch. With an incremental cursor a batch usually holds one new
+        # copy, so an hourly alarm would show len(group)==1 forever and
+        # never trip the threshold.
+        row = state.get(chat_id, short_sig)
+        if row:
+            first_seen, _last, total, acked_db, _esc = row
+            acked = acked or bool(acked_db)
+            try:
+                first_dt = dt.datetime.fromisoformat(first_seen)
+            except ValueError:
+                first_dt = group[0].date
+        else:
+            total, first_dt = len(group), group[0].date
+        span_h = (now - first_dt).total_seconds() / 3600
 
         is_critical = bool(NEVER_TOUCH.search(newest.raw_text or ""))
         # Repetition ALONE is a severity signal, independent of wording.
-        repeated_alarm = len(group) >= ESCALATE_COUNT and span_h >= ESCALATE_HOURS
+        repeated_alarm = total >= ESCALATE_COUNT and span_h >= ESCALATE_HOURS
 
         if (is_critical or repeated_alarm) and not acked:
             bot.react(chat_id, newest.id, REACT_UNACKED)
@@ -515,7 +598,7 @@ async def process_batch(
                 {
                     "chat": chat_id,
                     "thread": topic_id,
-                    "count": len(group),
+                    "count": total,
                     "span_h": round(span_h, 1),
                     "sample": sig[:100],
                 }
