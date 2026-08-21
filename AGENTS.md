@@ -54,7 +54,7 @@ individual templates, plugins, or skills into their own `~/.hermes/`.
 
 ## Tech stack
 
-- **Hermes Agent** — the underlying harness (Python 3.11+; TUI, gateway, plugins, MCP,
+- **Hermes Agent** — the underlying harness (Python 3.13+; TUI, gateway, plugins, MCP,
   cron)
 - **Plugins** at `~/.hermes/plugins/<name>/` with `plugin.yaml` + `__init__.py`
 - **Skills** at `~/.hermes/skills/<name>/SKILL.md` (procedural memory, agent-authored
@@ -111,8 +111,8 @@ Three things to know before touching plugin code:
 3. **`conftest.py` strips ambient `CORTEX_*` / `HERMES_HOME` env vars** per test, so a
    developer's live endpoints can't leak into assertions or trigger real network calls.
 
-CI (`.github/workflows/build.yml`) runs pre-commit, Python tests on 3.11 and 3.13, and
-the Node suite on every push and PR.
+CI (`.github/workflows/build.yml`) runs pre-commit, Python tests on 3.13, and the Node
+suite on every push and PR.
 
 ## Git workflow
 

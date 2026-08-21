@@ -24,9 +24,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Hermes requires 3.11+. Test the floor and a current release so the
-        # plugin keeps working across the supported range.
-        python-version: ["3.11", "3.13"]
+        # Fleet standard is Python 3.13.
+        python-version: ["3.13"]
 
     steps:
       - name: Checkout Code

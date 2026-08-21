@@ -52,6 +52,7 @@ FLEET_SCOPED = {
     "mini-app",
     "pr-review-sweep",
     "report",
+    "scheduled-job-runner",
 }
 
 # Skills that only make sense while migrating off OpenClaw.
