@@ -108,6 +108,44 @@ the script.
 
 Failures always deliver an incident card regardless of policy.
 
+## Money jobs: `critical = true`
+
+For a job that moves real money, set `critical` in the spec:
+
+```toml
+critical = true
+timeout  = 600     # REQUIRED for critical jobs, and shorter than the interval
+```
+
+What it changes:
+
+- The failure card leads with `🛑 CRITICAL` and says the job moves real money, so it
+  does not read like a failed report generator.
+- `--failures` lists critical failures FIRST and counts them in the header.
+- The spec is REJECTED without a positive timeout. This is the fix for a measured
+  near-miss: an entry job on a live trading host ran 946s against a 900s schedule with
+  nothing to stop it.
+
+What it deliberately does NOT change: execution. The runner never gates on trading
+state. A halt/kill-switch belongs at the single choke point every order funnels through,
+not in a wrapper that would become a second, weaker authority.
+
+## Nested wrappers and `deployed_sha`
+
+Some jobs already run their own domain recorder (business counters, per-strategy state).
+Two ledgers for one run is fine; two IDENTITIES is not, because failures then
+double-count. jobrun exports its identity to the child:
+
+| variable          | meaning                                  |
+| ----------------- | ---------------------------------------- |
+| `JOBRUN_RUN_ID`   | adopt this instead of inventing a run id |
+| `JOBRUN_JOB_ID`   | the spec's job_id                        |
+| `JOBRUN_CRITICAL` | `1` when the job is critical             |
+
+Every ledger row also records `deployed_sha` — the short git SHA of the tree the job ran
+from (via `cwd`). Without it, run history and a deploy-drift watchdog can disagree about
+what actually ran.
+
 ## Terminal states — never collapse into exit 1
 
 | state             | exit | meaning                                     |
