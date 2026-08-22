@@ -956,6 +956,44 @@ def cmd_bootstrap() -> int:
     return EXIT_OK if ok else EXIT_CONFIG
 
 
+def _fail_before_start(spec: "Spec", run_id: str, scheduled_at, kind: str,
+                       msg: str) -> int:
+    """A job that cannot START is still a job that is not running.
+
+    Config and preflight failures are terminal, and "the script was removed by
+    a deploy" is one of the most common ways a scheduled job quietly stops
+    working. Routing them through the same notifier as a runtime failure is the
+    whole point of the fix: otherwise a guard job goes silent in exactly the
+    situation the alert exists for.
+    """
+    append_ledger({
+        "event": "job.config_error", "job_id": spec.job_id, "run_id": run_id,
+        "ts": _iso(scheduled_at), "state": "config_error", "error": msg,
+        "critical": spec.critical,
+    })
+    heartbeat(spec, "fail", f"{kind}: {msg}", run_id)
+    card = "\n".join([
+        (f"🛑 CRITICAL — {spec.job_id} could not start"
+         if spec.critical else f"⚠️ {spec.job_id} could not start"),
+        f"Host: {os.uname().nodename}  ·  {kind}",
+        f"Error: {msg[:300]}",
+        f"Run: {run_id[:8]}",
+    ])
+    print(f"{spec.job_id}: {kind} — {msg}")
+    status = notify_failure(spec, card)
+    if spec.notify_target:
+        append_ledger({
+            "event": "job.notified",
+            "ts": _iso(_now()),
+            "job_id": spec.job_id, "run_id": run_id,
+            "notify_status": status, "notify_target": spec.notify_target,
+            "critical": spec.critical,
+        })
+        if status != "sent":
+            print(f"(notification {status})")
+    return EXIT_CONFIG
+
+
 def run(spec: Spec, dry_run: bool = False) -> int:
     run_id = str(uuid.uuid4())
     scheduled_at = _now()
@@ -964,24 +1002,13 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         argv = resolve_argv(spec)
     except ConfigError as exc:
         print(f"[{spec.job_id}] CONFIG ERROR: {exc}", file=sys.stderr)
-        append_ledger({
-            "event": "job.config_error", "job_id": spec.job_id, "run_id": run_id,
-            "ts": _iso(scheduled_at), "state": "config_error", "error": str(exc),
-        })
-        heartbeat(spec, "fail", f"config_error: {exc}", run_id)
-        print(f"{spec.job_id}: configuration error — {exc}")
-        return EXIT_CONFIG
+        return _fail_before_start(spec, run_id, scheduled_at,
+                                  "configuration error", str(exc))
 
     problems = preflight(spec, argv)
     if problems:
-        msg = "; ".join(problems)
-        append_ledger({
-            "event": "job.config_error", "job_id": spec.job_id, "run_id": run_id,
-            "ts": _iso(scheduled_at), "state": "config_error", "error": msg,
-        })
-        heartbeat(spec, "fail", f"preflight: {msg}", run_id)
-        print(f"{spec.job_id}: preflight failed — {msg}")
-        return EXIT_CONFIG
+        return _fail_before_start(spec, run_id, scheduled_at,
+                                  "preflight failed", "; ".join(problems))
 
     if dry_run:
         print(json.dumps({
@@ -1124,7 +1151,7 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         if spec.notify_target:
             append_ledger({
                 "event": "job.notified",
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": _iso(_now()),
                 "job_id": spec.job_id,
                 "run_id": run_id,
                 "notify_status": notify_status,

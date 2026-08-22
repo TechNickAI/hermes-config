@@ -8,6 +8,8 @@ import json
 import os
 import subprocess
 import sys
+import types
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -511,25 +513,101 @@ def test_critical_failure_notification_is_marked_critical(home):
 
 def test_notifier_does_not_depend_on_a_login_shell_path(home):
     """cron has no login shell, so a bare "hermes" on PATH is the assumption
-    that makes an alert fail only in production. Measured: `hermes send`
-    returns rc=1 without a credentialed HERMES_HOME, and the CLI is not on a
-    stripped cron PATH at all. The runner must resolve it explicitly.
+    that makes an alert fail only in production. The runner must resolve the
+    CLI explicitly rather than relying on PATH lookup.
+
+    Asserted via the argv the runner BUILDS, not via a send attempt: on a bare
+    clone hermes-agent is not installed at all, so requiring a successful
+    resolution would make this test fail for reasons unrelated to the bug.
     """
-    boom = home / "scripts" / "boom6.py"
-    boom.write_text("import sys\nsys.exit(1)\n")
-    _spec(home, "pathless",
-          f'job_id = "pathless"\nscript = "{boom}"\nruntime = "python"\n'
-          'notify_target = "telegram:-100:7"\n')
-    # Empty PATH: nothing is discoverable by name.
-    env = dict(os.environ, HERMES_HOME=str(home), PATH="")
-    r = subprocess.run([sys.executable, str(JOBRUN), "--spec", "pathless"],
-                       capture_output=True, text=True, env=env, timeout=300)
-    assert r.returncode == EXIT_CHILD
+    import importlib.util
+
+    spec_mod = importlib.util.spec_from_file_location("jobrun_mod", JOBRUN)
+    jr = importlib.util.module_from_spec(spec_mod)
+    spec_mod.loader.exec_module(jr)
+
+    s = jr.Spec({"job_id": "p", "command": "true",
+                 "notify_target": "telegram:-100:7"})
+    captured = {}
+
+    def fake_run(argv, **kw):
+        captured["argv"] = argv
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    orig, jr.subprocess.run = jr.subprocess.run, fake_run
+    try:
+        # Empty PATH: nothing is discoverable by name.
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = ""
+        try:
+            status = jr.notify_failure(s, "boom")
+        finally:
+            os.environ["PATH"] = old_path
+    finally:
+        jr.subprocess.run = orig
+
+    assert status == "sent"
+    argv = captured["argv"]
+    # The sender must be an absolute path or an explicit fallback — never a
+    # bare name resolved from an empty PATH.
+    assert argv[1:4] == ["send", "--quiet", "--to"], argv
+    assert os.path.isabs(argv[0]) or argv[0] == "hermes", argv
+
+
+def test_a_job_that_cannot_start_still_notifies(home):
+    """A deleted script is one of the commonest ways a job quietly dies.
+
+    Config/preflight failures return before execution, so they originally
+    skipped the notifier entirely — a guard job would go silent in exactly the
+    situation the alert exists for.
+    """
+    sink = home / "sent_cfg.txt"
+    fake = home / "scripts" / "fake_send_cfg.sh"
+    fake.write_text(f'#!/bin/bash\ncat > {sink}\n')
+    fake.chmod(0o755)
+
+    _spec(home, "gone",
+          'job_id = "gone"\nscript = "/nonexistent/deleted_by_deploy.py"\n'
+          'runtime = "python"\ncritical = true\ntimeout = 60\n'
+          f'notify_target = "telegram:-100:7"\nnotify_command = "{fake}"\n')
+    r = _run(home, "--spec", "gone")
+    assert r.returncode == EXIT_CONFIG
+    assert sink.exists(), "a job that could not start notified nobody"
+    body = sink.read_text()
+    assert "gone" in body
+    assert "CRITICAL" in body, body
+
+
+def test_cannot_start_records_the_notification_in_the_ledger(home):
+    _spec(home, "gone2",
+          'job_id = "gone2"\nscript = "/nonexistent/x.py"\nruntime = "python"\n'
+          'notify_target = "telegram:-100:7"\n'
+          'notify_command = "/nonexistent/sender"\n')
+    r = _run(home, "--spec", "gone2")
+    assert r.returncode == EXIT_CONFIG
     rows = [json.loads(x) for x
             in (home / "jobstate" / "runs.jsonl").read_text().splitlines()
             if x.strip()]
     notified = [x for x in rows if x.get("event") == "job.notified"]
-    assert notified, "no notification attempt was recorded"
-    # It may not succeed in a test env, but it must not fail by being unable
-    # to FIND the sender — that is the production-only failure mode.
-    assert notified[-1]["notify_status"] != "failed_no_sender", notified[-1]
+    assert notified, "no notification recorded for a start failure"
+    assert notified[-1]["notify_status"] == "failed_no_sender"
+
+
+def test_ledger_timestamps_use_one_format(home):
+    """Mixed timestamp formats make the ledger unsortable."""
+    boom = home / "scripts" / "b.py"
+    boom.write_text("import sys\nsys.exit(1)\n")
+    _spec(home, "tsfmt",
+          f'job_id = "tsfmt"\nscript = "{boom}"\nruntime = "python"\n'
+          'notify_target = "telegram:-100:7"\n'
+          'notify_command = "/nonexistent/sender"\n')
+    _run(home, "--spec", "tsfmt")
+    rows = [json.loads(x) for x
+            in (home / "jobstate" / "runs.jsonl").read_text().splitlines()
+            if x.strip()]
+    stamps = [r[k] for r in rows for k in ("ts", "finished_at") if r.get(k)]
+    assert stamps
+    # All must parse with the same parser and agree on tz-awareness.
+    parsed = [datetime.fromisoformat(s) for s in stamps]
+    aware = {p.tzinfo is not None for p in parsed}
+    assert len(aware) == 1, f"mixed tz-awareness in ledger: {stamps}"
