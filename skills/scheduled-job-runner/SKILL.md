@@ -130,6 +130,31 @@ What it deliberately does NOT change: execution. The runner never gates on domai
 A kill-switch belongs at the single choke point every action funnels through, not in a
 wrapper that would become a second, weaker authority.
 
+## Failure notification: `notify_target`
+
+Hermes cron does NOT reliably deliver a failure alert. When a job is configured
+`deliver: local`, the scheduler builds the alert and then discards it:
+`_resolve_delivery_targets()` returns `[]` and `_deliver_result()` returns `None` —
+which is indistinguishable from a successful send. That is fine for a digest and
+dangerous for a job that guards something.
+
+The runner already knows the job failed, so it notifies directly:
+
+```toml
+notify_target = "telegram:-100123:456"   # any `hermes send --to` target
+```
+
+- Sends ONLY on failure. Quiet success is still the point.
+- Never changes the exit code. A broken notifier must not fail a passing job.
+- Records `job.notified` with a `notify_status` in the ledger, and prints
+  `(notification <status>)` when the alert did not go out — a notifier that fails
+  silently just recreates the bug it was added to fix.
+- Resolves the CLI explicitly rather than trusting `PATH`, because cron has no login
+  shell.
+
+`notify_command` overrides the sender; it exists so the path can be tested without
+sending real messages.
+
 ## Nested wrappers and `deployed_sha`
 
 Some jobs already run their own domain recorder (business counters, application-specific
