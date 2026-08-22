@@ -268,6 +268,47 @@ Note the shape: **8,447 sessions deleted freed 478 MB**, while the file is
 still 1.77 GB. Most of what remains is FTS index, not conversation. Retention
 stops the growth; it does not shrink a store back to nothing.
 
+## Catch-up: verify per profile, do not batch blindly
+
+`scripts/catchup.py <profile>` runs the chunked prune and prints a
+before/after record: sizes, human session count, human-only FTS hits, per
+source counts, and any *other* source that changed. Read the record; do not
+trust the exit code.
+
+Measured across the fleet (2026-08-22), all retention-only, all verdict OK:
+
+| profile | pruned | time | human sessions |
+|---|---|---|---|
+| ali (ShantiMa) | 9,385 | 56s | 681 -> 681 |
+| julianna (Ace) | 9,743 | 150s | 994 -> 994 |
+| cora | 6,234 | 142s | 1392 -> 1392 |
+| gil | 4,980 | 56s | 43 -> 43 |
+| studio _root | 4,630 | 107s | 334 -> 334 |
+| sterling | 1,038 | 60s | 2176 -> 2176 |
+| thomas | 750 | ~40s | 135 -> 135 |
+| hex | 282 | 29s | 315 -> 315 |
+| kenbot | 255 | 86s | 3030 -> 3030 |
+| dos | 74 | 10s | 9 -> 9 |
+
+Roughly 37,000 sessions removed. **No profile lost a single human session.**
+
+### Reading the verification numbers
+
+* **A raw FTS count can fall sharply and still be fine.** On Ace a probe term
+  dropped 300 -> 182 hits. Grouping the survivors by source showed every lost
+  hit was inside a deleted cron/subagent row; hits in human sessions were
+  untouched. Always group by source before calling an FTS delta data loss.
+  `catchup.py` probes human sessions only for exactly this reason.
+* **The human count can go UP mid-run.** Cora gained a session and two FTS
+  hits while being pruned, because she was live. That is why the invariant is
+  a subset check, not equality.
+* **A small non-zero backlog right after a catch-up is normal.** Sessions
+  cross the 10-day boundary continuously. Zero is not the success criterion;
+  no human loss is.
+* **Size on disk will not move.** Retention frees pages inside the file;
+  only VACUUM returns them to the filesystem. Every catch-up above reported
+  an unchanged MB figure. That is expected, not a failed run.
+
 ## Pitfalls
 
 - **Never stop the gateway to do this.** Hermes' lifecycle guard blocks a
