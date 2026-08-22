@@ -261,10 +261,9 @@ def test_selftest_does_not_pollute_the_real_ledger(home):
 
 
 # ---------------------------------------------------------------------------
-# Capabilities required before a live-money job can migrate.
-# Written against a real trading agent whose 48 scheduled jobs all forward into
-# a release tree, and whose entry job was measured running 946s on a 900s
-# schedule with no lock.
+# Capabilities required before a consequential (money / order-placing) job can
+# migrate: a labelled failure, a stated timeout, a recorded code version, and a
+# shared identity with any inner wrapper.
 # ---------------------------------------------------------------------------
 
 
@@ -274,7 +273,7 @@ def test_critical_job_failure_is_labelled(home):
     script.write_text('import sys\nsys.exit(9)\n')
     _spec(home, "money",
           f'job_id = "money"\nscript = "{script}"\nruntime = "python"\n'
-          "critical = true\n")
+          "critical = true\ntimeout = 60\n")
     r = _run(home, "--spec", "money")
     assert r.returncode == EXIT_CHILD
     assert "CRITICAL" in r.stdout, r.stdout
@@ -343,16 +342,16 @@ def test_run_id_can_be_shared_with_an_inner_wrapper(home):
 
 
 def test_timeout_shorter_than_interval_is_enforced_for_critical_jobs(home):
-    """The measured near-miss: a 946s run on a 900s schedule.
+    """A critical job must declare its OWN timeout.
 
-    A critical job must declare a timeout; refusing to start is safer than
-    letting an unbounded money job overrun its own schedule.
+    Inheriting the default silently hands a consequential job a ceiling it
+    never asked for, possibly longer than its own schedule interval.
     """
     script = home / "scripts" / "ok.py"
     script.write_text("pass\n")
     _spec(home, "nolimit",
           f'job_id = "nolimit"\nscript = "{script}"\nruntime = "python"\n'
-          "critical = true\ntimeout = 0\n")
+          "critical = true\n")  # no timeout key at all
     r = _run(home, "--spec", "nolimit")
     assert r.returncode == EXIT_CONFIG
     assert "timeout" in r.stdout.lower()

@@ -203,15 +203,19 @@ def deployed_sha(cwd: str | None) -> str | None:
     """Short git SHA of the tree a job runs from.
 
     Ties an outcome to the exact code that produced it. Without it, the run
-    history and a deploy-drift watchdog can disagree about what actually ran —
-    and a wrong answer there once hid six undeployed money fixes for hours.
+    history and a deploy-drift watchdog can disagree about what actually ran,
+    which is how undeployed fixes stay invisible.
     Never fatal: a job outside a git tree simply records nothing.
     """
     if not cwd:
         return None
     try:
+        # Expand ~ the same way execution and preflight do. Handing a literal
+        # tilde to `git -C` makes the job run fine while deployed_sha silently
+        # returns None — losing the field precisely where it matters.
+        path = os.path.expanduser(str(cwd))
         r = subprocess.run(
-            ["git", "-C", str(cwd), "rev-parse", "--short=12", "HEAD"],
+            ["git", "-C", path, "rev-parse", "--short=12", "HEAD"],
             capture_output=True, text=True, timeout=5,
         )
         if r.returncode == 0:
@@ -403,9 +407,10 @@ class Spec:
         self.python = str(data.get("python", f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}"))
         self.auto_install_uv = bool(data.get("auto_install_uv", True))
         self.output_policy = str(data.get("output_policy", "passthrough"))
-        # A job that moves real money. Changes how a failure is ANNOUNCED, and
-        # tightens validation. It deliberately does NOT change execution: the
-        # runner must not become a second, weaker authority over trading state.
+        # A job with real-world consequences (money, orders, external side
+        # effects). Changes how a failure is ANNOUNCED and tightens validation.
+        # It deliberately does NOT change execution: the runner must not
+        # become a second, weaker authority over domain state.
         self.critical = bool(data.get("critical", False))
         if self.output_policy not in ("passthrough", "silent"):
             raise ConfigError(
@@ -415,14 +420,17 @@ class Spec:
                           ("retries", self.retries)):
             if val < 0:
                 raise ConfigError(f"{self.job_id}: {name} must be >= 0")
+        # A critical job must state its own timeout. Inheriting the default
+        # silently gives a money job a 900s ceiling it never asked for, which
+        # is longer than several real trading schedules.
+        if self.critical and "timeout" not in data:
+            raise ConfigError(
+                f"{self.job_id}: a critical job must declare an explicit "
+                "timeout shorter than its schedule interval. A job that can "
+                "outrun its own schedule needs a stated ceiling, not an "
+                "inherited default."
+            )
         if self.timeout <= 0:
-            if self.critical:
-                raise ConfigError(
-                    f"{self.job_id}: a critical job must declare a positive "
-                    "timeout shorter than its schedule interval. Measured on a "
-                    "live trading host: an entry job ran 946s on a 900s "
-                    "schedule with nothing to stop it."
-                )
             raise ConfigError(f"{self.job_id}: timeout must be > 0")
         if self.retry_backoff < 0:
             raise ConfigError(f"{self.job_id}: retry_backoff must be >= 0")
@@ -938,6 +946,10 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         return EXIT_OK
 
     env = build_env(spec, run_id=run_id)
+    # Resolve the SHA ONCE, before launch. A deploy that lands mid-run would
+    # otherwise attribute a completed run to the commit it did NOT run, and the
+    # ledger and the failure card could disagree with each other.
+    sha = deployed_sha(spec.cwd)
 
     with Lock(spec.job_id, spec.overlap) as lock:
         if not lock.acquired:
@@ -987,7 +999,7 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             "host": os.uname().nodename,
             "owner": spec.owner,
             "critical": spec.critical,
-            "deployed_sha": deployed_sha(spec.cwd),
+            "deployed_sha": sha,
             "state": state,
             "exit_code": rc,
             "signal": signame,
@@ -1042,7 +1054,8 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             # A money job that stopped working is not the same event as a
             # report generator that stopped working. Say so in the first line.
             lines.append("This job moves real money. Verify state before rerunning.")
-        sha = deployed_sha(spec.cwd)
+        # Reuse the SHA captured BEFORE launch, so the card and the ledger
+        # can never disagree about which commit produced this outcome.
         if sha:
             lines.append(f"Code: {sha}")
         if spec.owner:

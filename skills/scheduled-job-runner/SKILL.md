@@ -122,18 +122,18 @@ What it changes:
 - The failure card leads with `🛑 CRITICAL` and says the job moves real money, so it
   does not read like a failed report generator.
 - `--failures` lists critical failures FIRST and counts them in the header.
-- The spec is REJECTED without a positive timeout. This is the fix for a measured
-  near-miss: an entry job on a live trading host ran 946s against a 900s schedule with
-  nothing to stop it.
+- The spec is REJECTED unless it declares its OWN timeout. A critical job must not
+  inherit the default, because a job that can outrun its own schedule needs a stated
+  ceiling.
 
-What it deliberately does NOT change: execution. The runner never gates on trading
-state. A halt/kill-switch belongs at the single choke point every order funnels through,
-not in a wrapper that would become a second, weaker authority.
+What it deliberately does NOT change: execution. The runner never gates on domain state.
+A kill-switch belongs at the single choke point every action funnels through, not in a
+wrapper that would become a second, weaker authority.
 
 ## Nested wrappers and `deployed_sha`
 
-Some jobs already run their own domain recorder (business counters, per-strategy state).
-Two ledgers for one run is fine; two IDENTITIES is not, because failures then
+Some jobs already run their own domain recorder (business counters, application-specific
+state). Two ledgers for one run is fine; two IDENTITIES is not, because failures then
 double-count. jobrun exports its identity to the child:
 
 | variable          | meaning                                  |
