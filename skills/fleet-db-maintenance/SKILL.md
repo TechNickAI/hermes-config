@@ -157,6 +157,20 @@ about 60 seconds of lock. Projected at the measured rate:
 | bosun | 2.2 GB | ~32s | ok |
 | sterling | 1.7 GB | ~23s | ok |
 
+### The 14.4s/GB rate is a WORST CASE, not an estimate
+
+Measured on a real VACUUM of the 2.7 GB studio root profile: predicted 37.8s,
+**actual 6.1s** -- 6x faster than the model. The benchmarks that produced
+14.4s/GB were run on copies with a cold page cache and no prior retention. In
+practice a database that has just been pruned VACUUMs far faster, because the
+rebuild only has to copy live pages and most of the file was freelist (1.5 GB
+of 2.7 GB here).
+
+Keep the conservative rate for the unattended gate -- refusing a job that
+would have been fine is cheap, and taking a 90s lock on a live agent is not.
+But when planning a supervised window, expect the real cost to be well under
+the prediction, and measure rather than assume.
+
 `dbmaint.py` predicts the lock before taking it and **refuses** to compact when
 it exceeds `--max-lock-seconds` (default 45s, leaving margin under the 60s
 cliff). The run still prunes; it just reports
@@ -308,6 +322,30 @@ Roughly 37,000 sessions removed. **No profile lost a single human session.**
 * **Size on disk will not move.** Retention frees pages inside the file;
   only VACUUM returns them to the filesystem. Every catch-up above reported
   an unchanged MB figure. That is expected, not a failed run.
+
+## First production VACUUM (measured)
+
+Studio root profile, 2026-08-22, with `--force-vacuum --keep-backup`:
+
+```
+before:    2686 MB   (1512 MB of that was freelist)
+after:     1171 MB
+reclaimed: 1515 MB   -- 56% of the file
+lock:      6.1s      (predicted 37.8s)
+total run: 35s
+```
+
+Post-VACUUM verification, all clean: full `integrity_check` ok,
+`foreign_key_check` clean, `journal_mode` still `wal`, `freelist_count` 0,
+FTS queries return hits, a write+commit succeeds, human sessions 334 -> 334.
+The gateway that owns the database was untouched -- 7 days uptime, zero
+`database is locked` entries in its logs.
+
+Pick the target by **recent human traffic**, not just size. `scripts/
+pick_vacuum.py` reports idle time, human sessions in the last hour, and
+freelist size per profile. A profile with a large freelist and no human
+traffic in the last hour is the safe first candidate; the freelist is what you
+actually get back.
 
 ## Pitfalls
 
