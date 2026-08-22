@@ -232,6 +232,7 @@ def _source_count(db: Path, src: str) -> int:
 def prune(
     profile: str, days: int, sources, apply: bool, log,
     db: Optional[Path] = None,
+    chunk_days: int = 0, pause: float = 0.0, max_seconds: float = 0.0,
 ) -> dict:
     """Source-scoped retention via the supported CLI.
 
@@ -239,64 +240,102 @@ def prune(
     ourselves so that lineage handling and FTS index maintenance stay the
     responsibility of the code that owns the schema.
 
+    With ``chunk_days`` the work is split into age slices walked oldest-first,
+    each its own transaction with a ``pause`` between them. This is what makes
+    a large catch-up gentle: one 8,000-session delete is a long write lock and
+    a huge WAL burst, while forty 200-session deletes let the gateway
+    interleave its own writes and let SQLite checkpoint as it goes.
+
+    ``max_seconds`` stops cleanly at a deadline, leaving the rest for the next
+    run. A catch-up that has to be interrupted should still bank its progress.
+
     Counts are RECONCILED against the database rather than trusted from
     stdout: on an ``--yes`` run the CLI prints only ``Pruned N session(s).``
     and lists nothing, so any listing-based count reports 0 for a successful
-    deletion. When ``db`` is provided we diff the real per-source row count
-    and report that, using stdout only as a cross-check.
+    deletion.
     """
     binary = _hermes_bin()
     if not binary:
         raise RuntimeError("hermes binary not found")
 
+    started = time.time()
     result = {}
+
     for src in sources:
-        cmd, env = _prune_command(binary, profile, src, days, apply)
-        before = _source_count(db, src) if (db and apply) else None
+        # Plan the windows. Without chunking it is one open-ended slice.
+        if chunk_days and db and apply:
+            oldest = _oldest_age_days(db, [src])
+            windows = _age_slices(oldest, days, chunk_days) or [(days, None)]
+        else:
+            windows = [(days, None)]
 
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=1800, env=env
-        )
-        out = (proc.stdout or "") + (proc.stderr or "")
+        total = 0
+        stopped_early = False
 
-        # argparse rejects an unknown -p and exits 0 after printing usage, so
-        # a usage banner is a silent no-op, not a success.
-        if out.lstrip().startswith("usage:"):
-            raise RuntimeError(
-                f"prune {src} rejected by the CLI (usage banner). "
-                f"Command: {' '.join(cmd)}"
-            )
-        if proc.returncode != 0:
-            raise RuntimeError(f"prune {src} exited {proc.returncode}: {out[-400:]}")
-
-        if before is not None:
-            # Ground truth: what actually left the database.
-            deleted = before - _source_count(db, src)
-            result[src] = deleted
-            log(f"  {src}: {deleted} session(s) deleted (verified in db)")
-            continue
-
-        # Dry-run: parse the header count. Never infer from listed row
-        # prefixes -- cron ids look like cron_<hash>_<stamp> but subagent ids
-        # look like 20260701_103305_1d2614, so prefix matching reports 0
-        # while 124 sessions are really eligible.
-        matched = None
-        for line in out.splitlines():
-            m = re.search(r"(\d+)\s+session\(s\)", line)
-            if m:
-                matched = int(m.group(1))
+        for lo, hi in windows:
+            if max_seconds and (time.time() - started) > max_seconds:
+                log(f"  {src}: deadline reached, {total} deleted so far "
+                    f"(remaining backlog left for the next run)")
+                stopped_early = True
                 break
-        if matched is None:
-            if re.search(r"No sessions match", out, re.I):
-                matched = 0
-            else:
+
+            cmd, env = _prune_command(binary, profile, src, lo, apply, newer_than=hi)
+            before = _source_count(db, src) if (db and apply) else None
+
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=1800, env=env
+            )
+            out = (proc.stdout or "") + (proc.stderr or "")
+
+            # argparse rejects an unknown -p and exits 0 after printing usage,
+            # so a usage banner is a silent no-op, not a success.
+            if out.lstrip().startswith("usage:"):
                 raise RuntimeError(
-                    f"could not parse prune output for {src}; refusing to report "
-                    f"an unverified count. Output tail: {out[-300:]}"
+                    f"prune {src} rejected by the CLI (usage banner). "
+                    f"Command: {' '.join(cmd)}"
+                )
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"prune {src} exited {proc.returncode}: {out[-400:]}"
                 )
 
-        result[src] = matched
-        log(f"  {src}: {matched} session(s) matched (dry-run)")
+            if before is not None:
+                deleted = before - _source_count(db, src)
+                total += deleted
+                if deleted and hi is not None:
+                    log(f"    {src} {hi}-{lo}d: {deleted} deleted")
+                if pause and deleted:
+                    # Yield the write lock so the live gateway can drain its
+                    # own queued writes before the next slice.
+                    time.sleep(pause)
+                continue
+
+            # Dry-run: parse the header count. Never infer from listed row
+            # prefixes -- cron ids look like cron_<hash>_<stamp> but subagent
+            # ids look like 20260701_103305_1d2614, so prefix matching
+            # reports 0 while 124 sessions are really eligible.
+            matched = None
+            for line in out.splitlines():
+                m = re.search(r"(\d+)\s+session\(s\)", line)
+                if m:
+                    matched = int(m.group(1))
+                    break
+            if matched is None:
+                if re.search(r"No sessions match", out, re.I):
+                    matched = 0
+                else:
+                    raise RuntimeError(
+                        f"could not parse prune output for {src}; refusing to "
+                        f"report an unverified count. Tail: {out[-300:]}"
+                    )
+            total += matched
+
+        result[src] = total
+        if apply and db:
+            log(f"  {src}: {total} session(s) deleted (verified in db)"
+                + (" [partial]" if stopped_early else ""))
+        else:
+            log(f"  {src}: {total} session(s) matched (dry-run)")
 
     return result
 
@@ -391,8 +430,16 @@ def resolve_db(profile: str) -> Path:
     return profile_home(profile) / "state.db"
 
 
-def _prune_command(binary: str, profile: str, src: str, days: int, apply: bool):
+def _prune_command(
+    binary: str, profile: str, src: str, days: int, apply: bool,
+    newer_than: Optional[int] = None,
+):
     """Build the CLI invocation and the environment that pins its target.
+
+    ``newer_than`` bounds the window from the old side, so a chunked catch-up
+    can walk the backlog in age slices: ``--older-than 120 --newer-than 150``
+    deletes only sessions aged 120-150 days. Each slice is its own
+    transaction, so no single delete holds the write lock for long.
 
     Two traps, both verified against the live CLI:
 
@@ -411,8 +458,42 @@ def _prune_command(binary: str, profile: str, src: str, days: int, apply: bool):
     if profile not in ("_root", "root", ""):
         cmd += ["-p", profile]
     cmd += ["sessions", "prune", "--source", src, "--older-than", str(days)]
+    if newer_than is not None:
+        cmd += ["--newer-than", str(newer_than)]
     cmd.append("--yes" if apply else "--dry-run")
     return cmd, env
+
+
+def _age_slices(oldest_days: int, floor_days: int, step_days: int):
+    """Age windows from oldest to newest, e.g. (150,120), (120,90), ...
+
+    Walking oldest-first means the biggest, least-valuable backlog goes first
+    and an interrupted catch-up still made real progress.
+    """
+    slices = []
+    hi = oldest_days
+    while hi > floor_days:
+        lo = max(hi - step_days, floor_days)
+        slices.append((lo, hi))
+        hi = lo
+    return slices
+
+
+def _oldest_age_days(db: Path, sources) -> int:
+    """Age in days of the oldest machine session, for slice planning."""
+    conn = _connect(db, timeout=30)
+    try:
+        placeholders = ",".join("?" for _ in sources)
+        row = conn.execute(
+            f"SELECT MIN(COALESCE(last_activity_at, started_at)) "
+            f"FROM sessions WHERE source IN ({placeholders})",
+            tuple(sources),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or row[0] is None:
+        return 0
+    return int((time.time() - float(row[0])) / 86400) + 1
 
 
 def run(args, log) -> dict:
@@ -475,7 +556,9 @@ def run(args, log) -> dict:
     prune_error = None
     try:
         report["pruned"] = prune(
-            args.profile, args.days, args.sources, args.apply, log, db=db
+            args.profile, args.days, args.sources, args.apply, log, db=db,
+            chunk_days=args.chunk_days, pause=args.pause,
+            max_seconds=args.max_seconds,
         )
     except Exception as exc:
         # Do NOT return here. A failed prune may still have deleted rows, so
@@ -594,6 +677,19 @@ def main(argv=None) -> int:
                    ))
     p.add_argument("--force-vacuum", action="store_true",
                    help="override --max-lock-seconds. Supervised windows only.")
+    p.add_argument("--chunk-days", type=int, default=30,
+                   help=(
+                       "delete in age slices of this many days, oldest first, "
+                       "each its own transaction (default 30; 0 = one big "
+                       "delete). Keeps the write lock short on a live gateway."
+                   ))
+    p.add_argument("--pause", type=float, default=2.0,
+                   help="seconds to yield between slices (default 2.0)")
+    p.add_argument("--max-seconds", type=float, default=0.0,
+                   help=(
+                       "stop cleanly after this long and leave the rest for "
+                       "the next run (default 0 = no deadline)"
+                   ))
     p.add_argument("--keep-backup", action="store_true",
                    help="retain the pre-maintenance backup after success")
     p.add_argument("--json", action="store_true", help="emit the report as JSON")

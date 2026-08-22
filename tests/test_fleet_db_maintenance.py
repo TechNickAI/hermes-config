@@ -5,6 +5,7 @@ that it deletes production data correctly, so mocking the database would test
 nothing that matters.
 """
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -95,6 +96,7 @@ def test_refuses_human_sources(db):
         "profile": "x", "days": 10, "sources": ["telegram"], "apply": True,
         "no_vacuum": True, "vacuum_min_mb": 500, "keep_backup": False,
         "max_lock_seconds": 45.0, "force_vacuum": False,
+        "chunk_days": 0, "pause": 0.0, "max_seconds": 0.0,
     })()
     mod.resolve_db = lambda p: db
     with pytest.raises(ValueError, match="refusing to prune non-machine"):
@@ -329,6 +331,7 @@ def _args(**over):
         profile="p", days=10, sources=["cron"], apply=True,
         no_vacuum=True, vacuum_min_mb=500, keep_backup=False,
         max_lock_seconds=45.0, force_vacuum=False,
+        chunk_days=0, pause=0.0, max_seconds=0.0,
     )
     base.update(over)
     return type("A", (), base)()
@@ -344,7 +347,7 @@ def test_human_count_abort_actually_triggers(db, monkeypatch):
     mod = _load()
     monkeypatch.setattr(mod, "resolve_db", lambda p: db)
 
-    def rogue(profile, days, sources, apply, log, db=None):
+    def rogue(profile, days, sources, apply, log, db=None, **kw):
         conn = sqlite3.connect(str(db))
         conn.execute(
             "DELETE FROM sessions WHERE id = "
@@ -368,7 +371,7 @@ def test_invariant_checked_even_when_prune_raises(db, monkeypatch):
     mod = _load()
     monkeypatch.setattr(mod, "resolve_db", lambda p: db)
 
-    def rogue_then_fail(profile, days, sources, apply, log, db=None):
+    def rogue_then_fail(profile, days, sources, apply, log, db=None, **kw):
         conn = sqlite3.connect(str(db))
         conn.execute(
             "DELETE FROM sessions WHERE id = "
@@ -388,7 +391,7 @@ def test_prune_failure_propagates(db, monkeypatch):
     mod = _load()
     monkeypatch.setattr(mod, "resolve_db", lambda p: db)
 
-    def boom(profile, days, sources, apply, log, db=None):
+    def boom(profile, days, sources, apply, log, db=None, **kw):
         raise RuntimeError("cli exploded")
 
     monkeypatch.setattr(mod, "prune", boom)
@@ -549,7 +552,7 @@ def test_swap_delete_plus_insert_is_caught(db, monkeypatch):
     mod = _load()
     monkeypatch.setattr(mod, "resolve_db", lambda p: db)
 
-    def rogue_swap(profile, days, sources, apply, log, db=None):
+    def rogue_swap(profile, days, sources, apply, log, db=None, **kw):
         conn = sqlite3.connect(str(db))
         conn.execute(
             "DELETE FROM sessions WHERE id = "
@@ -574,7 +577,7 @@ def test_new_sessions_during_run_are_allowed(db, monkeypatch):
     mod = _load()
     monkeypatch.setattr(mod, "resolve_db", lambda p: db)
 
-    def busy_gateway(profile, days, sources, apply, log, db=None):
+    def busy_gateway(profile, days, sources, apply, log, db=None, **kw):
         conn = sqlite3.connect(str(db))
         conn.execute(
             "INSERT INTO sessions VALUES ('tg_arrived','telegram',?,?,NULL,0,0)",
@@ -660,6 +663,219 @@ def test_applied_count_comes_from_database_not_stdout(db, tmp_path, monkeypatch)
     monkeypatch.setattr(mod.subprocess, "run", fake_delete)
     out = mod.prune("p", 10, ["cron"], True, lambda m: None, db=db)
     assert out["cron"] == 5  # the 5 cron rows the fixture created
+
+
+# --- chunked (gentle) retention -------------------------------------------
+
+def test_age_slices_walk_oldest_first():
+    mod = _load()
+    assert mod._age_slices(100, 10, 30) == [(70, 100), (40, 70), (10, 40)]
+
+
+def test_age_slices_never_cross_the_floor():
+    """The retention floor is a hard boundary -- no slice may reach below it."""
+    mod = _load()
+    for lo, hi in mod._age_slices(95, 10, 30):
+        assert lo >= 10
+
+
+def test_age_slices_empty_when_nothing_older():
+    mod = _load()
+    assert mod._age_slices(5, 10, 30) == []
+
+
+def test_chunked_prune_issues_bounded_windows(db, monkeypatch):
+    """Each slice must carry BOTH bounds, so no single delete is unbounded."""
+    mod = _load()
+    seen = []
+
+    def spy(cmd, **kw):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "Pruned 0 session(s).\n", "")
+
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: "/bin/true")
+    monkeypatch.setattr(mod.subprocess, "run", spy)
+    monkeypatch.setattr(mod, "_oldest_age_days", lambda d, s: 100)
+
+    mod.prune("p", 10, ["cron"], True, lambda m: None, db=db, chunk_days=30)
+
+    assert len(seen) == 3, f"expected 3 slices, got {len(seen)}"
+    for cmd in seen:
+        assert "--older-than" in cmd and "--newer-than" in cmd
+
+
+def test_unchunked_prune_is_one_unbounded_delete(db, monkeypatch):
+    """chunk_days=0 keeps the old single-shot behaviour."""
+    mod = _load()
+    seen = []
+
+    def spy(cmd, **kw):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "Pruned 0 session(s).\n", "")
+
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: "/bin/true")
+    monkeypatch.setattr(mod.subprocess, "run", spy)
+    mod.prune("p", 10, ["cron"], True, lambda m: None, db=db, chunk_days=0)
+    assert len(seen) == 1
+    assert "--newer-than" not in seen[0]
+
+
+def test_deadline_stops_cleanly_and_banks_progress(db, monkeypatch):
+    """Hitting max_seconds must stop without raising, keeping what it did."""
+    mod = _load()
+    calls = []
+
+    def slow(cmd, **kw):
+        calls.append(cmd)
+        time.sleep(0.05)
+        return subprocess.CompletedProcess(cmd, 0, "Pruned 0 session(s).\n", "")
+
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: "/bin/true")
+    monkeypatch.setattr(mod.subprocess, "run", slow)
+    monkeypatch.setattr(mod, "_oldest_age_days", lambda d, s: 3000)
+
+    out = mod.prune(
+        "p", 10, ["cron"], True, lambda m: None,
+        db=db, chunk_days=30, max_seconds=0.1,
+    )
+    assert isinstance(out["cron"], int)
+    assert len(calls) < 99, "deadline did not stop the walk"
+
+
+def test_pause_yields_between_slices(db, monkeypatch):
+    """The pause is what lets a live gateway drain its own writes."""
+    mod = _load()
+    slept = []
+    monkeypatch.setattr(mod.time, "sleep", lambda s: slept.append(s))
+
+    counter = {"n": 5}
+
+    def deleting(cmd, **kw):
+        counter["n"] -= 1
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "DELETE FROM sessions WHERE id = "
+            "(SELECT id FROM sessions WHERE source='cron' LIMIT 1)"
+        )
+        conn.commit()
+        conn.close()
+        return subprocess.CompletedProcess(cmd, 0, "Pruned 1 session(s).\n", "")
+
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: "/bin/true")
+    monkeypatch.setattr(mod.subprocess, "run", deleting)
+    monkeypatch.setattr(mod, "_oldest_age_days", lambda d, s: 70)
+
+    mod.prune("p", 10, ["cron"], True, lambda m: None,
+              db=db, chunk_days=30, pause=2.0)
+    assert slept, "no pause between slices"
+    assert all(s == 2.0 for s in slept)
+
+
+# --- the weekly launcher (silence contract) -------------------------------
+
+WEEKLY = SKILL / "scripts" / "weekly_db_maintenance.py"
+
+
+def _weekly(tmp_path, report, rc=0, stderr=""):
+    """Run the launcher against a fake dbmaint.py emitting `report`."""
+    home = tmp_path / ".hermes"
+    (home / "scripts").mkdir(parents=True)
+    (home / "hermes-agent" / "venv" / "bin").mkdir(parents=True)
+    fake = home / "scripts" / "dbmaint.py"
+    body = report if isinstance(report, str) else json.dumps(report)
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        f"sys.stdout.write({body!r})\n"
+        f"sys.stderr.write({stderr!r})\n"
+        f"sys.exit({rc})\n"
+    )
+    env = dict(os.environ, HOME=str(tmp_path), DBMAINT_PROFILE="testprof")
+    return subprocess.run(
+        [sys.executable, str(WEEKLY)],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+
+
+def test_weekly_launcher_exists():
+    assert WEEKLY.is_file()
+    subprocess.run([sys.executable, "-m", "py_compile", str(WEEKLY)], check=True)
+
+
+def test_healthy_run_is_completely_silent(tmp_path):
+    """The whole point: a run needing no decision sends NOTHING."""
+    r = _weekly(tmp_path, {
+        "probe_ok": True,
+        "human_sessions_before": 100, "human_sessions_after": 100,
+        "pruned": {"cron": 240, "subagent": 12},
+        "after": {"db_mb": 400},
+    })
+    assert r.returncode == 0
+    assert r.stdout.strip() == "", f"expected silence, got: {r.stdout!r}"
+
+
+def test_speaks_when_human_sessions_dropped(tmp_path):
+    """The one data-safety condition worth interrupting someone for."""
+    r = _weekly(tmp_path, {
+        "probe_ok": True,
+        "human_sessions_before": 100, "human_sessions_after": 97,
+        "pruned": {"cron": 5}, "after": {"db_mb": 400},
+    })
+    assert r.returncode == 1
+    assert "STOP" in r.stdout and "100 -> 97" in r.stdout
+
+
+def test_speaks_when_db_needs_supervised_vacuum(tmp_path):
+    """Actionable: it requires scheduling a window."""
+    r = _weekly(tmp_path, {
+        "probe_ok": True,
+        "human_sessions_before": 10, "human_sessions_after": 10,
+        "pruned": {"cron": 100}, "after": {"db_mb": 6657},
+    })
+    assert r.returncode == 0
+    assert "supervised window" in r.stdout
+    assert "6657 MB" in r.stdout
+
+
+def test_speaks_on_failure(tmp_path):
+    r = _weekly(tmp_path, "boom", rc=3, stderr="disk exploded")
+    assert r.returncode == 1
+    assert "FAILED" in r.stdout
+
+
+def test_speaks_on_unreadable_report(tmp_path):
+    """Garbage output must not be mistaken for a healthy run."""
+    r = _weekly(tmp_path, "not json at all", rc=0)
+    assert r.returncode == 1
+    assert "FAILED" in r.stdout
+
+
+def test_probe_ok_false_is_reported(tmp_path):
+    r = _weekly(tmp_path, {"probe_ok": False, "error": "locked"})
+    assert r.returncode == 1
+    assert "FAILED" in r.stdout
+
+
+def test_concurrent_run_is_silent(tmp_path):
+    """Overlapping a manual run is expected, not a fault."""
+    r = _weekly(
+        tmp_path, "another maintenance run holds the lock", rc=3,
+    )
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""
+
+
+def test_weekly_never_vacuums(tmp_path):
+    """Unattended VACUUM is the thing we refuse to do. Guard the flag."""
+    src = WEEKLY.read_text()
+    assert '"--no-vacuum"' in src
+    assert '"--apply"' in src
+
+
+def test_weekly_is_chunked_and_deadlined(tmp_path):
+    src = WEEKLY.read_text()
+    assert '"--chunk-days"' in src and '"--pause"' in src
+    assert '"--max-seconds"' in src
 
 
 # --- CLI contract ---------------------------------------------------------

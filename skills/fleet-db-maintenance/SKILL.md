@@ -195,6 +195,46 @@ Exit codes: `0` ok, `2` config/usage error, `3` maintenance failure. The JSON
 report always carries `probe_ok`, so a crash and a silent success never look
 alike to the caller.
 
+## Gentle by default: chunked retention
+
+A single `prune --older-than 10` on a backlogged profile is one enormous
+DELETE: a long write lock, a huge WAL burst, and an FTS index churning through
+thousands of rows at once. `--chunk-days` splits it into age slices walked
+**oldest-first**, each its own transaction, with `--pause` between them so the
+live gateway can drain its own queued writes.
+
+```bash
+# Catch-up on a backlogged profile: 30-day slices, 2s apart
+dbmaint.py --profile kenbot --days 10 --apply --no-vacuum \
+           --chunk-days 30 --pause 2
+
+# The weekly steady state: smaller slices, longer pauses, hard deadline
+dbmaint.py --profile kenbot --days 10 --apply --no-vacuum \
+           --chunk-days 7 --pause 5 --max-seconds 900
+```
+
+`--max-seconds` stops cleanly at a deadline and leaves the rest for next week.
+An interrupted catch-up should still bank its progress rather than roll back.
+Oldest-first ordering means the least valuable data goes first, so a partial
+run is still a useful run.
+
+## The weekly job says nothing when healthy
+
+`weekly_db_maintenance.py` is wired as a `no_agent` cron script: stdout is
+delivered verbatim, and **empty stdout is silent**. A healthy run prints
+nothing at all. A weekly "pruned 240 sessions, all good" needs no decision and
+only trains the owner to ignore the channel.
+
+It speaks for exactly three things:
+
+| condition | why it is actionable |
+|---|---|
+| human sessions dropped | data loss; stop and investigate |
+| run failed / unreadable report | retention is not happening |
+| db still above ~3 GB after retention | needs a supervised VACUUM window |
+
+Retention only — it never VACUUMs unattended.
+
 ## Scheduling: per-agent, on its own host
 
 Install a weekly job on **each** profile that maintains **its own** database.
