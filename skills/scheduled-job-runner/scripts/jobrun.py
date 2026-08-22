@@ -109,6 +109,10 @@ STATE_DIR = HERMES_HOME / "jobstate"
 LOG_DIR = STATE_DIR / "logs"
 LOCK_DIR = STATE_DIR / "locks"
 LEDGER = STATE_DIR / "runs.jsonl"
+# A SEPARATE lock file, deliberately NOT the ledger itself: the prune replaces
+# the ledger path, so locking the ledger inode lets an append and a prune
+# proceed on two different inodes and silently discard a finished run.
+LEDGER_LOCK = STATE_DIR / "runs.jsonl.lock"
 
 # Minimum Python for any job we run. Jobs inherit the agent venv (3.13.x fleet-wide)
 # unless they declare their own via PEP 723, so this is an assertion that a job never
@@ -656,13 +660,22 @@ def build_env(spec: Spec, run_id: str | None = None) -> dict:
 
 
 def append_ledger(record: dict) -> None:
-    """Durable, queryable run history. Raw stdout grep is not a status API."""
+    """Durable, queryable run history. Raw stdout grep is not a status API.
+
+    Holds LEDGER_LOCK, not a lock on the ledger itself: the prune REPLACES the
+    ledger path, so locking the ledger inode would let an append and a prune
+    proceed on two different inodes and silently discard this record. Credit to
+    Kenbot's PR #583 for finding this against a live trading ledger.
+    """
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        with open(LEDGER, "a", encoding="utf-8") as fh:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        with open(LEDGER_LOCK, "a+", encoding="utf-8") as lk:
+            fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+            try:
+                with open(LEDGER, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            finally:
+                fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
     except Exception:
         pass  # never let bookkeeping kill a job
 
@@ -841,12 +854,24 @@ def prune_state() -> None:
                 except OSError:
                     pass
         if LEDGER.exists():
-            lines = LEDGER.read_text(encoding="utf-8", errors="replace").splitlines()
-            if len(lines) > LEDGER_MAX_LINES:
-                keep = lines[-LEDGER_MAX_LINES:]
-                tmp = LEDGER.with_suffix(".jsonl.tmp")
-                tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
-                tmp.replace(LEDGER)
+            # Take the SAME lock appends take, and hold it across the whole
+            # read/write/replace. Without it, an append completing between the
+            # snapshot and the replace is written to the old inode and then
+            # discarded with it -- a finished run vanishing from the only
+            # record that says it ran.
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(LEDGER_LOCK, "a+", encoding="utf-8") as lk:
+                fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+                try:
+                    lines = LEDGER.read_text(
+                        encoding="utf-8", errors="replace").splitlines()
+                    if len(lines) > LEDGER_MAX_LINES:
+                        keep = lines[-LEDGER_MAX_LINES:]
+                        tmp = LEDGER.with_suffix(".jsonl.tmp")
+                        tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
+                        tmp.replace(LEDGER)
+                finally:
+                    fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
     except Exception:
         pass  # retention must never break a job
 
@@ -1180,12 +1205,15 @@ def selftest() -> int:
 
     # Self-test fixtures deliberately fail. Keep them out of the real ledger
     # and log dir, or `--failures` reports test noise as production incidents.
-    global STATE_DIR, LOG_DIR, LOCK_DIR, LEDGER
-    _saved_dirs = (STATE_DIR, LOG_DIR, LOCK_DIR, LEDGER)
+    global STATE_DIR, LOG_DIR, LOCK_DIR, LEDGER, LEDGER_LOCK
+    _saved_dirs = (STATE_DIR, LOG_DIR, LOCK_DIR, LEDGER, LEDGER_LOCK)
     STATE_DIR = tmp / "state"
     LOG_DIR = STATE_DIR / "logs"
     LOCK_DIR = STATE_DIR / "locks"
     LEDGER = STATE_DIR / "runs.jsonl"
+    # Redirect the lock too, or self-test appends serialize against the real
+    # profile's lock file and the isolation is only partial.
+    LEDGER_LOCK = STATE_DIR / "runs.jsonl.lock"
     for _d in (STATE_DIR, LOG_DIR, LOCK_DIR):
         _d.mkdir(parents=True, exist_ok=True)
 
@@ -1337,7 +1365,7 @@ def selftest() -> int:
     check("ledger-recorded", n >= 6, True)
 
     shutil.rmtree(tmp, ignore_errors=True)
-    STATE_DIR, LOG_DIR, LOCK_DIR, LEDGER = _saved_dirs
+    STATE_DIR, LOG_DIR, LOCK_DIR, LEDGER, LEDGER_LOCK = _saved_dirs
     failed = [r for r in results if not r[3]]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     return 1 if failed else 0

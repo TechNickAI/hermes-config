@@ -611,3 +611,55 @@ def test_ledger_timestamps_use_one_format(home):
     parsed = [datetime.fromisoformat(s) for s in stamps]
     aware = {p.tzinfo is not None for p in parsed}
     assert len(aware) == 1, f"mixed tz-awareness in ledger: {stamps}"
+
+
+def test_a_finished_run_is_never_lost_to_a_concurrent_prune(home, monkeypatch):
+    """The ledger is the only evidence a scheduled job ran.
+
+    prune REPLACES the ledger path. If an append locks the ledger INODE rather
+    than a stable side-lock, an append landing between the prune's snapshot and
+    its replace is written to the doomed inode and discarded with it -- the run
+    silently vanishes. Found by Kenbot's PR #583 against a live trading ledger.
+    """
+    import importlib.util
+    import multiprocessing as mp
+
+    os.environ["HERMES_HOME"] = str(home)
+    spec_mod = importlib.util.spec_from_file_location("jobrun_conc", JOBRUN)
+    jr = importlib.util.module_from_spec(spec_mod)
+    spec_mod.loader.exec_module(jr)
+    n_append = 300
+
+    def appender(_):
+        for i in range(n_append):
+            jr.append_ledger({"event": "job.finished", "seq": i})
+
+    def pruner(_):
+        for _ in range(40):
+            jr.prune_state()
+
+    monkeypatch.setattr(jr, "LEDGER_MAX_LINES", 50, raising=False)
+    ctx = mp.get_context("fork")
+    ps = [ctx.Process(target=appender, args=(0,)),
+          ctx.Process(target=pruner, args=(0,))]
+    for p in ps:
+        p.start()
+    for p in ps:
+        p.join(60)
+
+    lines = [x for x in jr.LEDGER.read_text().splitlines() if x.strip()]
+    corrupt = []
+    seqs = set()
+    for x in lines:
+        try:
+            seqs.add(json.loads(x).get("seq"))
+        except json.JSONDecodeError:
+            corrupt.append(x)
+    assert not corrupt, f"{len(corrupt)} torn ledger line(s)"
+    # Retention legitimately drops OLD records; it must never drop records
+    # while newer ones survive, which is what inode-swap loss looks like.
+    kept = sorted(s for s in seqs if s is not None)
+    if kept:
+        assert kept == list(range(kept[0], kept[-1] + 1)), (
+            f"gap in surviving runs {kept[:5]}..{kept[-5:]}: a finished run "
+            "vanished mid-sequence, which retention alone cannot cause")
