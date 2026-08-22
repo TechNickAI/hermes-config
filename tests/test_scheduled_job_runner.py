@@ -390,3 +390,146 @@ def test_runs_when_the_profile_home_does_not_exist_yet(tmp_path):
     r = subprocess.run([sys.executable, str(JOBRUN), "--selftest"],
                        capture_output=True, text=True, env=env, timeout=600)
     assert r.returncode == 0, r.stdout[-2000:]
+
+
+# ---------------------------------------------------------------------------
+# Failure notification.
+# The scheduler drops a failure alert entirely when a job is configured
+# deliver=local: _resolve_delivery_targets() returns [] and _deliver_result()
+# returns None, which is indistinguishable from a successful send. A job that
+# guards something important can therefore break in permanent silence.
+# The runner already KNOWS the job failed, so it notifies directly.
+# ---------------------------------------------------------------------------
+
+
+def test_failure_notifies_the_configured_target(home):
+    """A failing job must reach a human even when cron would drop it."""
+    sink = home / "sent.txt"
+    fake = home / "scripts" / "fake_send.sh"
+    fake.write_text(f'#!/bin/bash\ncat > {sink}\necho sent\n')
+    fake.chmod(0o755)
+
+    boom = home / "scripts" / "boom.py"
+    boom.write_text("import sys\nsys.exit(4)\n")
+    _spec(home, "guard",
+          f'job_id = "guard"\nscript = "{boom}"\nruntime = "python"\n'
+          f'notify_target = "telegram:-100:7"\nnotify_command = "{fake}"\n')
+    r = _run(home, "--spec", "guard")
+    assert r.returncode == EXIT_CHILD
+    assert sink.exists(), "no notification was sent for a failed job"
+    body = sink.read_text()
+    assert "guard" in body
+    assert "exited 4" in body
+
+
+def test_success_notifies_nobody(home):
+    """Control: quiet success is the whole point. Only failures speak."""
+    sink = home / "sent2.txt"
+    fake = home / "scripts" / "fake_send2.sh"
+    fake.write_text(f'#!/bin/bash\ncat > {sink}\n')
+    fake.chmod(0o755)
+
+    ok = home / "scripts" / "ok.py"
+    ok.write_text("pass\n")
+    _spec(home, "quiet",
+          f'job_id = "quiet"\nscript = "{ok}"\nruntime = "python"\n'
+          f'notify_target = "telegram:-100:7"\nnotify_command = "{fake}"\n')
+    r = _run(home, "--spec", "quiet")
+    assert r.returncode == EXIT_OK
+    assert not sink.exists(), "a SUCCESSFUL job sent a notification"
+
+
+def test_notification_failure_does_not_change_the_job_outcome(home):
+    """A broken notifier must not turn a passing job into a failing one.
+
+    Bookkeeping must never decide the exit code the scheduler records.
+    """
+    ok = home / "scripts" / "ok2.py"
+    ok.write_text("pass\n")
+    _spec(home, "nf",
+          f'job_id = "nf"\nscript = "{ok}"\nruntime = "python"\n'
+          'notify_target = "telegram:-100:7"\n'
+          'notify_command = "/nonexistent/sender"\n')
+    r = _run(home, "--spec", "nf")
+    assert r.returncode == EXIT_OK
+
+
+def test_notification_records_its_own_outcome_in_the_ledger(home):
+    """A notifier that silently fails recreates the bug being fixed.
+
+    Asserts the real recorded outcome, not merely that the word "notify"
+    appears somewhere: the spec fields alone would satisfy a substring check
+    even with the notification code removed entirely.
+    """
+    boom = home / "scripts" / "boom3.py"
+    boom.write_text("import sys\nsys.exit(1)\n")
+    _spec(home, "nrec",
+          f'job_id = "nrec"\nscript = "{boom}"\nruntime = "python"\n'
+          'notify_target = "telegram:-100:7"\n'
+          'notify_command = "/nonexistent/sender"\n')
+    r = _run(home, "--spec", "nrec")
+    assert r.returncode == EXIT_CHILD
+
+    rows = [json.loads(x) for x
+            in (home / "jobstate" / "runs.jsonl").read_text().splitlines()
+            if x.strip()]
+    notified = [x for x in rows if x.get("event") == "job.notified"]
+    assert notified, "no job.notified event was recorded"
+    # The sender does not exist, so the runner must SAY the alert failed
+    # rather than reporting a send it never made.
+    assert notified[-1]["notify_status"] == "failed_no_sender", notified[-1]
+    assert "notification failed_no_sender" in r.stdout
+
+
+def test_notify_target_is_not_required(home):
+    """Jobs without a target keep working exactly as before."""
+    boom = home / "scripts" / "boom4.py"
+    boom.write_text("import sys\nsys.exit(2)\n")
+    _spec(home, "plain",
+          f'job_id = "plain"\nscript = "{boom}"\nruntime = "python"\n')
+    r = _run(home, "--spec", "plain")
+    assert r.returncode == EXIT_CHILD
+
+
+def test_critical_failure_notification_is_marked_critical(home):
+    """The message a human wakes up to must say it guards money."""
+    sink = home / "sent3.txt"
+    fake = home / "scripts" / "fake_send3.sh"
+    fake.write_text(f'#!/bin/bash\ncat > {sink}\n')
+    fake.chmod(0o755)
+
+    boom = home / "scripts" / "boom5.py"
+    boom.write_text("import sys\nsys.exit(7)\n")
+    _spec(home, "money2",
+          f'job_id = "money2"\nscript = "{boom}"\nruntime = "python"\n'
+          "critical = true\ntimeout = 60\n"
+          f'notify_target = "telegram:-100:7"\nnotify_command = "{fake}"\n')
+    r = _run(home, "--spec", "money2")
+    assert r.returncode == EXIT_CHILD
+    assert "CRITICAL" in sink.read_text()
+
+
+def test_notifier_does_not_depend_on_a_login_shell_path(home):
+    """cron has no login shell, so a bare "hermes" on PATH is the assumption
+    that makes an alert fail only in production. Measured: `hermes send`
+    returns rc=1 without a credentialed HERMES_HOME, and the CLI is not on a
+    stripped cron PATH at all. The runner must resolve it explicitly.
+    """
+    boom = home / "scripts" / "boom6.py"
+    boom.write_text("import sys\nsys.exit(1)\n")
+    _spec(home, "pathless",
+          f'job_id = "pathless"\nscript = "{boom}"\nruntime = "python"\n'
+          'notify_target = "telegram:-100:7"\n')
+    # Empty PATH: nothing is discoverable by name.
+    env = dict(os.environ, HERMES_HOME=str(home), PATH="")
+    r = subprocess.run([sys.executable, str(JOBRUN), "--spec", "pathless"],
+                       capture_output=True, text=True, env=env, timeout=300)
+    assert r.returncode == EXIT_CHILD
+    rows = [json.loads(x) for x
+            in (home / "jobstate" / "runs.jsonl").read_text().splitlines()
+            if x.strip()]
+    notified = [x for x in rows if x.get("event") == "job.notified"]
+    assert notified, "no notification attempt was recorded"
+    # It may not succeed in a test env, but it must not fail by being unable
+    # to FIND the sender — that is the production-only failure mode.
+    assert notified[-1]["notify_status"] != "failed_no_sender", notified[-1]

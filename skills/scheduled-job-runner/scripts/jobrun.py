@@ -199,6 +199,44 @@ def redact_argv(argv: list) -> list:
     return out
 
 
+def notify_failure(spec: "Spec", body: str) -> str:
+    """Send a failure alert straight to a messaging target.
+
+    Exists because Hermes cron cannot be relied on to deliver one. A job
+    configured ``deliver: local`` has its alert built and then discarded:
+    ``_resolve_delivery_targets()`` returns ``[]`` and ``_deliver_result()``
+    returns ``None``, which is indistinguishable from a successful send. That
+    is fine for a digest and dangerous for a job that guards something.
+
+    Never raises and never changes the job's exit code — bookkeeping must not
+    decide whether a job passed. Returns a short status string for the ledger,
+    because a notifier that fails silently just recreates the original bug.
+    """
+    if not spec.notify_target:
+        return "not_configured"
+    if spec.notify_command:
+        argv = [spec.notify_command]
+    else:
+        # Resolve the CLI explicitly. cron has no login shell, so a bare
+        # "hermes" on PATH is exactly the assumption that makes an alert fail
+        # only in production. Prefer the interpreter's own bin/ (the venv this
+        # runner is executing under) before falling back to PATH.
+        cli = Path(sys.executable).parent / "hermes"
+        exe = str(cli) if cli.exists() else (shutil.which("hermes") or "hermes")
+        argv = [exe, "send", "--quiet", "--to", spec.notify_target]
+    try:
+        r = subprocess.run(
+            argv, input=body, capture_output=True, text=True, timeout=30,
+        )
+        return "sent" if r.returncode == 0 else f"failed_rc{r.returncode}"
+    except FileNotFoundError:
+        return "failed_no_sender"
+    except subprocess.TimeoutExpired:
+        return "failed_timeout"
+    except Exception as exc:  # noqa: BLE001 - never let alerting kill a job
+        return f"failed_{type(exc).__name__}"
+
+
 def deployed_sha(cwd: str | None) -> str | None:
     """Short git SHA of the tree a job runs from.
 
@@ -343,7 +381,7 @@ class Spec:
         "job_id", "command", "script", "runtime", "cwd", "timeout", "kill_grace",
         "overlap", "owner", "env", "timezone", "notify_on_success", "retries",
         "retry_backoff", "args", "python", "auto_install_uv", "output_policy",
-        "heartbeat_url", "critical",
+        "heartbeat_url", "critical", "notify_target", "notify_command",
     }
 
     def __init__(self, data: dict, path: Path | None = None):
@@ -412,6 +450,15 @@ class Spec:
         # It deliberately does NOT change execution: the runner must not
         # become a second, weaker authority over domain state.
         self.critical = bool(data.get("critical", False))
+        # Where a FAILURE goes. Hermes cron drops the alert entirely when a job
+        # is deliver=local (_resolve_delivery_targets returns [], and
+        # _deliver_result returns None, which the scheduler cannot tell apart
+        # from a successful send). A job guarding something important would
+        # then break in permanent silence, so the runner notifies directly.
+        self.notify_target = str(data.get("notify_target", "") or "")
+        # Overridable so the path can be exercised in tests without sending a
+        # real message. Defaults to the hermes CLI's own script-facing sender.
+        self.notify_command = str(data.get("notify_command", "") or "")
         if self.output_policy not in ("passthrough", "silent"):
             raise ConfigError(
                 f"{self.job_id}: output_policy must be passthrough|silent"
@@ -1066,7 +1113,28 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         if log_path:
             lines.append(f"Log: {log_path}")
         lines.append(f"Run: {run_id[:8]}")
-        print("\n".join(lines))
+        card = "\n".join(lines)
+        print(card)
+
+        # Notify directly. The scheduler may never deliver this card at all
+        # (deliver=local drops it), and a guard job that breaks in silence is
+        # the failure mode worth engineering against. Recorded in the ledger
+        # so a broken notifier cannot itself become the silent failure.
+        notify_status = notify_failure(spec, card)
+        if spec.notify_target:
+            append_ledger({
+                "event": "job.notified",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "job_id": spec.job_id,
+                "run_id": run_id,
+                "notify_status": notify_status,
+                "notify_target": spec.notify_target,
+                "critical": spec.critical,
+            })
+            if notify_status != "sent":
+                # Say so on stdout too: if the alert did not go out, the only
+                # remaining reader is whoever inspects this run by hand.
+                print(f"(notification {notify_status})")
 
         return {
             "child_failure": EXIT_CHILD,
