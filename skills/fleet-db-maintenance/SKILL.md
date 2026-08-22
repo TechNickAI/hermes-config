@@ -95,6 +95,40 @@ PRAGMA optimize;                   -- VACUUM is a schema change; restat
 the regression guard: it inflates a database, deletes the rows, compacts, and
 asserts the file actually got smaller and the WAL was truncated.
 
+## The lock budget (the constraint that shapes everything)
+
+VACUUM takes an **exclusive write lock** for the entire rebuild. Measured on
+real fleet databases: **~14.4 seconds per GB** (1.7 GB -> 22s, 3.5 GB -> 49.3s).
+
+That matters because Hermes does not wait forever. From
+`hermes_state.py:2719-2720`:
+
+```python
+_WRITE_PATIENCE_S = 20.0             # routine session writes
+_TRANSCRIPT_WRITE_PATIENCE_S = 60.0  # transcript-critical writes
+```
+
+Past those budgets a live user's turn **fails with a session-storage error and
+must be resent**. So "VACUUM is just a stall, not an outage" is wrong above
+about 60 seconds of lock. Projected at the measured rate:
+
+| profile | size | predicted lock | unattended? |
+|---|---|---|---|
+| julianna (Ace) | 6.7 GB | ~93s | **refused** |
+| cora | 3.5 GB | ~49s | borderline |
+| kenbot | 3.0 GB | ~42s | ok, but trading |
+| bosun | 2.2 GB | ~32s | ok |
+| sterling | 1.7 GB | ~23s | ok |
+
+`dbmaint.py` predicts the lock before taking it and **refuses** to compact when
+it exceeds `--max-lock-seconds` (default 45s, leaving margin under the 60s
+cliff). The run still prunes; it just reports
+`needs_supervised_window: true` instead of freezing a live agent. Use
+`--force-vacuum` only during a supervised window.
+
+Retention alone is safe at any size — deletes are short transactions, not a
+whole-file rewrite.
+
 ## Disk preflight
 
 "Free space >= database size" is **not** sufficient. VACUUM needs the original,
@@ -138,14 +172,39 @@ Backups are removed after the integrity check passes by default. A weekly job
 retaining a ~350 MB backup adds ~18 GB/year to the volume you were trying to
 keep healthy. Use `--keep-backup` only for a one-off manual run.
 
+## Measured canary result
+
+First real run, on Bosun's own 2.25 GB database (2026-08-22):
+
+```
+before:  2252 MB, 12,076 sessions (2,057 human)
+pruned:  8,323 cron + 124 subagent
+vacuum:  2252 MB -> 1774 MB in 10.1s
+after:   1774 MB, 3,630 sessions (2,057 human)  <- human count unchanged
+integrity: ok   reclaimed: 478 MB   total runtime: 2m0s
+```
+
+FTS recall for four sampled terms was identical before and after (200 hits
+each, capped), and the gateway kept serving throughout.
+
+Note the shape: **8,447 sessions deleted freed 478 MB**, while the file is
+still 1.77 GB. Most of what remains is FTS index, not conversation. Retention
+stops the growth; it does not shrink a store back to nothing.
+
 ## Pitfalls
 
-- **Do not run this from the target gateway's own scheduler if it must stop the
-  gateway.** Hermes' lifecycle guard blocks a gateway from restarting itself
-  (anti-respawn-loop), and a script that dies between stop and start leaves the
-  service down. This script deliberately never stops the gateway: `VACUUM`
-  takes an exclusive lock and the gateway waits on it, which is a stall, not an
-  outage.
+- **Never stop the gateway to do this.** Hermes' lifecycle guard blocks a
+  gateway from restarting itself (anti-respawn-loop), and a script that dies
+  between stop and start leaves the service down with nobody home. This script
+  never stops anything; it works against the live database and keeps its lock
+  inside the write-patience budget instead.
+- **Do not run two profiles on one host concurrently.** Studio hosts five.
+  Their databases are separate files, so they do not block each other at the
+  SQLite level, but two simultaneous VACUUMs contend for the same disk and each
+  one's lock stretches past its prediction. Stagger them.
+- **Do not run this during an active incident.** If an agent is already wedged
+  or its disk is filling, adding an exclusive lock and a 2.5x temporary rewrite
+  makes it worse. Retention-only (`--no-vacuum`) is the safe move mid-incident.
 - **Never prune `role='tool'` rows.** They pair with assistant tool calls;
   orphaning them returns HTTP 400 and makes those sessions permanently
   un-resumable. This script deletes whole sessions via the supported CLI, which

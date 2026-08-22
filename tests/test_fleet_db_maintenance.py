@@ -94,6 +94,7 @@ def test_refuses_human_sources(db):
     args = type("A", (), {
         "profile": "x", "days": 10, "sources": ["telegram"], "apply": True,
         "no_vacuum": True, "vacuum_min_mb": 500, "keep_backup": False,
+        "max_lock_seconds": 45.0, "force_vacuum": False,
     })()
     mod.resolve_db = lambda p: db
     with pytest.raises(ValueError, match="refusing to prune non-machine"):
@@ -218,6 +219,322 @@ def test_backup_rejects_empty_output(db, tmp_path, monkeypatch):
 
 def test_integrity_ok(db):
     assert _load().integrity(db) == "ok"
+
+
+# --- output parsing (the silent-failure class) ----------------------------
+
+def _fake_hermes(tmp_path, stdout, rc=0):
+    """Install a fake `hermes` binary so prune() can be driven end-to-end."""
+    fake = tmp_path / "hermes"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        f"sys.stdout.write({stdout!r})\n"
+        f"sys.exit({rc})\n"
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+def test_parses_count_for_subagent_ids(tmp_path, monkeypatch):
+    """Subagent session ids are NOT prefixed with the source name.
+
+    Regression guard for a measured bug: cron ids look like
+    `cron_<hash>_<stamp>` but subagent ids look like `20260701_103305_1d2614`.
+    A parser matching on an f"{src}_" prefix reported 0 while the CLI was
+    really deleting 124 sessions -- a silent retention failure that looks
+    identical to a healthy no-op.
+    """
+    mod = _load()
+    real = (
+        "124 session(s) match (last active before 2026-08-12 09:03, "
+        "source 'subagent'; oldest activity 2026-07-01 10:35):\n"
+        "  20260701_103305_1d2614  2026-07-01 10:35  subagent   work   48 msgs\n"
+        "  20260701_103547_58e5e2  2026-07-01 10:37  subagent   work   42 msgs\n"
+    )
+    fake = _fake_hermes(tmp_path, real)
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: str(fake))
+    out = mod.prune("p", 10, ["subagent"], False, lambda m: None)
+    assert out["subagent"] == 124
+
+
+def test_parses_count_for_cron_ids(tmp_path, monkeypatch):
+    mod = _load()
+    real = (
+        "8323 session(s) match (last active before 2026-08-12 09:03, "
+        "source 'cron'):\n"
+        "  cron_047e1a5f26f3_20260623_000057  2026-06-23 00:03  cron  14 msgs\n"
+    )
+    fake = _fake_hermes(tmp_path, real)
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: str(fake))
+    out = mod.prune("p", 10, ["cron"], False, lambda m: None)
+    assert out["cron"] == 8323
+
+
+def test_no_matches_parses_as_zero(tmp_path, monkeypatch):
+    mod = _load()
+    fake = _fake_hermes(tmp_path, "No sessions match (source 'cron').\n")
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: str(fake))
+    assert mod.prune("p", 10, ["cron"], False, lambda m: None)["cron"] == 0
+
+
+def test_unparseable_output_raises_rather_than_reporting_zero(tmp_path, monkeypatch):
+    """An unrecognised format must fail loudly.
+
+    Reporting 0 for output we could not parse is the exact failure mode that
+    makes a broken pruner look healthy for months.
+    """
+    mod = _load()
+    fake = _fake_hermes(tmp_path, "Wubba lubba dub dub\n")
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: str(fake))
+    with pytest.raises(RuntimeError, match="could not parse"):
+        mod.prune("p", 10, ["cron"], False, lambda m: None)
+
+
+def test_nonzero_exit_raises(tmp_path, monkeypatch):
+    mod = _load()
+    fake = _fake_hermes(tmp_path, "boom\n", rc=1)
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: str(fake))
+    with pytest.raises(RuntimeError, match="exited 1"):
+        mod.prune("p", 10, ["cron"], False, lambda m: None)
+
+
+def test_apply_flag_passed_through(tmp_path, monkeypatch):
+    """--yes when applying, --dry-run otherwise. Getting this backwards
+    would either delete during a dry run or silently never delete."""
+    mod = _load()
+    captured = {}
+    real_run = mod.subprocess.run
+
+    def spy(cmd, **kw):
+        captured["cmd"] = cmd
+        return real_run(
+            [sys.executable, "-c", "print('0 session(s) match')"], **kw
+        )
+
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: "/bin/true")
+    monkeypatch.setattr(mod.subprocess, "run", spy)
+
+    mod.prune("p", 10, ["cron"], False, lambda m: None)
+    assert "--dry-run" in captured["cmd"] and "--yes" not in captured["cmd"]
+
+    mod.prune("p", 10, ["cron"], True, lambda m: None)
+    assert "--yes" in captured["cmd"] and "--dry-run" not in captured["cmd"]
+
+
+# --- run() end-to-end failure paths ---------------------------------------
+
+def _args(**over):
+    base = dict(
+        profile="p", days=10, sources=["cron"], apply=True,
+        no_vacuum=True, vacuum_min_mb=500, keep_backup=False,
+        max_lock_seconds=45.0, force_vacuum=False,
+    )
+    base.update(over)
+    return type("A", (), base)()
+
+
+def test_human_count_abort_actually_triggers(db, monkeypatch):
+    """The invariant must fire when human sessions disappear.
+
+    Proven by simulating a prune that deletes a telegram session -- the exact
+    catastrophe the allowlist is meant to prevent. Without this test the abort
+    could be deleted entirely and the suite would stay green.
+    """
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+
+    def rogue(profile, days, sources, apply, log):
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "DELETE FROM sessions WHERE id = "
+            "(SELECT id FROM sessions WHERE source = 'telegram' LIMIT 1)"
+        )
+        conn.commit()
+        conn.close()
+        return {"cron": 1}
+
+    monkeypatch.setattr(mod, "prune", rogue)
+    with pytest.raises(RuntimeError, match="human session count changed"):
+        mod.run(_args(), lambda m: None)
+
+
+def test_invariant_checked_even_when_prune_raises(db, monkeypatch):
+    """A prune that deletes human rows and THEN fails must still be caught.
+
+    Skipping the invariant on the error path is exactly when it matters most:
+    a subprocess can delete rows and then time out or be killed.
+    """
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+
+    def rogue_then_fail(profile, days, sources, apply, log):
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "DELETE FROM sessions WHERE id = "
+            "(SELECT id FROM sessions WHERE source = 'telegram' LIMIT 1)"
+        )
+        conn.commit()
+        conn.close()
+        raise RuntimeError("prune timed out")
+
+    monkeypatch.setattr(mod, "prune", rogue_then_fail)
+    with pytest.raises(RuntimeError, match="human session count changed"):
+        mod.run(_args(), lambda m: None)
+
+
+def test_prune_failure_propagates(db, monkeypatch):
+    """A failed prune that harmed nothing must still fail the run, not pass."""
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+
+    def boom(profile, days, sources, apply, log):
+        raise RuntimeError("cli exploded")
+
+    monkeypatch.setattr(mod, "prune", boom)
+    with pytest.raises(RuntimeError, match="retention failed"):
+        mod.run(_args(), lambda m: None)
+
+
+def test_backup_taken_before_retention(db, monkeypatch):
+    """Backup must precede the first destructive call, not follow it.
+
+    If prune ran first, a prune that deleted rows and then died would leave
+    nothing to restore from.
+    """
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    order = []
+
+    real_backup = mod.backup
+    monkeypatch.setattr(
+        mod, "backup",
+        lambda d, dest, log: (order.append("backup"), real_backup(d, dest, log))[1],
+    )
+    monkeypatch.setattr(
+        mod, "prune",
+        lambda *a, **k: (order.append("prune"), {"cron": 0})[1],
+    )
+    mod.run(_args(), lambda m: None)
+    assert order == ["backup", "prune"]
+
+
+def test_backup_survives_compaction_failure(db, monkeypatch):
+    """On compaction failure the backup must NOT be deleted."""
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    monkeypatch.setattr(mod, "prune", lambda *a, **k: {"cron": 0})
+    monkeypatch.setattr(
+        mod, "compact",
+        lambda d, log: (_ for _ in ()).throw(RuntimeError("vacuum died")),
+    )
+    with pytest.raises(RuntimeError, match="vacuum died"):
+        mod.run(_args(no_vacuum=False, vacuum_min_mb=0), lambda m: None)
+
+    leftovers = list(db.parent.glob("*.premaint-*"))
+    assert leftovers, "backup was deleted despite compaction failure"
+
+
+def test_backup_removed_on_success(db, monkeypatch):
+    """Housekeeping: a clean run must not leave backups accumulating."""
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    monkeypatch.setattr(mod, "prune", lambda *a, **k: {"cron": 0})
+    report = mod.run(_args(), lambda m: None)
+    assert report["probe_ok"] is True
+    assert report.get("backup_removed") is True
+    assert not list(db.parent.glob("*.premaint-*"))
+
+
+def test_dry_run_takes_no_backup_and_does_not_mutate(db, monkeypatch):
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    monkeypatch.setattr(mod, "prune", lambda *a, **k: {"cron": 3})
+    before = db.stat().st_size
+    report = mod.run(_args(apply=False), lambda m: None)
+    assert "backup" not in report
+    assert not list(db.parent.glob("*.premaint-*"))
+    assert db.stat().st_size == before
+
+
+def test_insufficient_disk_aborts_before_mutating(db, monkeypatch):
+    """Disk preflight must stop the run before anything destructive."""
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    called = []
+    monkeypatch.setattr(mod, "prune", lambda *a, **k: called.append(1) or {})
+    monkeypatch.setattr(
+        mod.shutil, "disk_usage",
+        lambda p: type("D", (), {"free": 1, "total": 2, "used": 1})(),
+    )
+    with pytest.raises(RuntimeError, match="insufficient disk"):
+        mod.run(_args(), lambda m: None)
+    assert not called, "prune ran despite failed disk preflight"
+
+
+# --- the lock-budget guard ------------------------------------------------
+
+def test_predicted_lock_matches_measured_rate():
+    """Sanity-check the model against the real benchmarks it came from."""
+    mod = _load()
+    # cora: 3505 MB measured at 49.3s
+    assert 40 <= mod.predicted_lock_seconds(3505 * 1024 ** 2) <= 60
+    # sterling: 1685 MB measured at 22s
+    assert 17 <= mod.predicted_lock_seconds(1685 * 1024 ** 2) <= 30
+
+
+def test_vacuum_refused_when_lock_would_exceed_budget(db, monkeypatch):
+    """A predicted lock over budget must SKIP compaction, not take it.
+
+    Past 60s Hermes fails the user's turn with a session-storage error
+    (_TRANSCRIPT_WRITE_PATIENCE_S), so an unattended run must never get there.
+    """
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    monkeypatch.setattr(mod, "prune", lambda *a, **k: {"cron": 0})
+    monkeypatch.setattr(mod, "predicted_lock_seconds", lambda b: 93.0)
+    compacted = []
+    monkeypatch.setattr(
+        mod, "compact", lambda d, log: compacted.append(1) or {}
+    )
+    report = mod.run(_args(no_vacuum=False, vacuum_min_mb=0), lambda m: None)
+    assert not compacted, "took a 93s lock on a live gateway"
+    assert report["compaction"]["skipped"] == "predicted_lock_exceeds_budget"
+    assert report["compaction"]["needs_supervised_window"] is True
+
+
+def test_force_vacuum_overrides_the_budget(db, monkeypatch):
+    """The operator escape hatch must actually work for supervised windows."""
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    monkeypatch.setattr(mod, "prune", lambda *a, **k: {"cron": 0})
+    monkeypatch.setattr(mod, "predicted_lock_seconds", lambda b: 93.0)
+    compacted = []
+    monkeypatch.setattr(
+        mod, "compact",
+        lambda d, log: (compacted.append(1), {"seconds": 93})[1],
+    )
+    monkeypatch.setattr(mod, "integrity", lambda d: "ok")
+    mod.run(
+        _args(no_vacuum=False, vacuum_min_mb=0, force_vacuum=True),
+        lambda m: None,
+    )
+    assert compacted, "--force-vacuum did not override the budget"
+
+
+def test_vacuum_proceeds_within_budget(db, monkeypatch):
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    monkeypatch.setattr(mod, "prune", lambda *a, **k: {"cron": 0})
+    monkeypatch.setattr(mod, "predicted_lock_seconds", lambda b: 22.0)
+    compacted = []
+    monkeypatch.setattr(
+        mod, "compact",
+        lambda d, log: (compacted.append(1), {"seconds": 22})[1],
+    )
+    monkeypatch.setattr(mod, "integrity", lambda d: "ok")
+    mod.run(_args(no_vacuum=False, vacuum_min_mb=0), lambda m: None)
+    assert compacted, "refused a safe 22s compaction"
 
 
 # --- CLI contract ---------------------------------------------------------

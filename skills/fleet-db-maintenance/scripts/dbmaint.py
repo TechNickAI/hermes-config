@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -57,6 +58,23 @@ PRUNABLE_SOURCES = ("cron", "subagent")
 
 # VACUUM needs the original file, a full temporary rebuild, and WAL headroom.
 DISK_SAFETY_MULTIPLE = 2.5
+
+# Measured cost of the full compaction sequence on real fleet databases:
+# 1.7 GB -> 22s, 3.5 GB -> 49.3s. Used to predict the exclusive-lock window
+# before taking it.
+VACUUM_SECONDS_PER_GB = 14.4
+
+# Hermes gives up on a routine session write after _WRITE_PATIENCE_S = 20s and
+# on a transcript-critical write after _TRANSCRIPT_WRITE_PATIENCE_S = 60s
+# (hermes_state.py:2719-2720). Past that the user's turn fails with a
+# session-storage error and must be resent. So an unattended VACUUM must keep
+# its lock comfortably under 60s; 45s leaves margin for a loaded host.
+MAX_UNATTENDED_LOCK_SECONDS = 45.0
+
+
+def predicted_lock_seconds(db_bytes: int) -> float:
+    """Estimated exclusive-lock duration for the compaction sequence."""
+    return (db_bytes / (1024 ** 3)) * VACUUM_SECONDS_PER_GB
 
 
 def _utc() -> str:
@@ -171,12 +189,30 @@ def prune(profile: str, days: int, sources, apply: bool, log) -> dict:
         if proc.returncode != 0:
             raise RuntimeError(f"prune {src} exited {proc.returncode}: {out[-400:]}")
 
-        # Count candidate lines rather than trusting a summary string: a
-        # parser anchored to one phrasing silently reports zero when the CLI
-        # wording changes, which reads exactly like "retention is working".
-        matched = sum(
-            1 for line in out.splitlines() if line.strip().startswith(f"{src}_")
-        )
+        # Parse the header line: "N session(s) match (...)" / "Pruned N session(s)."
+        #
+        # Do NOT count listed candidate rows, and do NOT assume session ids are
+        # prefixed with the source name. Measured: cron ids look like
+        # `cron_<hash>_<stamp>` but SUBAGENT ids look like `20260701_103305_1d2614`
+        # -- a prefix-matching parser silently reports 0 while 124 sessions are
+        # deleted, which reads exactly like "retention is working, nothing to do".
+        # The CLI also truncates the listing to 15 rows when applying, so row
+        # counting under-reports regardless.
+        matched = None
+        for line in out.splitlines():
+            m = re.search(r"(\d+)\s+session\(s\)", line)
+            if m:
+                matched = int(m.group(1))
+                break
+        if matched is None:
+            if re.search(r"No sessions match", out, re.I):
+                matched = 0
+            else:
+                raise RuntimeError(
+                    f"could not parse prune output for {src}; refusing to report "
+                    f"an unverified count. Output tail: {out[-300:]}"
+                )
+
         result[src] = matched
         log(f"  {src}: {matched} session(s) {'deleted' if apply else 'matched (dry-run)'}")
 
@@ -219,7 +255,17 @@ def compact(db: Path, log) -> dict:
 
     The trailing checkpoint is not optional. VACUUM in WAL mode writes the
     entire rebuilt database through the WAL; skip the final truncate and the
-    main file never shrinks.
+    main file never shrinks (verified: 19 MB vs 0 MB with a concurrent reader
+    open, which is every real run).
+
+    THIS TAKES AN EXCLUSIVE WRITE LOCK for the whole rebuild. Measured on real
+    fleet databases: ~14.4 seconds per GB (1.7 GB -> 22s, 3.5 GB -> 49s). A
+    live gateway that tries to write during that window waits, and Hermes
+    gives up after _WRITE_PATIENCE_S = 20s for routine writes and
+    _TRANSCRIPT_WRITE_PATIENCE_S = 60s for transcript-critical ones
+    (hermes_state.py:2719-2720) -- past that the user's turn fails with a
+    session-storage error and has to be resent. Callers must gate this on a
+    size that keeps the lock inside those budgets.
     """
     before = _db_sizes(db)
     started = time.time()
@@ -292,16 +338,55 @@ def run(args, log) -> dict:
         f"{report['counts_before'].get('sessions_total', 0)} sessions "
         f"({humans_before} human)")
 
+    # Disk preflight and backup happen BEFORE the first destructive operation.
+    #
+    # Retention is destructive on its own -- it deletes rows via the CLI. If
+    # that subprocess deleted human sessions and then exited nonzero, timed
+    # out, or was killed mid-flight, a backup taken later (or only in the
+    # compaction branch) would be worthless: there would be nothing to restore
+    # from. So on any --apply run we take the verified backup first, whether
+    # or not we intend to compact afterwards.
+    bkp = None
+    if args.apply:
+        free = shutil.disk_usage(db.parent).free
+        needed = int(_size(db) * DISK_SAFETY_MULTIPLE)
+        if free < needed:
+            raise RuntimeError(
+                f"insufficient disk: {_mb(free)} MB free, "
+                f"need ~{_mb(needed)} MB for backup + rebuild"
+            )
+        log("backup:")
+        bkp = db.with_suffix(f".db.premaint-{int(time.time())}")
+        backup(db, bkp, log)
+        report["backup"] = str(bkp)
+
     log("retention:")
-    report["pruned"] = prune(args.profile, args.days, args.sources, args.apply, log)
+    prune_error = None
+    try:
+        report["pruned"] = prune(
+            args.profile, args.days, args.sources, args.apply, log
+        )
+    except Exception as exc:
+        # Do NOT return here. A failed prune may still have deleted rows, so
+        # the human-session invariant below must be evaluated either way --
+        # that check is the whole safety story and skipping it on the error
+        # path is exactly when it matters most.
+        prune_error = exc
+        report["pruned"] = {"error": str(exc)}
+        log(f"  prune FAILED: {exc}")
 
     # Safety invariant: retention must never reduce the human-session count.
+    # Evaluated on both the success and failure paths.
     humans_after = _human_session_count(db)
     report["human_sessions_after"] = humans_after
     if humans_after != humans_before:
+        detail = f" Backup preserved at {bkp}." if bkp else ""
         raise RuntimeError(
-            f"ABORT: human session count changed {humans_before} -> {humans_after}"
+            f"ABORT: human session count changed "
+            f"{humans_before} -> {humans_after}.{detail}"
         )
+    if prune_error is not None:
+        raise RuntimeError(f"retention failed: {prune_error}")
 
     after_prune = _db_sizes(db)
     should_vacuum = (
@@ -310,32 +395,45 @@ def run(args, log) -> dict:
         and after_prune["db_mb"] >= args.vacuum_min_mb
     )
 
-    if should_vacuum:
-        log("compaction:")
-        free = shutil.disk_usage(db.parent).free
-        needed = int(_size(db) * DISK_SAFETY_MULTIPLE)
-        if free < needed:
-            raise RuntimeError(
-                f"insufficient disk: {_mb(free)} MB free, "
-                f"need ~{_mb(needed)} MB for backup + rebuild"
-            )
+    # Predicted lock window. An unattended run REFUSES to take a lock long
+    # enough to fail a live user's turn; --force-vacuum is the operator's
+    # explicit override for a supervised maintenance window.
+    predicted = predicted_lock_seconds(_size(db))
+    report["predicted_lock_seconds"] = round(predicted, 1)
+    lock_budget_exceeded = (
+        should_vacuum
+        and predicted > args.max_lock_seconds
+        and not args.force_vacuum
+    )
+    if lock_budget_exceeded:
+        log(
+            f"compaction: SKIPPED -- predicted {predicted:.0f}s exclusive lock "
+            f"exceeds the {args.max_lock_seconds:.0f}s budget. A live gateway "
+            f"drops writes past 60s. Re-run with --force-vacuum during a "
+            f"supervised window."
+        )
+        report["compaction"] = {
+            "skipped": "predicted_lock_exceeds_budget",
+            "predicted_lock_seconds": round(predicted, 1),
+            "needs_supervised_window": True,
+        }
+        should_vacuum = False
 
-        bkp = db.with_suffix(f".db.premaint-{int(time.time())}")
+    if should_vacuum:
+        log(f"compaction: (predicted ~{predicted:.0f}s exclusive lock)")
         try:
-            backup(db, bkp, log)
-            report["backup"] = str(bkp)
             report["compaction"] = compact(db, log)
             report["integrity"] = integrity(db)
             if report["integrity"] != "ok":
                 raise RuntimeError(f"post-vacuum integrity: {report['integrity']}")
-        finally:
-            # The backup exists to cover the rewrite. Once integrity is proven
-            # it is dead weight -- a weekly job that keeps them adds ~18 GB/yr
-            # to the volume we are trying to keep healthy.
-            if not args.keep_backup and bkp.exists():
-                bkp.unlink()
-                report["backup_removed"] = True
-    else:
+        except Exception:
+            # The database may now be damaged. Keep the backup no matter what
+            # --keep-backup says: deleting the only good copy on the failure
+            # path is the worst outcome this script could produce.
+            report["backup_preserved_on_failure"] = str(bkp)
+            log(f"  FAILED -- backup preserved at {bkp}")
+            raise
+    elif not lock_budget_exceeded:
         reason = (
             "dry-run" if not args.apply
             else "disabled" if args.no_vacuum
@@ -343,6 +441,14 @@ def run(args, log) -> dict:
         )
         log(f"compaction: skipped ({reason})")
         report["compaction"] = {"skipped": reason}
+
+    # Success path only. The backup exists to cover the destructive work; once
+    # every check has passed it is dead weight, and a weekly job that retains
+    # one adds ~18 GB/yr to the volume we are trying to keep healthy. On ANY
+    # failure above we raise before reaching this and the backup survives.
+    if bkp is not None and not args.keep_backup and bkp.exists():
+        bkp.unlink()
+        report["backup_removed"] = True
 
     report["after"] = _db_sizes(db)
     report["counts_after"] = _counts(db)
@@ -364,6 +470,15 @@ def main(argv=None) -> int:
     p.add_argument("--no-vacuum", action="store_true", help="retention only")
     p.add_argument("--vacuum-min-mb", type=int, default=500,
                    help="skip VACUUM below this size (default 500)")
+    p.add_argument("--max-lock-seconds", type=float,
+                   default=MAX_UNATTENDED_LOCK_SECONDS,
+                   help=(
+                       "refuse an unattended VACUUM whose predicted exclusive "
+                       f"lock exceeds this (default {MAX_UNATTENDED_LOCK_SECONDS:.0f}s; "
+                       "Hermes drops transcript writes past 60s)"
+                   ))
+    p.add_argument("--force-vacuum", action="store_true",
+                   help="override --max-lock-seconds. Supervised windows only.")
     p.add_argument("--keep-backup", action="store_true",
                    help="retain the pre-maintenance backup after success")
     p.add_argument("--json", action="store_true", help="emit the report as JSON")
