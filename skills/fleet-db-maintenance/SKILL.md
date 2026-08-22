@@ -347,6 +347,72 @@ freelist size per profile. A profile with a large freelist and no human
 traffic in the last hour is the safe first candidate; the freelist is what you
 actually get back.
 
+## Measure on a COPY before every VACUUM
+
+The predicted lock is a conservative worst case and the observed rates vary
+~6x between databases. Do not extrapolate from a previous run. Copy the file
+and time the real thing -- it costs one disk copy and no lock:
+
+```bash
+cp state.db /tmp/x.db
+python3 -c "import sqlite3,time; c=sqlite3.connect('/tmp/x.db'); \
+  t=time.time(); c.execute('VACUUM'); print(f'{time.time()-t:.1f}s')"
+rm /tmp/x.db
+```
+
+Measured vs predicted across the fleet:
+
+| profile | file | predicted | measured on copy | actual live |
+|---|---|---|---|---|
+| studio _root | 2686 MB | 37.8s | -- | **6.1s** |
+| ace | 6686 MB | 94.0s | -- | **128.0s** |
+| sterling | 1692 MB | 23.8s | 16.6s | **7.0s** |
+| cora | 3510 MB | 49.4s | 34.3s | **10.0s** |
+| kenbot | 3003 MB | 42.2s | **145.2s** | not run |
+
+Ace ran LONGER than predicted; kenbot's copy ran 3.4x longer. A model fitted to
+any one of these mispredicts the others, so the only honest number is a
+measurement.
+
+**The copy is also a corruption probe.** Kenbot's copy failed to VACUUM with
+`database disk image is malformed`, which is how a real corruption was found
+BEFORE a VACUUM rewrote the live file. Never VACUUM a database you have not
+integrity-checked: rewriting a file with a corrupt page turns localized damage
+into total loss, and the backup would just be a copy of the corruption.
+
+## Check the freelist before spending a lock window
+
+VACUUM can only return the freelist. Everything else is live data it must copy.
+
+Kenbot: 3003 MB file, **168 MB freelist**, 2834 MB live -- a 145s exclusive
+lock to recover 180 MB. Correctly declined. His space is not garbage:
+
+```
+messages_fts_trigram_data   1206 MB
+messages                    1094 MB
+messages_fts_data            402 MB
+```
+
+The trigram search index is larger than the messages it indexes. On a store
+like that, retention keeps it from growing and VACUUM is not worth the stall.
+`scripts/pick_vacuum.py` reports freelist per profile for exactly this call.
+
+## When corruption is found
+
+Localize before repairing. Full-scan every table (`select count(*)`) to find
+which one raises -- `integrity_check` says the database is malformed, not
+where. Kenbot's damage was confined to `delivery_obligations`; all 3,629
+sessions, 452,451 messages and both FTS indexes read clean.
+
+That table is a pending-outbound queue created with `CREATE TABLE IF NOT
+EXISTS` (`gateway/delivery_ledger.py:97`), so DROP + recreate with the exact
+upstream schema restored `integrity_check: ok` with no data loss beyond
+undelivered queued messages. Byte-copy the file first (`cp`, corruption
+included), confirm the damage is still present before writing, and re-verify
+every table plus an insert/delete probe afterwards.
+
+Do NOT reach for VACUUM as a corruption fix.
+
 ## Pitfalls
 
 - **Never stop the gateway to do this.** Hermes' lifecycle guard blocks a

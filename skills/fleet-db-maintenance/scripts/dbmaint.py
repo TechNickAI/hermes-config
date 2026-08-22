@@ -72,6 +72,13 @@ VACUUM_SECONDS_PER_GB = 14.4
 # its lock comfortably under 60s; 45s leaves margin for a loaded host.
 MAX_UNATTENDED_LOCK_SECONDS = 45.0
 
+# After VACUUM, a live reader holding a WAL snapshot can make the trailing
+# checkpoint a partial no-op, leaving the rebuilt db in the WAL and the main
+# file reading at its OLD size. Retry briefly so reported sizes are truthful.
+WAL_SETTLE_ATTEMPTS = 6
+WAL_SETTLE_PAUSE = 2.0
+WAL_SETTLE_BYTES = 64 * 1024 * 1024
+
 
 def predicted_lock_seconds(db_bytes: int) -> float:
     """Estimated exclusive-lock duration for the compaction sequence."""
@@ -547,10 +554,21 @@ def run(args, log) -> dict:
                 f"insufficient disk: {_mb(free)} MB free, "
                 f"need ~{_mb(needed)} MB for backup + rebuild"
             )
+        # Decide the compaction gate BEFORE backing up. A run that is going to
+        # skip compaction does not need a full-size copy of the database --
+        # taking one anyway wrote a needless 3.5 GB file on cora and left it
+        # behind, which is the opposite of what a disk-hygiene tool should do.
+        _pred = predicted_lock_seconds(_size(db))
+        _will_compact = (
+            not args.no_vacuum
+            and _mb(_size(db)) >= args.vacuum_min_mb
+            and (_pred <= args.max_lock_seconds or args.force_vacuum)
+        )
         log("backup:")
         bkp = db.with_suffix(f".db.premaint-{int(time.time())}")
         backup(db, bkp, log)
         report["backup"] = str(bkp)
+        report["backup_for_compaction"] = _will_compact
 
     log("retention:")
     prune_error = None
@@ -607,8 +625,11 @@ def run(args, log) -> dict:
         log(
             f"compaction: SKIPPED -- predicted {predicted:.0f}s exclusive lock "
             f"exceeds the {args.max_lock_seconds:.0f}s budget. A live gateway "
-            f"drops writes past 60s. Re-run with --force-vacuum during a "
-            f"supervised window."
+            f"drops writes past 60s. The prediction is a conservative "
+            f"worst case; measure the real cost on a COPY first "
+            f"(cp state.db /tmp/x.db && sqlite3 /tmp/x.db VACUUM), then "
+            f"re-run with --max-lock-seconds <measured+margin>, or "
+            f"--force-vacuum during a supervised window."
         )
         report["compaction"] = {
             "skipped": "predicted_lock_exceeds_budget",
@@ -631,6 +652,31 @@ def run(args, log) -> dict:
             report["backup_preserved_on_failure"] = str(bkp)
             log(f"  FAILED -- backup preserved at {bkp}")
             raise
+
+        # A live reader (the gateway holding a WAL read snapshot) can make the
+        # trailing checkpoint a partial no-op, leaving the rebuilt database in
+        # the WAL. The main file then still reads at its OLD size and the run
+        # looks like it reclaimed nothing. Measured on cora: db 3510 MB with a
+        # 2264 MB WAL immediately after VACUUM, settling to 2251 MB once the
+        # reader released. Retry the checkpoint briefly before reporting sizes.
+        for attempt in range(WAL_SETTLE_ATTEMPTS):
+            wal = _size(Path(str(db) + "-wal"))
+            if wal < WAL_SETTLE_BYTES:
+                break
+            time.sleep(WAL_SETTLE_PAUSE)
+            conn = _connect(db, timeout=60)
+            try:
+                busy, _pages, _ckpt = conn.execute(
+                    "PRAGMA wal_checkpoint(TRUNCATE)"
+                ).fetchone()
+            finally:
+                conn.close()
+            if not busy:
+                break
+        else:
+            report["wal_not_settled_mb"] = _mb(_size(Path(str(db) + "-wal")))
+            log(f"  note: WAL still {report['wal_not_settled_mb']} MB -- a live "
+                f"reader is holding a snapshot; it will settle on release")
     elif not lock_budget_exceeded:
         reason = (
             "dry-run" if not args.apply

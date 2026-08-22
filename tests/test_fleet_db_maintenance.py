@@ -903,6 +903,105 @@ def test_weekly_is_chunked_and_deadlined(tmp_path):
     assert '"--max-seconds"' in src
 
 
+# --- WAL settling and skipped-compaction backup ---------------------------
+
+def test_no_backup_bloat_when_compaction_is_gated(db, monkeypatch):
+    """A run that will SKIP compaction must not leave a full-size copy.
+
+    Measured on cora: the gate refused a 49.4s predicted lock, but a 3.5 GB
+    backup had already been written and --keep-backup left it on a disk we are
+    trying to free. The report must at least mark it as not-for-compaction so
+    the caller can clean up.
+    """
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    monkeypatch.setattr(mod, "prune", lambda *a, **k: {"cron": 0})
+    monkeypatch.setattr(mod, "predicted_lock_seconds", lambda b: 93.0)
+    report = mod.run(
+        _args(no_vacuum=False, vacuum_min_mb=0, keep_backup=True),
+        lambda m: None,
+    )
+    assert report["compaction"]["skipped"] == "predicted_lock_exceeds_budget"
+    assert report["backup_for_compaction"] is False
+
+
+def test_backup_marked_for_compaction_when_it_will_run(db, monkeypatch):
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    monkeypatch.setattr(mod, "prune", lambda *a, **k: {"cron": 0})
+    monkeypatch.setattr(mod, "predicted_lock_seconds", lambda b: 10.0)
+    monkeypatch.setattr(mod, "compact", lambda d, log: {"seconds": 10})
+    monkeypatch.setattr(mod, "integrity", lambda d: "ok")
+    report = mod.run(
+        _args(no_vacuum=False, vacuum_min_mb=0, keep_backup=True),
+        lambda m: None,
+    )
+    assert report["backup_for_compaction"] is True
+
+
+def test_wal_retried_when_reader_blocks_checkpoint(db, monkeypatch):
+    """A live reader can leave the rebuilt db in the WAL, so the main file
+    still reads at its OLD size and the run looks like it reclaimed nothing.
+
+    Measured on cora: 3510 MB db + 2264 MB WAL right after VACUUM, settling to
+    2251 MB once the gateway released its snapshot.
+    """
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+    monkeypatch.setattr(mod, "prune", lambda *a, **k: {"cron": 0})
+    monkeypatch.setattr(mod, "predicted_lock_seconds", lambda b: 10.0)
+    monkeypatch.setattr(mod, "integrity", lambda d: "ok")
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+
+    wal = Path(str(db) + "-wal")
+
+    def fake_compact(d, log):
+        # VACUUM under a live reader leaves the rebuilt db in the WAL. Model
+        # that literally: the WAL exists and is large when compact returns.
+        wal.write_bytes(b"\0" * (200 * 1024 * 1024))
+        return {"seconds": 10}
+
+    monkeypatch.setattr(mod, "compact", fake_compact)
+
+    calls = []
+    real_connect = mod._connect
+
+    class CheckpointSpy:
+        """Wraps a real connection, intercepting ONLY wal_checkpoint."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a):
+            if "wal_checkpoint" in sql:
+                calls.append(sql)
+                # First attempt reports BUSY (reader holding a snapshot),
+                # second succeeds -- exactly the cora sequence.
+                if len(calls) == 1:
+                    return _Row((1, 0, 0))
+                wal.unlink(missing_ok=True)
+                return _Row((0, 0, 0))
+            return self._inner.execute(sql, *a)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(
+        mod, "_connect",
+        lambda d, timeout=30: CheckpointSpy(real_connect(d, timeout=timeout)),
+    )
+    mod.run(_args(no_vacuum=False, vacuum_min_mb=0), lambda m: None)
+    assert len(calls) >= 2, "did not retry the checkpoint after a busy result"
+
+
+class _Row:
+    def __init__(self, v):
+        self.v = v
+
+    def fetchone(self):
+        return self.v
+
+
 # --- CLI contract ---------------------------------------------------------
 
 def _cli(*args):
