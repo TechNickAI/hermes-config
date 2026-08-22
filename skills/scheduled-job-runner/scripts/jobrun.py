@@ -78,7 +78,7 @@ def _install_signal_handlers() -> None:
                 "event": "job.finished", "state": "signal",
                 "signal": signal.Signals(signum).name,
                 "ts": _iso(_now()), "note": "runner terminated; child forwarded",
-            })
+            }, blocking=False)
         except Exception:
             pass
         sys.exit(EXIT_SIGNAL)
@@ -659,23 +659,36 @@ def build_env(spec: Spec, run_id: str | None = None) -> dict:
     return env
 
 
-def append_ledger(record: dict) -> None:
+def append_ledger(record: dict, blocking: bool = True) -> None:
     """Durable, queryable run history. Raw stdout grep is not a status API.
 
     Holds LEDGER_LOCK, not a lock on the ledger itself: the prune REPLACES the
     ledger path, so locking the ledger inode would let an append and a prune
-    proceed on two different inodes and silently discard this record. Credit to
-    Kenbot's PR #583 for finding this against a live trading ledger.
+    proceed on two different inodes and silently discard this record.
+
+    `blocking=False` is for SIGNAL HANDLERS. flock is not reentrant across file
+    descriptors, so a signal arriving while prune_state holds the lock would
+    make the handler block on the same thread forever -- graceful shutdown
+    hangs until SIGKILL and the signal row is never written at all. A racy
+    append beats a hung runner and a missing record.
     """
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         with open(LEDGER_LOCK, "a+", encoding="utf-8") as lk:
-            fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+            flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+            try:
+                fcntl.flock(lk.fileno(), flags)
+                locked = True
+            except OSError:
+                if blocking:
+                    raise
+                locked = False  # prune holds it; write anyway rather than hang
             try:
                 with open(LEDGER, "a", encoding="utf-8") as fh:
                     fh.write(json.dumps(record, ensure_ascii=False) + "\n")
             finally:
-                fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
+                if locked:
+                    fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
     except Exception:
         pass  # never let bookkeeping kill a job
 

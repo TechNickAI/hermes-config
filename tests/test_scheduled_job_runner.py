@@ -619,7 +619,7 @@ def test_a_finished_run_is_never_lost_to_a_concurrent_prune(home, monkeypatch):
     prune REPLACES the ledger path. If an append locks the ledger INODE rather
     than a stable side-lock, an append landing between the prune's snapshot and
     its replace is written to the doomed inode and discarded with it -- the run
-    silently vanishes. Found by Kenbot's PR #583 against a live trading ledger.
+    silently vanishes.
     """
     import importlib.util
     import multiprocessing as mp
@@ -663,3 +663,45 @@ def test_a_finished_run_is_never_lost_to_a_concurrent_prune(home, monkeypatch):
         assert kept == list(range(kept[0], kept[-1] + 1)), (
             f"gap in surviving runs {kept[:5]}..{kept[-5:]}: a finished run "
             "vanished mid-sequence, which retention alone cannot cause")
+
+
+def test_the_signal_handler_never_blocks_on_the_prune_lock(home):
+    """flock is not reentrant across file descriptors.
+
+    A signal arriving while prune holds the ledger lock would make the handler
+    block on the same thread forever: graceful shutdown hangs until SIGKILL and
+    the signal row is never written. A racy append beats a hung runner.
+    """
+    import fcntl
+    import importlib.util
+    import signal as sig
+
+    os.environ["HERMES_HOME"] = str(home)
+    spec_mod = importlib.util.spec_from_file_location("jobrun_sig", JOBRUN)
+    jr = importlib.util.module_from_spec(spec_mod)
+    spec_mod.loader.exec_module(jr)
+    jr.STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    fired = {}
+
+    def bail(signum, frame):
+        fired["deadlock"] = True
+        raise AssertionError("append_ledger blocked while the prune lock was held")
+
+    old = sig.signal(sig.SIGALRM, bail)
+    try:
+        with open(jr.LEDGER_LOCK, "a+", encoding="utf-8") as lk:
+            fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+            sig.alarm(5)
+            jr.append_ledger({"event": "job.finished", "state": "signal"},
+                             blocking=False)
+            sig.alarm(0)
+    finally:
+        sig.signal(sig.SIGALRM, old)
+
+    assert not fired.get("deadlock")
+    # The record must actually land, not merely not-hang.
+    rows = [json.loads(x) for x in jr.LEDGER.read_text().splitlines() if x.strip()]
+    assert any(r.get("state") == "signal" for r in rows), (
+        "the signal row was not written: a shutdown with no ledger record is "
+        "the failure this guards")
