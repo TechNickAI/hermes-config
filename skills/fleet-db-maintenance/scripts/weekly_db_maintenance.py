@@ -26,7 +26,28 @@ import subprocess
 import sys
 from pathlib import Path
 
-PROFILE = os.environ.get("DBMAINT_PROFILE", "kenbot")
+def _detect_profile() -> str:
+    """Which profile this launcher is maintaining.
+
+    Cron runs the script with no arguments and does not export a profile
+    name, so a hardcoded default would silently point every host's job at one
+    profile. HERMES_HOME is the thing that actually identifies the store:
+    ``~/.hermes`` is the root profile, ``~/.hermes/profiles/<name>`` is named.
+
+    Explicit DBMAINT_PROFILE still wins, for manual runs and tests.
+    """
+    override = os.environ.get("DBMAINT_PROFILE")
+    if override:
+        return override
+
+    home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+    if home.parent.name == "profiles":
+        return home.name
+    return "_root"
+
+
+PROFILE = _detect_profile()
+
 
 # Retention floor. Machine sessions idle longer than this are deleted.
 DAYS = 10
@@ -46,15 +67,20 @@ NEEDS_VACUUM_ABOVE_MB = 3000
 
 
 def main() -> int:
-    home = Path.home() / ".hermes"
-    script = home / "profiles" / PROFILE / "scripts" / "dbmaint.py"
-    if not script.is_file():
-        script = home / "scripts" / "dbmaint.py"
-    if not script.is_file():
+    root = Path.home() / ".hermes"
+    home = Path(os.environ.get("HERMES_HOME") or root)
+    # The launcher lives beside the profile it maintains.
+    candidates = [
+        home / "scripts" / "dbmaint.py",
+        root / "profiles" / PROFILE / "scripts" / "dbmaint.py",
+        root / "scripts" / "dbmaint.py",
+    ]
+    script = next((c for c in candidates if c.is_file()), None)
+    if script is None:
         print(f"[db-maintenance/{PROFILE}] dbmaint.py not found; job is a no-op.")
         return 1
 
-    python = home / "hermes-agent" / "venv" / "bin" / "python"
+    python = root / "hermes-agent" / "venv" / "bin" / "python"
     cmd = [
         str(python) if python.exists() else sys.executable,
         str(script),

@@ -791,6 +791,7 @@ def _weekly(tmp_path, report, rc=0, stderr=""):
         f"sys.exit({rc})\n"
     )
     env = dict(os.environ, HOME=str(tmp_path), DBMAINT_PROFILE="testprof")
+    env.pop("HERMES_HOME", None)
     return subprocess.run(
         [sys.executable, str(WEEKLY)],
         capture_output=True, text=True, env=env, timeout=120,
@@ -870,6 +871,30 @@ def test_weekly_never_vacuums(tmp_path):
     src = WEEKLY.read_text()
     assert '"--no-vacuum"' in src
     assert '"--apply"' in src
+
+
+def test_profile_autodetected_from_hermes_home(tmp_path, monkeypatch):
+    """Cron sets no profile argument, so a hardcoded default would point
+    every host's job at one profile. HERMES_HOME is the real identifier."""
+    import importlib.util
+    monkeypatch.delenv("DBMAINT_PROFILE", raising=False)
+
+    def load_with(home):
+        if home is None:
+            monkeypatch.delenv("HERMES_HOME", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_HOME", home)
+        spec = importlib.util.spec_from_file_location("weekly_x", WEEKLY)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m.PROFILE
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    assert load_with(str(tmp_path / ".hermes")) == "_root"
+    assert load_with(str(tmp_path / ".hermes/profiles/kenbot")) == "kenbot"
+    assert load_with(str(tmp_path / ".hermes/profiles/bosun")) == "bosun"
+    monkeypatch.setenv("DBMAINT_PROFILE", "explicit")
+    assert load_with(str(tmp_path / ".hermes/profiles/kenbot")) == "explicit"
 
 
 def test_weekly_is_chunked_and_deadlined(tmp_path):
