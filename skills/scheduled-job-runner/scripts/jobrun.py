@@ -199,6 +199,32 @@ def redact_argv(argv: list) -> list:
     return out
 
 
+def deployed_sha(cwd: str | None) -> str | None:
+    """Short git SHA of the tree a job runs from.
+
+    Ties an outcome to the exact code that produced it. Without it, the run
+    history and a deploy-drift watchdog can disagree about what actually ran,
+    which is how undeployed fixes stay invisible.
+    Never fatal: a job outside a git tree simply records nothing.
+    """
+    if not cwd:
+        return None
+    try:
+        # Expand ~ the same way execution and preflight do. Handing a literal
+        # tilde to `git -C` makes the job run fine while deployed_sha silently
+        # returns None — losing the field precisely where it matters.
+        path = os.path.expanduser(str(cwd))
+        r = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--short=12", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
 def _clamp(text: str, limit: int = MAX_CAPTURE_BYTES) -> str:
     if len(text) <= limit:
         return text
@@ -317,7 +343,7 @@ class Spec:
         "job_id", "command", "script", "runtime", "cwd", "timeout", "kill_grace",
         "overlap", "owner", "env", "timezone", "notify_on_success", "retries",
         "retry_backoff", "args", "python", "auto_install_uv", "output_policy",
-        "heartbeat_url",
+        "heartbeat_url", "critical",
     }
 
     def __init__(self, data: dict, path: Path | None = None):
@@ -381,6 +407,11 @@ class Spec:
         self.python = str(data.get("python", f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}"))
         self.auto_install_uv = bool(data.get("auto_install_uv", True))
         self.output_policy = str(data.get("output_policy", "passthrough"))
+        # A job with real-world consequences (money, orders, external side
+        # effects). Changes how a failure is ANNOUNCED and tightens validation.
+        # It deliberately does NOT change execution: the runner must not
+        # become a second, weaker authority over domain state.
+        self.critical = bool(data.get("critical", False))
         if self.output_policy not in ("passthrough", "silent"):
             raise ConfigError(
                 f"{self.job_id}: output_policy must be passthrough|silent"
@@ -389,6 +420,16 @@ class Spec:
                           ("retries", self.retries)):
             if val < 0:
                 raise ConfigError(f"{self.job_id}: {name} must be >= 0")
+        # A critical job must state its own timeout. Inheriting the default
+        # silently gives a money job a 900s ceiling it never asked for, which
+        # is longer than several real trading schedules.
+        if self.critical and "timeout" not in data:
+            raise ConfigError(
+                f"{self.job_id}: a critical job must declare an explicit "
+                "timeout shorter than its schedule interval. A job that can "
+                "outrun its own schedule needs a stated ceiling, not an "
+                "inherited default."
+            )
         if self.timeout <= 0:
             raise ConfigError(f"{self.job_id}: timeout must be > 0")
         if self.retry_backoff < 0:
@@ -552,10 +593,18 @@ def heartbeat(spec: Spec, suffix: str, body: str = "", run_id: str = "") -> str:
         return f"send_failed: {type(exc).__name__}"
 
 
-def build_env(spec: Spec) -> dict:
+def build_env(spec: Spec, run_id: str | None = None) -> dict:
     env = os.environ.copy()
     env.update({k: str(v) for k, v in spec.env.items()})
     env.setdefault("HERMES_HOME", str(HERMES_HOME))
+    if run_id:
+        # Exported so a domain-specific wrapper running INSIDE this job can
+        # adopt the same id instead of inventing its own. Two ledgers per run
+        # is fine; two identities for one run makes failures double-count.
+        env["JOBRUN_RUN_ID"] = run_id
+        env["JOBRUN_JOB_ID"] = spec.job_id
+        if spec.critical:
+            env["JOBRUN_CRITICAL"] = "1"
     return env
 
 
@@ -653,12 +702,19 @@ def _execute(spec: Spec, argv: list[str], env: dict) -> tuple:
     t0 = time.monotonic()
     proc = None
     try:
+        cwd = os.path.expanduser(spec.cwd) if spec.cwd else None
+        if cwd is None and HERMES_HOME.is_dir():
+            # Default to the profile home so relative paths in a job resolve
+            # predictably — but only if it exists. A non-existent cwd makes
+            # Popen raise FileNotFoundError, which reads as "script missing"
+            # and would blame the job for the runner's own bad default.
+            cwd = str(HERMES_HOME)
         proc = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=os.path.expanduser(spec.cwd) if spec.cwd else str(HERMES_HOME),
+            cwd=cwd,
             env=env,
             start_new_session=True,  # own process group: kill children too
         )
@@ -819,9 +875,15 @@ def cmd_failures(hours: int = 24) -> int:
             bad.append(r)
     if not bad:
         return EXIT_OK  # silent by design
-    print(f"{len(bad)} failed run(s) in the last {hours}h:")
+    # Critical failures first: an operator reading a long list should not have
+    # to scan for the money job among the report generators.
+    bad.sort(key=lambda r: (not r.get("critical"), str(r.get("finished_at"))))
+    ncrit = sum(1 for r in bad if r.get("critical"))
+    hdr = f"{len(bad)} failed run(s) in the last {hours}h"
+    print(f"{hdr} ({ncrit} CRITICAL):" if ncrit else f"{hdr}:")
     for r in bad:
-        print(f"  {r.get('finished_at')}  {r.get('job_id')}  {r.get('state')} "
+        mark = "CRITICAL " if r.get("critical") else ""
+        print(f"  {mark}{r.get('finished_at')}  {r.get('job_id')}  {r.get('state')} "
               f"exit={r.get('exit_code')}  {r.get('log_path','')}")
     return EXIT_OK
 
@@ -883,7 +945,11 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         }, indent=2))
         return EXIT_OK
 
-    env = build_env(spec)
+    env = build_env(spec, run_id=run_id)
+    # Resolve the SHA ONCE, before launch. A deploy that lands mid-run would
+    # otherwise attribute a completed run to the commit it did NOT run, and the
+    # ledger and the failure card could disagree with each other.
+    sha = deployed_sha(spec.cwd)
 
     with Lock(spec.job_id, spec.overlap) as lock:
         if not lock.acquired:
@@ -932,6 +998,8 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             "run_id": run_id,
             "host": os.uname().nodename,
             "owner": spec.owner,
+            "critical": spec.critical,
+            "deployed_sha": sha,
             "state": state,
             "exit_code": rc,
             "signal": signame,
@@ -978,9 +1046,18 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             "wrapper_error": "runner error",
         }.get(state, state)
         lines = [
-            f"⚠️ {spec.job_id} {head}",
+            (f"🛑 CRITICAL — {spec.job_id} {head}" if spec.critical
+             else f"⚠️ {spec.job_id} {head}"),
             f"Host: {os.uname().nodename}  ·  Duration: {dur:.1f}s  ·  Attempts: {attempt}",
         ]
+        if spec.critical:
+            # A money job that stopped working is not the same event as a
+            # report generator that stopped working. Say so in the first line.
+            lines.append("This job moves real money. Verify state before rerunning.")
+        # Reuse the SHA captured BEFORE launch, so the card and the ledger
+        # can never disagree about which commit produced this outcome.
+        if sha:
+            lines.append(f"Code: {sha}")
         if spec.owner:
             lines.append(f"Owner: {spec.owner}")
         detail = (err.strip() or out.strip())

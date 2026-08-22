@@ -258,3 +258,135 @@ def test_selftest_does_not_pollute_the_real_ledger(home):
     # and the operator view stays quiet
     r = _run(home, "--failures", "24")
     assert r.stdout.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# Capabilities required before a consequential (money / order-placing) job can
+# migrate: a labelled failure, a stated timeout, a recorded code version, and a
+# shared identity with any inner wrapper.
+# ---------------------------------------------------------------------------
+
+
+def test_critical_job_failure_is_labelled(home):
+    """A failed money job must not read like a failed report generator."""
+    script = home / "scripts" / "boom.py"
+    script.write_text('import sys\nsys.exit(9)\n')
+    _spec(home, "money",
+          f'job_id = "money"\nscript = "{script}"\nruntime = "python"\n'
+          "critical = true\ntimeout = 60\n")
+    r = _run(home, "--spec", "money")
+    assert r.returncode == EXIT_CHILD
+    assert "CRITICAL" in r.stdout, r.stdout
+    ledger = (home / "jobstate" / "runs.jsonl").read_text()
+    assert '"critical": true' in ledger.lower()
+
+
+def test_noncritical_failure_is_not_labelled_critical(home):
+    """Control: the label must mean something, so it can't be on everything."""
+    script = home / "scripts" / "boom2.py"
+    script.write_text('import sys\nsys.exit(3)\n')
+    _spec(home, "report",
+          f'job_id = "report"\nscript = "{script}"\nruntime = "python"\n')
+    r = _run(home, "--spec", "report")
+    assert r.returncode == EXIT_CHILD
+    assert "CRITICAL" not in r.stdout
+
+
+def test_deployed_sha_is_recorded_when_job_runs_from_a_git_tree(home):
+    """Ties an outcome to the exact code that produced it.
+
+    Without this, the run history and a deploy-drift watchdog can disagree
+    about what actually ran.
+    """
+    import subprocess as sp
+    repo = home / "release"
+    repo.mkdir()
+    sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    sp.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    sp.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "job.py").write_text('print("ran")\n')
+    sp.run(["git", "add", "-A"], cwd=repo, check=True)
+    sp.run(["git", "commit", "-qm", "x"], cwd=repo, check=True)
+    sha = sp.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                 capture_output=True, text=True).stdout.strip()
+
+    _spec(home, "shaj",
+          f'job_id = "shaj"\nscript = "{repo}/job.py"\nruntime = "python"\n'
+          f'cwd = "{repo}"\n')
+    r = _run(home, "--spec", "shaj")
+    assert r.returncode == EXIT_OK
+    ledger = (home / "jobstate" / "runs.jsonl").read_text()
+    assert sha[:12] in ledger, "deployed sha not recorded"
+
+
+def test_run_id_can_be_shared_with_an_inner_wrapper(home):
+    """Nested wrappers must not double-count one run.
+
+    The agent already runs its own domain wrapper inside some jobs. If both
+    ledgers invent their own id, one execution appears as two records and
+    failure counts inflate. jobrun exports its run id so the inner recorder
+    can adopt it.
+    """
+    script = home / "scripts" / "echo_run.py"
+    script.write_text(
+        'import os\nprint(os.environ.get("JOBRUN_RUN_ID", "<missing>"))\n'
+    )
+    _spec(home, "nested",
+          f'job_id = "nested"\nscript = "{script}"\nruntime = "python"\n')
+    r = _run(home, "--spec", "nested")
+    assert r.returncode == EXIT_OK
+    emitted = r.stdout.strip()
+    assert emitted != "<missing>", "JOBRUN_RUN_ID not exported to the child"
+    ledger = (home / "jobstate" / "runs.jsonl").read_text()
+    assert emitted in ledger, "child's run id does not match the ledger row"
+
+
+def test_timeout_shorter_than_interval_is_enforced_for_critical_jobs(home):
+    """A critical job must declare its OWN timeout.
+
+    Inheriting the default silently hands a consequential job a ceiling it
+    never asked for, possibly longer than its own schedule interval.
+    """
+    script = home / "scripts" / "ok.py"
+    script.write_text("pass\n")
+    _spec(home, "nolimit",
+          f'job_id = "nolimit"\nscript = "{script}"\nruntime = "python"\n'
+          "critical = true\n")  # no timeout key at all
+    r = _run(home, "--spec", "nolimit")
+    assert r.returncode == EXIT_CONFIG
+    assert "timeout" in r.stdout.lower()
+
+
+def test_failures_view_puts_critical_first(home):
+    """An operator scanning a failure list must see the money job first."""
+    ok = home / "scripts" / "f.py"
+    ok.write_text("import sys\nsys.exit(1)\n")
+    _spec(home, "aaa-report", f'job_id = "aaa-report"\nscript = "{ok}"\nruntime = "python"\n')
+    _spec(home, "zzz-money",
+          f'job_id = "zzz-money"\nscript = "{ok}"\nruntime = "python"\n'
+          "critical = true\ntimeout = 60\n")
+    _run(home, "--spec", "aaa-report")
+    _run(home, "--spec", "zzz-money")
+    r = _run(home, "--failures", "24")
+    assert "CRITICAL" in r.stdout
+    lines = [x for x in r.stdout.splitlines() if "-report" in x or "-money" in x]
+    assert "zzz-money" in lines[0], f"critical job not listed first: {lines}"
+
+
+def test_selftest_still_passes_with_new_capabilities(home):
+    r = _run(home, "--selftest", timeout=600)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_runs_when_the_profile_home_does_not_exist_yet(tmp_path):
+    """A fresh profile must not fail every job with FileNotFoundError.
+
+    Defaulting the child's cwd to the profile home is right, but only if that
+    directory exists. Otherwise Popen raises FileNotFoundError and the runner
+    blames the job for its own bad default.
+    """
+    missing = tmp_path / "not-created-yet"
+    env = dict(os.environ, HERMES_HOME=str(missing))
+    r = subprocess.run([sys.executable, str(JOBRUN), "--selftest"],
+                       capture_output=True, text=True, env=env, timeout=600)
+    assert r.returncode == 0, r.stdout[-2000:]
