@@ -73,9 +73,46 @@ Always pass `--older-than`.
 refuses anything else even when asked explicitly. `webhook` is deliberately
 excluded: it can carry durable operational history, not just transient events.
 
-The run additionally counts non-machine sessions before and after retention and
-**aborts if that number moved at all**. A retention sweep that touches one
-human conversation is a failed run, not a successful one.
+The run snapshots the **identity set** of every non-machine session before
+retention and requires it to remain a **subset** afterwards. Identities, not a
+count: the gateway is live, so it can create a session while a buggy prune
+deletes one, leaving the count identical and the loss invisible. New sessions
+arriving mid-run are fine; a missing one aborts the run.
+
+`COALESCE(source,'')` matters here — a NULL source would otherwise fall
+through `NOT IN (...)` under SQL's NULL semantics and be treated as prunable.
+
+## Target pinning (two silent no-ops)
+
+Both verified against the live CLI:
+
+* **`hermes -p _root` is REJECTED.** argparse prints a usage banner and exits
+  **0**, so a wrapper that only checks the return code reports success while
+  deleting nothing. The root profile is selected by pointing `HERMES_HOME` at
+  `~/.hermes` with **no** `-p` flag. The script treats a usage banner as a
+  failure.
+* **`HERMES_PROFILE` is silently ignored** by the CLI. `HERMES_HOME` is what
+  actually decides which database is opened, so the script sets it explicitly
+  rather than inheriting whatever the scheduler exported. Without this it can
+  COUNT one database while the subprocess DELETES from another.
+
+## Counts are reconciled, not parsed
+
+On an `--apply` run the CLI prints only `Pruned N session(s).` and lists
+nothing, so any listing-based parser reports 0 for a successful deletion. The
+script diffs the real per-source row count in the database and reports that.
+
+For dry runs it parses the header count and **refuses to report an unverified
+number** — returning 0 for output it did not understand is exactly what makes
+a broken pruner look healthy for months.
+
+## Concurrency
+
+Each run takes an exclusive `flock` on `<db>.maint.lock` for the whole
+protocol. A duplicate scheduler dispatch or a manual run overlapping the weekly
+job would otherwise interleave two multi-step protocols on one file — racing
+each other's snapshots, contending during VACUUM, and deleting a backup the
+other run still needs. SQLite serializes transactions, not this protocol.
 
 ## The WAL VACUUM trap
 

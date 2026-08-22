@@ -344,7 +344,7 @@ def test_human_count_abort_actually_triggers(db, monkeypatch):
     mod = _load()
     monkeypatch.setattr(mod, "resolve_db", lambda p: db)
 
-    def rogue(profile, days, sources, apply, log):
+    def rogue(profile, days, sources, apply, log, db=None):
         conn = sqlite3.connect(str(db))
         conn.execute(
             "DELETE FROM sessions WHERE id = "
@@ -355,7 +355,7 @@ def test_human_count_abort_actually_triggers(db, monkeypatch):
         return {"cron": 1}
 
     monkeypatch.setattr(mod, "prune", rogue)
-    with pytest.raises(RuntimeError, match="human session count changed"):
+    with pytest.raises(RuntimeError, match="human session\\(s\\) disappeared"):
         mod.run(_args(), lambda m: None)
 
 
@@ -368,7 +368,7 @@ def test_invariant_checked_even_when_prune_raises(db, monkeypatch):
     mod = _load()
     monkeypatch.setattr(mod, "resolve_db", lambda p: db)
 
-    def rogue_then_fail(profile, days, sources, apply, log):
+    def rogue_then_fail(profile, days, sources, apply, log, db=None):
         conn = sqlite3.connect(str(db))
         conn.execute(
             "DELETE FROM sessions WHERE id = "
@@ -379,7 +379,7 @@ def test_invariant_checked_even_when_prune_raises(db, monkeypatch):
         raise RuntimeError("prune timed out")
 
     monkeypatch.setattr(mod, "prune", rogue_then_fail)
-    with pytest.raises(RuntimeError, match="human session count changed"):
+    with pytest.raises(RuntimeError, match="human session\\(s\\) disappeared"):
         mod.run(_args(), lambda m: None)
 
 
@@ -388,7 +388,7 @@ def test_prune_failure_propagates(db, monkeypatch):
     mod = _load()
     monkeypatch.setattr(mod, "resolve_db", lambda p: db)
 
-    def boom(profile, days, sources, apply, log):
+    def boom(profile, days, sources, apply, log, db=None):
         raise RuntimeError("cli exploded")
 
     monkeypatch.setattr(mod, "prune", boom)
@@ -535,6 +535,131 @@ def test_vacuum_proceeds_within_budget(db, monkeypatch):
     monkeypatch.setattr(mod, "integrity", lambda d: "ok")
     mod.run(_args(no_vacuum=False, vacuum_min_mb=0), lambda m: None)
     assert compacted, "refused a safe 22s compaction"
+
+
+# --- identity invariant, lock, and target pinning -------------------------
+
+def test_swap_delete_plus_insert_is_caught(db, monkeypatch):
+    """Equal counts must NOT pass when a human session was replaced.
+
+    The gateway is live: it can create a session while prune wrongly deletes
+    one. A count-based check sees 3 -> 3 and reports success. Identity
+    tracking is the only thing that catches this.
+    """
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+
+    def rogue_swap(profile, days, sources, apply, log, db=None):
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "DELETE FROM sessions WHERE id = "
+            "(SELECT id FROM sessions WHERE source='telegram' LIMIT 1)"
+        )
+        # ...and the gateway creates a new one, keeping the count identical.
+        conn.execute(
+            "INSERT INTO sessions VALUES ('tg_new','telegram',?,?,NULL,0,0)",
+            (time.time(), time.time()),
+        )
+        conn.commit()
+        conn.close()
+        return {"cron": 1}
+
+    monkeypatch.setattr(mod, "prune", rogue_swap)
+    with pytest.raises(RuntimeError, match="disappeared"):
+        mod.run(_args(), lambda m: None)
+
+
+def test_new_sessions_during_run_are_allowed(db, monkeypatch):
+    """A session ARRIVING mid-run is normal and must not fail the run."""
+    mod = _load()
+    monkeypatch.setattr(mod, "resolve_db", lambda p: db)
+
+    def busy_gateway(profile, days, sources, apply, log, db=None):
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO sessions VALUES ('tg_arrived','telegram',?,?,NULL,0,0)",
+            (time.time(), time.time()),
+        )
+        conn.commit()
+        conn.close()
+        return {"cron": 0}
+
+    monkeypatch.setattr(mod, "prune", busy_gateway)
+    report = mod.run(_args(), lambda m: None)
+    assert report["probe_ok"] is True
+    assert report["human_sessions_after"] == report["human_sessions_before"] + 1
+
+
+def test_null_source_sessions_are_protected(db):
+    """A NULL source must count as human, not fall through NOT IN."""
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO sessions VALUES ('weird',NULL,?,?,NULL,0,0)",
+        (time.time(), time.time()),
+    )
+    conn.commit()
+    conn.close()
+    assert "weird" in _load()._human_session_ids(db)
+
+
+def test_maintenance_lock_is_exclusive(db):
+    """A second concurrent run must be refused, not interleaved."""
+    mod = _load()
+    with mod.MaintenanceLock(db):
+        with pytest.raises(RuntimeError, match="another maintenance run"):
+            with mod.MaintenanceLock(db):
+                pass
+
+
+def test_maintenance_lock_releases(db):
+    mod = _load()
+    with mod.MaintenanceLock(db):
+        pass
+    with mod.MaintenanceLock(db):  # must not raise
+        pass
+
+
+def test_root_profile_omits_dash_p_and_pins_hermes_home():
+    """`hermes -p _root` is REJECTED by argparse; the root profile is
+    selected via HERMES_HOME with no -p flag. Getting this wrong makes the
+    prune silently no-op while the wrapper reports success."""
+    mod = _load()
+    cmd, env = mod._prune_command("/bin/hermes", "_root", "cron", 10, False)
+    assert "-p" not in cmd
+    assert env["HERMES_HOME"].endswith("/.hermes")
+
+    cmd2, env2 = mod._prune_command("/bin/hermes", "bosun", "cron", 10, True)
+    assert cmd2[1:3] == ["-p", "bosun"]
+    assert env2["HERMES_HOME"].endswith("/profiles/bosun")
+    assert "--yes" in cmd2
+
+
+def test_usage_banner_is_treated_as_failure(tmp_path, monkeypatch):
+    """argparse prints usage and exits 0 on a bad flag -- that is a silent
+    no-op, and must not be reported as a successful prune."""
+    mod = _load()
+    fake = _fake_hermes(tmp_path, "usage: hermes [-h] [--version]\n", rc=0)
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: str(fake))
+    with pytest.raises(RuntimeError, match="usage banner"):
+        mod.prune("p", 10, ["cron"], False, lambda m: None)
+
+
+def test_applied_count_comes_from_database_not_stdout(db, tmp_path, monkeypatch):
+    """With --yes the CLI prints only 'Pruned N session(s).' and lists
+    nothing, so the count must be reconciled against the database."""
+    mod = _load()
+
+    def fake_delete(cmd, **kw):
+        conn = sqlite3.connect(str(db))
+        conn.execute("DELETE FROM sessions WHERE source='cron'")
+        conn.commit()
+        conn.close()
+        return subprocess.CompletedProcess(cmd, 0, "Pruned 5 session(s).\n", "")
+
+    monkeypatch.setattr(mod, "_hermes_bin", lambda: "/bin/true")
+    monkeypatch.setattr(mod.subprocess, "run", fake_delete)
+    out = mod.prune("p", 10, ["cron"], True, lambda m: None, db=db)
+    assert out["cron"] == 5  # the 5 cron rows the fixture created
 
 
 # --- CLI contract ---------------------------------------------------------

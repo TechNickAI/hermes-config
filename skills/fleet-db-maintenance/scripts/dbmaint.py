@@ -45,6 +45,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 EXIT_OK = 0
 EXIT_CONFIG = 2
@@ -140,18 +141,72 @@ def _counts(db: Path) -> dict:
     return {}
 
 
-def _human_session_count(db: Path) -> int:
-    """Sessions that must survive maintenance. The safety invariant."""
+def _human_session_ids(db: Path) -> set:
+    """The IDENTITIES of sessions that must survive maintenance.
+
+    Identities, not a count. A count is fooled two ways on a live gateway:
+    it deletes one human session while the gateway creates another (equal
+    counts, real data loss), and it cannot tell you WHICH row vanished. The
+    invariant we actually want is that the before-set remains a SUBSET of the
+    after-set -- new sessions arriving mid-run are fine, missing ones are not.
+    """
     conn = _connect(db, timeout=30)
     try:
         placeholders = ",".join("?" for _ in PRUNABLE_SOURCES)
-        return conn.execute(
-            f"SELECT COUNT(*) FROM sessions "
+        rows = conn.execute(
+            f"SELECT id FROM sessions "
             f"WHERE COALESCE(source,'') NOT IN ({placeholders})",
             PRUNABLE_SOURCES,
-        ).fetchone()[0]
+        ).fetchall()
+        return {r[0] for r in rows}
     finally:
         conn.close()
+
+
+def _human_session_count(db: Path) -> int:
+    """Kept for reporting; the load-bearing check is _human_session_ids."""
+    return len(_human_session_ids(db))
+
+
+class MaintenanceLock:
+    """Cross-process exclusive lock for one database.
+
+    Without this, a duplicate scheduler dispatch or a manual run overlapping
+    the weekly job can interleave two multi-step protocols on the same file:
+    racing each other's before/after snapshots, contending during VACUUM, and
+    deleting a backup the other run still needs. SQLite serializes individual
+    transactions, not this protocol.
+    """
+
+    def __init__(self, db: Path):
+        self.path = Path(str(db) + ".maint.lock")
+        self._fh = None
+
+    def __enter__(self):
+        import fcntl
+
+        self._fh = open(self.path, "w")
+        try:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self._fh.close()
+            self._fh = None
+            raise RuntimeError(
+                f"another maintenance run holds {self.path}; refusing to "
+                f"run two protocols against the same database"
+            )
+        self._fh.write(f"{os.getpid()} {_utc()}\n")
+        self._fh.flush()
+        return self
+
+    def __exit__(self, *exc):
+        import fcntl
+
+        if self._fh:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            self._fh.close()
+        self.path.unlink(missing_ok=True)
+        return False
 
 
 def _hermes_bin() -> str | None:
@@ -164,12 +219,31 @@ def _hermes_bin() -> str | None:
     return shutil.which("hermes")
 
 
-def prune(profile: str, days: int, sources, apply: bool, log) -> dict:
+def _source_count(db: Path, src: str) -> int:
+    conn = _connect(db, timeout=30)
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE source = ?", (src,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def prune(
+    profile: str, days: int, sources, apply: bool, log,
+    db: Optional[Path] = None,
+) -> dict:
     """Source-scoped retention via the supported CLI.
 
     We shell out to ``hermes sessions prune`` rather than issuing DELETEs
     ourselves so that lineage handling and FTS index maintenance stay the
     responsibility of the code that owns the schema.
+
+    Counts are RECONCILED against the database rather than trusted from
+    stdout: on an ``--yes`` run the CLI prints only ``Pruned N session(s).``
+    and lists nothing, so any listing-based count reports 0 for a successful
+    deletion. When ``db`` is provided we diff the real per-source row count
+    and report that, using stdout only as a cross-check.
     """
     binary = _hermes_bin()
     if not binary:
@@ -177,27 +251,35 @@ def prune(profile: str, days: int, sources, apply: bool, log) -> dict:
 
     result = {}
     for src in sources:
-        cmd = [
-            binary, "-p", profile, "sessions", "prune",
-            "--source", src, "--older-than", str(days),
-        ]
-        cmd.append("--yes" if apply else "--dry-run")
+        cmd, env = _prune_command(binary, profile, src, days, apply)
+        before = _source_count(db, src) if (db and apply) else None
 
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=1800, env=env
+        )
         out = (proc.stdout or "") + (proc.stderr or "")
 
+        # argparse rejects an unknown -p and exits 0 after printing usage, so
+        # a usage banner is a silent no-op, not a success.
+        if out.lstrip().startswith("usage:"):
+            raise RuntimeError(
+                f"prune {src} rejected by the CLI (usage banner). "
+                f"Command: {' '.join(cmd)}"
+            )
         if proc.returncode != 0:
             raise RuntimeError(f"prune {src} exited {proc.returncode}: {out[-400:]}")
 
-        # Parse the header line: "N session(s) match (...)" / "Pruned N session(s)."
-        #
-        # Do NOT count listed candidate rows, and do NOT assume session ids are
-        # prefixed with the source name. Measured: cron ids look like
-        # `cron_<hash>_<stamp>` but SUBAGENT ids look like `20260701_103305_1d2614`
-        # -- a prefix-matching parser silently reports 0 while 124 sessions are
-        # deleted, which reads exactly like "retention is working, nothing to do".
-        # The CLI also truncates the listing to 15 rows when applying, so row
-        # counting under-reports regardless.
+        if before is not None:
+            # Ground truth: what actually left the database.
+            deleted = before - _source_count(db, src)
+            result[src] = deleted
+            log(f"  {src}: {deleted} session(s) deleted (verified in db)")
+            continue
+
+        # Dry-run: parse the header count. Never infer from listed row
+        # prefixes -- cron ids look like cron_<hash>_<stamp> but subagent ids
+        # look like 20260701_103305_1d2614, so prefix matching reports 0
+        # while 124 sessions are really eligible.
         matched = None
         for line in out.splitlines():
             m = re.search(r"(\d+)\s+session\(s\)", line)
@@ -214,7 +296,7 @@ def prune(profile: str, days: int, sources, apply: bool, log) -> dict:
                 )
 
         result[src] = matched
-        log(f"  {src}: {matched} session(s) {'deleted' if apply else 'matched (dry-run)'}")
+        log(f"  {src}: {matched} session(s) matched (dry-run)")
 
     return result
 
@@ -296,12 +378,41 @@ def integrity(db: Path) -> str:
         conn.close()
 
 
-def resolve_db(profile: str) -> Path:
-    """Named profiles live under profiles/<name>/; the root profile does not."""
+def profile_home(profile: str) -> Path:
+    """The HERMES_HOME that owns this profile's state.db."""
     home = Path.home() / ".hermes"
     if profile in ("_root", "root", ""):
-        return home / "state.db"
-    return home / "profiles" / profile / "state.db"
+        return home
+    return home / "profiles" / profile
+
+
+def resolve_db(profile: str) -> Path:
+    """Named profiles live under profiles/<name>/; the root profile does not."""
+    return profile_home(profile) / "state.db"
+
+
+def _prune_command(binary: str, profile: str, src: str, days: int, apply: bool):
+    """Build the CLI invocation and the environment that pins its target.
+
+    Two traps, both verified against the live CLI:
+
+    * ``hermes -p _root`` is REJECTED -- argparse prints usage and the prune
+      never runs, while a naive wrapper reports success. The root profile is
+      selected by pointing HERMES_HOME at ~/.hermes with NO -p flag.
+    * ``HERMES_PROFILE`` is silently ignored, so it cannot be used to steer
+      the subprocess. ``HERMES_HOME`` is what actually decides which database
+      is opened, so we set it explicitly rather than inheriting whatever the
+      scheduler happened to export. Without this the script can COUNT one
+      database while the subprocess DELETES from another.
+    """
+    env = dict(os.environ)
+    env["HERMES_HOME"] = str(profile_home(profile))
+    cmd = [binary]
+    if profile not in ("_root", "root", ""):
+        cmd += ["-p", profile]
+    cmd += ["sessions", "prune", "--source", src, "--older-than", str(days)]
+    cmd.append("--yes" if apply else "--dry-run")
+    return cmd, env
 
 
 def run(args, log) -> dict:
@@ -332,11 +443,11 @@ def run(args, log) -> dict:
 
     report["before"] = _db_sizes(db)
     report["counts_before"] = _counts(db)
-    humans_before = _human_session_count(db)
-    report["human_sessions_before"] = humans_before
+    humans_before = _human_session_ids(db)
+    report["human_sessions_before"] = len(humans_before)
     log(f"{args.profile}: {report['before']['db_mb']} MB, "
         f"{report['counts_before'].get('sessions_total', 0)} sessions "
-        f"({humans_before} human)")
+        f"({len(humans_before)} human)")
 
     # Disk preflight and backup happen BEFORE the first destructive operation.
     #
@@ -364,7 +475,7 @@ def run(args, log) -> dict:
     prune_error = None
     try:
         report["pruned"] = prune(
-            args.profile, args.days, args.sources, args.apply, log
+            args.profile, args.days, args.sources, args.apply, log, db=db
         )
     except Exception as exc:
         # Do NOT return here. A failed prune may still have deleted rows, so
@@ -375,15 +486,19 @@ def run(args, log) -> dict:
         report["pruned"] = {"error": str(exc)}
         log(f"  prune FAILED: {exc}")
 
-    # Safety invariant: retention must never reduce the human-session count.
+    # Safety invariant: every human session present before must still be
+    # present after. Subset, not count equality -- the gateway may legitimately
+    # create new sessions mid-run, but none may disappear.
     # Evaluated on both the success and failure paths.
-    humans_after = _human_session_count(db)
-    report["human_sessions_after"] = humans_after
-    if humans_after != humans_before:
+    humans_after = _human_session_ids(db)
+    report["human_sessions_after"] = len(humans_after)
+    lost = humans_before - humans_after
+    if lost:
         detail = f" Backup preserved at {bkp}." if bkp else ""
+        sample = ", ".join(sorted(lost)[:5])
         raise RuntimeError(
-            f"ABORT: human session count changed "
-            f"{humans_before} -> {humans_after}.{detail}"
+            f"ABORT: {len(lost)} human session(s) disappeared during "
+            f"retention (e.g. {sample}).{detail}"
         )
     if prune_error is not None:
         raise RuntimeError(f"retention failed: {prune_error}")
@@ -497,7 +612,13 @@ def main(argv=None) -> int:
             print(msg, flush=True)
 
     try:
-        report = run(args, log)
+        from pathlib import Path as _P
+        _db = resolve_db(args.profile)
+        if _db.is_file():
+            with MaintenanceLock(_db):
+                report = run(args, log)
+        else:
+            report = run(args, log)
     except (ValueError, argparse.ArgumentError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_CONFIG
