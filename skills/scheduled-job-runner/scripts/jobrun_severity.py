@@ -368,6 +368,7 @@ def classify(
     allow_critical: bool = False,
     strict_domain_codes: bool = True,
     sanitize=None,
+    exit_map: dict | None = None,
 ) -> Outcome:
     """
     Reconcile every severity channel into one verdict.
@@ -385,6 +386,12 @@ def classify(
     5. CRITICAL is clamped unless the job is permitted to reach it. The
        permission is the four-condition test, enforced by the caller via
        allow_critical.
+
+    ``exit_map`` translates a script's OWN exit convention before step 2. It
+    applies ONLY to a child_failure: a job killed by the harness or a timeout is
+    a runner-derived fact, and no spec may describe its way out of it. This is
+    how a script whose contract is "1 = tripwire fired" reports a fired tripwire
+    as noteworthy instead of as a failure alarm.
 
     ``state`` is the runner's own terminal state: "success", "child_failure",
     "timeout", "signal", "wrapper_error", "skipped_overlap".
@@ -427,7 +434,19 @@ def classify(
     # ---- 2. Exit code sets the floor ------------------------------------
     code = 0 if exit_code is None else int(exit_code)
 
-    if strict_domain_codes and code in FORBIDDEN_DOMAIN_CODES:
+    # A per-job exit_map translates the script's own convention BEFORE any
+    # reserved-code check. It applies only to a real child exit: runner-derived
+    # terminations were already returned above and cannot be remapped.
+    mapped = None
+    if exit_map and state == "child_failure" and code in exit_map:
+        mapped = exit_map[code]
+
+    if mapped is not None:
+        floor = mapped
+        reason = f"exit_{code}_mapped_{mapped}"
+        notes.append(
+            f"exit {code} mapped to {mapped} by the job's declared convention")
+    elif strict_domain_codes and code in FORBIDDEN_DOMAIN_CODES:
         raise SpecSeverityError(
             f"child exited {code}, which is RESERVED. Codes 3-9 must never "
             f"carry domain meaning: a job once encoded a research state as "
@@ -435,8 +454,7 @@ def classify(
             f"correctly. Use 0/10/20/30 and put domain state in the "
             f"sentinel's reason_code."
         )
-
-    if code in CHILD_EXIT_SEVERITY:
+    elif code in CHILD_EXIT_SEVERITY:
         floor = CHILD_EXIT_SEVERITY[code]
         reason = f"exit_{code}"
     elif code == 0:

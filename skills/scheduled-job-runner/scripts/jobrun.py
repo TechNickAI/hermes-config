@@ -390,6 +390,14 @@ class Spec:
         # script and refuses to run on a dangerous disagreement (declaring
         # paper on a live script). Optional — omitted means "trust detection".
         "money",
+        # v2: per-job translation of a script's OWN exit convention into the
+        # outcome ladder. Existing scripts predate the ladder and each invented
+        # their own codes ("0 healthy, 1 tripwire fired, 2 watchdog broken").
+        # Without this the runner can only read a non-zero code as "failed",
+        # which is how a fired tripwire — the script working exactly as
+        # designed — got reported as a failure alarm. Rewriting every script's
+        # exit codes would be a riskier change than describing them.
+        "exit_map",
     }
 
     def __init__(self, data: dict, path: Path | None = None):
@@ -467,6 +475,34 @@ class Spec:
                 f"{self.job_id}: money must be live|paper|none, "
                 f"got {self.money!r}"
             )
+        # exit_map: {"1": "noteworthy", "2": "broken"} — the script's own
+        # convention, stated once, in the spec. Keys are exit codes (TOML keys
+        # are strings), values are ladder outcomes.
+        self.exit_map = {}
+        raw_map = data.get("exit_map") or {}
+        if not isinstance(raw_map, dict):
+            raise ConfigError(f"{self.job_id}: exit_map must be a table")
+        _ladder = {"healthy", "noteworthy", "degraded", "broken", "critical"}
+        for k, v in raw_map.items():
+            try:
+                code = int(k)
+            except (TypeError, ValueError):
+                raise ConfigError(
+                    f"{self.job_id}: exit_map key {k!r} is not an exit code"
+                ) from None
+            if v not in _ladder:
+                raise ConfigError(
+                    f"{self.job_id}: exit_map[{k}] = {v!r} is not one of "
+                    f"{sorted(_ladder)}"
+                )
+            if code == 0 and v != "healthy":
+                # Exit 0 means the process succeeded. Letting a spec relabel it
+                # as a failure would put the runner in disagreement with the
+                # operating system about whether the job worked.
+                raise ConfigError(
+                    f"{self.job_id}: exit_map cannot remap exit 0 (got {v!r})"
+                )
+            self.exit_map[code] = v
         # Where a FAILURE goes. Hermes cron drops the alert entirely when a job
         # is deliver=local (_resolve_delivery_targets returns [], and
         # _deliver_result returns None, which the scheduler cannot tell apart
@@ -501,10 +537,24 @@ class Spec:
 
     @classmethod
     def load(cls, name: str) -> "Spec":
+        # A bare job id must resolve to SPEC_DIR/<name>.toml. Treating it as a
+        # relative path first means any same-named FILE OR DIRECTORY in the
+        # current working directory shadows the real spec — and cron passes
+        # bare names with the profile dir as cwd, so a job id that happens to
+        # match a state directory fails with "Is a directory" and never runs.
+        # Found on a live profile: two watch jobs each had a state dir named
+        # exactly like their job id.
         p = Path(name)
-        if not p.exists():
-            p = SPEC_DIR / f"{name}.toml"
-        if not p.exists():
+        if p.suffix == ".toml" and p.is_file():
+            pass                       # explicit path to a spec file
+        else:
+            cand = SPEC_DIR / f"{name}.toml"
+            if cand.is_file():
+                p = cand
+            elif not p.is_file():
+                raise ConfigError(
+                    f"spec not found: {name} (looked in {SPEC_DIR})")
+        if not p.is_file():
             raise ConfigError(f"spec not found: {name} (looked in {SPEC_DIR})")
         try:
             data = tomllib.loads(p.read_text(encoding="utf-8"))
@@ -1207,6 +1257,37 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             log_path=log_path, run_id=run_id,
         )
 
+        # A NOTEWORTHY outcome is not a failure. A script whose convention is
+        # "1 = tripwire fired" did its job when the tripwire fired: the content
+        # is the point, and the runner must deliver it as news rather than
+        # wrap it in a failure banner and hand the scheduler a non-zero code
+        # that becomes a second failure banner on top.
+        if getattr(outcome, "severity", "") == "noteworthy":
+            # Render this as NEWS, not as a defanged failure card. A tripwire
+            # report whose body is the point must not carry "Repair:" or
+            # "Error:" lines — those describe a broken job, and this job
+            # worked. The script's own stdout IS the message.
+            body = (out or "").strip() or (err or "").strip()
+            lines = [f"· {spec.job_id}"]
+            if body:
+                lines.append(body)
+            if spec.owner:
+                lines.append(f"Owner: {spec.owner}")
+            news = "\n".join(lines)
+            print(news)
+            notify_status = (notify_failure(spec, news)
+                             if spec.notify_target else "n/a")
+            append_ledger({
+                "event": "job.noteworthy",
+                "ts": _iso(_now()),
+                "job_id": spec.job_id,
+                "run_id": run_id,
+                "exit_code": rc,
+                "reason_code": getattr(outcome, "reason_code", None),
+                "notify_status": notify_status,
+            })
+            return EXIT_OK
+
         # DEDUP ACTUALLY SUPPRESSES HERE. Counting occurrences without gating
         # delivery just produced an annotated flood — the first cut printed and
         # notified on every tick while displaying a growing occurrence count.
@@ -1369,6 +1450,7 @@ def _v2_classify(spec, state, rc, raw_out, money="none"):
             # Free text from the child is untrusted: run it through the same
             # redaction as stdout/stderr before it can reach a card or a chat.
             sanitize=redact,
+            exit_map=spec.exit_map,
         )
     except Exception as exc:
         print(f"(severity classification failed: {exc})", file=sys.stderr)

@@ -315,3 +315,115 @@ def test_leak_does_not_reach_the_card_end_to_end():
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# --------------------------------------------------------------------------
+# Found on a live profile: a directory named like a job id shadowed the spec
+# --------------------------------------------------------------------------
+def test_bare_job_id_is_not_shadowed_by_a_same_named_directory(tmp_path,
+                                                               monkeypatch):
+    """Cron passes a bare job id with the profile dir as cwd. A state
+    directory named exactly like the job id made Spec.load() try to parse the
+    DIRECTORY and fail with 'Is a directory' — the job silently never ran.
+    Two real jobs on a live profile hit this."""
+    home = _home()
+    (home / "scripts" / "s.py").write_text("print('ok')\n")
+    (home / "jobs.d" / "watchy.toml").write_text(
+        'job_id = "watchy"\nscript = "s.py"\nruntime = "python"\n')
+    # The trap: a directory with the same name as the job id, in the cwd.
+    (home / "watchy").mkdir()
+    r = subprocess.run(
+        [PY, str(SCRIPTS / "jobrun.py"), "--spec", "watchy"],
+        capture_output=True, text=True,
+        env=dict(os.environ, HERMES_HOME=str(home)),
+        cwd=str(home),          # cwd is the profile dir, as cron does it
+    )
+    assert r.returncode == 0, (r.stdout + r.stderr)[:400]
+    assert "Is a directory" not in (r.stdout + r.stderr)
+
+
+def test_explicit_path_to_a_spec_still_works(tmp_path):
+    """The path form must keep working; only bare-name resolution changed."""
+    home = _home()
+    (home / "scripts" / "s.py").write_text("print('ok')\n")
+    spec = home / "jobs.d" / "pathy.toml"
+    spec.write_text('job_id = "pathy"\nscript = "s.py"\nruntime = "python"\n')
+    r = subprocess.run(
+        [PY, str(SCRIPTS / "jobrun.py"), "--spec", str(spec)],
+        capture_output=True, text=True,
+        env=dict(os.environ, HERMES_HOME=str(home)), cwd=str(SCRIPTS))
+    assert r.returncode == 0, (r.stdout + r.stderr)[:300]
+
+
+# --------------------------------------------------------------------------
+# exit_map: legacy scripts declare their own exit convention
+# --------------------------------------------------------------------------
+def _exitmap_home(rc, extra=""):
+    home = _home()
+    sh = home / "scripts" / "tw.sh"
+    sh.write_text("#!/bin/bash\necho 'TRANCHE 2 FILLED: position is now 1.25'\n"
+                  f"exit {rc}\n")
+    sh.chmod(0o755)
+    (home / "jobs.d" / "tw.toml").write_text(
+        'job_id = "tw"\nscript = "tw.sh"\nruntime = "bash"\ntimeout = 60\n'
+        + extra)
+    return home
+
+
+def test_a_fired_tripwire_is_news_not_a_failure():
+    """A script whose contract is '1 = tripwire fired' worked when it fired."""
+    home = _exitmap_home(1, '\n[exit_map]\n1 = "noteworthy"\n2 = "broken"\n')
+    r = _run(home, "--spec", "tw")
+    assert r.returncode == 0, (
+        "a noteworthy outcome must exit 0, or the scheduler stacks its own "
+        f"failure banner on top: {r.stdout}")
+    assert "TRANCHE 2 FILLED" in r.stdout
+    # The content is the message: no failure furniture.
+    assert "DEGRADED" not in r.stdout
+    assert "Error:" not in r.stdout
+    assert "Repair:" not in r.stdout
+
+
+def test_the_same_script_still_alarms_when_genuinely_broken():
+    """Control: exit_map must not mute the code that means 'I am broken'."""
+    home = _exitmap_home(2, '\n[exit_map]\n1 = "noteworthy"\n2 = "broken"\n')
+    r = _run(home, "--spec", "tw")
+    assert r.returncode != 0
+    assert "BROKEN" in r.stdout
+
+
+def test_without_exit_map_legacy_behavior_is_unchanged():
+    """No spec change means no behavior change: migration stays opt-in."""
+    home = _exitmap_home(1)
+    r = _run(home, "--spec", "tw")
+    assert r.returncode != 0
+    assert "DEGRADED" in r.stdout
+
+
+def test_exit_map_cannot_relabel_success():
+    home = _exitmap_home(0, '\n[exit_map]\n0 = "broken"\n')
+    r = _run(home, "--spec", "tw")
+    assert r.returncode != 0
+    assert "exit 0" in (r.stdout + r.stderr)
+
+
+def test_exit_map_rejects_an_unknown_outcome_name():
+    home = _exitmap_home(1, '\n[exit_map]\n1 = "sortof_bad"\n')
+    r = _run(home, "--spec", "tw")
+    assert r.returncode != 0
+    assert "exit_map" in (r.stdout + r.stderr)
+
+
+def test_exit_map_cannot_excuse_a_timeout():
+    """Runner-derived termination outranks any spec claim. A job killed by the
+    harness is not 'noteworthy' just because the spec says exit 1 is."""
+    home = _home()
+    sh = home / "scripts" / "slow.sh"
+    sh.write_text("#!/bin/bash\nsleep 30\n")
+    sh.chmod(0o755)
+    (home / "jobs.d" / "slow.toml").write_text(
+        'job_id = "slow"\nscript = "slow.sh"\nruntime = "bash"\ntimeout = 1\n'
+        '\n[exit_map]\n1 = "noteworthy"\n124 = "noteworthy"\n')
+    r = _run(home, "--spec", "slow")
+    assert r.returncode != 0, "a timeout must never be downgraded by exit_map"
+    assert "noteworthy" not in r.stdout.lower()
