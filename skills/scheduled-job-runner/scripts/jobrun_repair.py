@@ -14,14 +14,14 @@ So this module exists to answer exactly one question, safely and repeatedly:
 
 THE MEASUREMENT THAT SHAPED IT
 -------------------------------
-A trading watchdog on a 5-minute schedule produced 28 timeout failures in one
-day. Over 57.6h it ran 2,240 times. A naive "failed, dispatch a fixer" design
-would have opened 28 model sessions against a job that turned out to be healthy
-(p50 runtime 4.9s against its 120s ceiling) during an upstream API outage.
+A watchdog on a short schedule produced dozens of timeout failures in one day.
+A naive "failed, dispatch a fixer" design would have opened a model session for
+every one of them, against a job that was healthy the whole time and failing
+only because an upstream dependency was down.
 
-The tests below go further and simulate a 1-minute job, because the operator's
-stated worry is a job on a 1/2/5-minute schedule, and the tightest cadence is
-the one that has to hold.
+The tests go further and simulate a 1-minute job, because the worry worth
+designing against is a job on a 1/2/5-minute schedule, and the tightest cadence
+is the one that has to hold.
 
 Under this dispatcher that job gets **zero** dispatches, because timeouts are
 not code defects (see ``jobrun_severity.repair_eligible``). The replay across
@@ -259,19 +259,34 @@ def record_success(conn: sqlite3.Connection, *, job_id: str) -> list:
     Returns the fingerprints that just recovered, so the caller can report
     "this fixed itself" rather than leaving a stale incident open forever.
     Half-open in circuit-breaker terms: the scheduled run IS the probe.
+
+    THE SUBTLE BUG: an earlier version only reset rows whose phase was not
+    already 'resolved'. A job alternating fail/success therefore kept its
+    `consecutive` counter from a previous cycle — the row was already
+    'resolved', so the success was a no-op — and two failures separated by a
+    healthy run eventually satisfied the two-consecutive gate and dispatched a
+    repair agent against a job that works half the time. `consecutive` must be
+    zeroed on EVERY success regardless of phase; only the phase transition is
+    conditional.
     """
     rows = conn.execute(
         "SELECT fingerprint FROM incidents WHERE job_id = ? "
         "AND phase NOT IN ('resolved','quarantined')",
         (job_id,),
     ).fetchall()
+    # Always reset the streak, even for rows already marked resolved.
+    conn.execute(
+        "UPDATE incidents SET consecutive = 0 WHERE job_id = ? "
+        "AND phase != 'quarantined'",
+        (job_id,),
+    )
     if rows:
         conn.execute(
-            "UPDATE incidents SET phase='resolved', consecutive=0 "
+            "UPDATE incidents SET phase='resolved' "
             "WHERE job_id = ? AND phase NOT IN ('resolved','quarantined')",
             (job_id,),
         )
-        conn.commit()
+    conn.commit()
     return [r["fingerprint"] for r in rows]
 
 
@@ -315,7 +330,7 @@ def decide(
 
     Order matters: classification is free, budget queries hit the db. And the
     classification gate is deliberately FIRST because it is the one that
-    eliminated 28 of the fast-cadence job's 30 failures.
+    eliminated nearly every failure of the fast-cadence job.
     """
     now = now or _now()
     phase = row["phase"]
@@ -607,6 +622,35 @@ def escalation_due(row: sqlite3.Row, now: datetime | None = None) -> str | None:
     return None
 
 
+def _pause_scheduled_job(job_id: str, reason: str) -> tuple[bool, str]:
+    """
+    Actually stop the scheduled job via the CLI. Returns (stopped, detail).
+
+    THE BUG THIS FIXES: the first cut flipped a row in SQLite and returned a
+    message saying the job was paused. It was not. The scheduler kept firing it
+    at full cadence while repair decisions were permanently suppressed as
+    "quarantined" — the operator was told a job had stopped while it kept
+    running, which is a worse state than either honest outcome.
+    """
+    cli = shutil.which("hermes")
+    if not cli:
+        home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+        cand = home.parent / "hermes-agent" / "hermes"
+        cli = str(cand) if cand.exists() else None
+    if not cli:
+        return False, "hermes CLI not found; cannot pause"
+    try:
+        proc = subprocess.run(
+            [cli, "cronjob", "pause", job_id, "--reason", reason],
+            capture_output=True, text=True, timeout=60,
+        )
+        if proc.returncode == 0:
+            return True, "paused via hermes cronjob pause"
+        return False, (proc.stderr or proc.stdout or "pause failed")[-200:]
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)[:200]
+
+
 def quarantine(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, str]:
     """
     FAIL-VISIBLE quarantine. Stop the work, never the alarm.
@@ -619,19 +663,39 @@ def quarantine(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, str]:
 
     Even when a job IS quarantined, the incident stays open and keeps emitting
     a daily dead-man reminder. A job that is off must prove it is off.
+
+    The SQLite phase is only set to 'quarantined' AFTER the scheduler has
+    actually stopped the job. If the pause fails, the phase stays open and the
+    caller is told the truth: still running, still failing, needs a human.
     """
     if row["severity"] == CRITICAL or row["money"] == MONEY_LIVE:
         return False, (
             "REFUSED: critical / live-money jobs are never auto-disabled. "
-            "Escalating instead — only the operator turns this off."
+            "Escalating instead — only a human turns this off."
         )
+
+    stopped, detail = _pause_scheduled_job(
+        row["job_id"],
+        f"auto-quarantined after {QUARANTINE_AFTER_HOURS}h unacknowledged, "
+        f"{row['occurrence_count']} occurrences",
+    )
+    if not stopped:
+        # Do NOT claim a pause that did not happen, and do NOT mark the phase
+        # quarantined: that would suppress repair decisions for a job still
+        # running at full cadence.
+        return False, (
+            f"QUARANTINE FAILED for {row['job_id']}: {detail}. The job is STILL "
+            f"RUNNING and still failing ({row['occurrence_count']} occurrences). "
+            f"Pause it by hand: hermes cronjob pause {row['job_id']}"
+        )
+
     conn.execute(
         "UPDATE incidents SET phase='quarantined', quarantined_at=? "
         "WHERE fingerprint=?", (_iso(_now()), row["fingerprint"]),
     )
     conn.commit()
     return True, (
-        f"{row['job_id']} paused after {QUARANTINE_AFTER_HOURS}h unacknowledged "
+        f"{row['job_id']} PAUSED after {QUARANTINE_AFTER_HOURS}h unacknowledged "
         f"({row['occurrence_count']} occurrences). The incident stays OPEN and "
         f"will remind daily until acknowledged. Resume with: "
         f"hermes cronjob resume {row['job_id']}"
@@ -667,6 +731,9 @@ def handle_failure(
         "occurrence_count": row["occurrence_count"],
         "phase": decision.phase,
         "dispatched": False,
+        # Callers gate delivery on this: a shadow rehearsal must not be
+        # reported to a human as though a repair actually happened.
+        "shadow": bool(dry_run),
         "decision": decision.reason,
         "note": decision.as_note(),
         "escalation": escalation_due(row),

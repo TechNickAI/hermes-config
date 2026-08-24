@@ -15,7 +15,7 @@ import tempfile
 from datetime import timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'skills' / 'scheduled-job-runner' / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'skills' / 'scheduled-job-runner' / 'scripts'))
 
 import jobrun_repair as R  # noqa: E402
 from jobrun_severity import (  # noqa: E402
@@ -232,12 +232,34 @@ check("live-money job is NOT auto-disabled", not did)
 
 conn = fresh()
 row = fail_once(conn, fp="okfp", job="reportgen", money=MONEY_NONE)
+# Stub the actual pause: these checks run against a temp HERMES_HOME with no
+# scheduler, and quarantine() now REFUSES to mark a job quarantined unless the
+# pause really happened. Stubbing keeps the check about policy rather than
+# about whether a CLI exists in the sandbox.
+_real_pause = R._pause_scheduled_job
+R._pause_scheduled_job = lambda job_id, reason: (True, "stubbed")
 did, msg = R.quarantine(conn, row)
 check("a report generator CAN be quarantined", did)
 check("quarantine message says it stays visible",
       "remind daily" in msg or "stays OPEN" in msg, msg)
 row = conn.execute("SELECT * FROM incidents WHERE fingerprint='okfp'").fetchone()
 check("quarantined incident is NOT closed", row["phase"] == "quarantined")
+
+# The honest-failure path: if the scheduler cannot actually be stopped, we must
+# NOT claim it was, and must NOT mark the phase quarantined (which would
+# suppress repair decisions for a job still running at full cadence).
+R._pause_scheduled_job = lambda job_id, reason: (False, "no scheduler here")
+conn2 = fresh()
+row2 = fail_once(conn2, fp="failpause", job="stubborn", money=MONEY_NONE)
+did2, msg2 = R.quarantine(conn2, row2)
+check("a failed pause is reported as a failure", not did2)
+check("failed pause says the job is STILL RUNNING",
+      "STILL" in msg2 and "RUNNING" in msg2, msg2)
+row2 = conn2.execute(
+    "SELECT * FROM incidents WHERE fingerprint='failpause'").fetchone()
+check("failed pause does NOT mark the phase quarantined",
+      row2["phase"] != "quarantined", row2["phase"])
+R._pause_scheduled_job = _real_pause
 
 print("\n== Dispatch bookkeeping ==")
 conn = fresh()

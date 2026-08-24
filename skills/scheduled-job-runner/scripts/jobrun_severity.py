@@ -9,17 +9,17 @@ JOB. Every failure of a flagged job therefore rendered "🛑 CRITICAL — this j
 moves real money" at equal volume, whether the cause was a 120s network timeout
 or a guard that had genuinely stopped guarding.
 
-Two measured consequences from a recent incident:
+Two consequences seen in practice:
 
-  * A trading watchdog on a 5-minute schedule produced 28 timeout failures in a
-    single day, each rendering its own red card. The job itself was healthy
-    (p50 runtime 4.9s against a 120s ceiling); the timeouts were an upstream API
-    outage, and every duration landed on the ceiling to the tenth of a second,
+  * A watchdog on a short schedule produced dozens of timeout failures in a
+    single day, each rendering its own red card. The job itself was healthy —
+    its typical runtime was a small fraction of its ceiling — and the timeouts
+    came from an upstream outage. Every duration landed on the ceiling exactly,
     which is the signature of a blocked call killed by the harness rather than
-    organic slowness. 28 identical red cards, one condition, no defect.
-  * A paper-trading guard carried ``critical = true`` and the line "This job
-    moves real money" while a paper-trading wrapper sets
-    ``ALPACA_PAPER_TRADE=true``. The alarm was factually false.
+    organic slowness. Many identical red cards, one condition, no defect.
+  * A guard job carried ``critical = true`` and the line "This job moves real
+    money" while its wrapper set the broker's paper-trading flag. The alarm was
+    factually false.
 
 Severity is a property of the RUN, not of the script. This module makes that
 structural rather than advisory.
@@ -268,7 +268,7 @@ class Sentinel:
     raw: str | None = None
 
 
-def parse_sentinel(stdout: str) -> Sentinel | None:
+def parse_sentinel(stdout: str, sanitize=None) -> Sentinel | None:
     """
     Extract the FINAL complete sentinel from stdout.
 
@@ -277,6 +277,13 @@ def parse_sentinel(stdout: str) -> Sentinel | None:
     Sentinel with malformed=True rather than None, because "the job tried to
     tell us something and garbled it" is a different fact from "the job said
     nothing", and the first deserves a marker in the ledger.
+
+    ``sanitize`` is a callable applied to every free-text field before it is
+    stored. THE BUG THIS FIXES: the summary was copied straight into the
+    incident card, which is printed to stdout AND sent to notify_target. A job
+    that put a token or connection string in its own summary would leak it past
+    the runner's redaction, which only covered raw stdout/stderr. Free text
+    from a child process is untrusted and must be scrubbed and bounded.
     """
     if not stdout or SENTINEL_PREFIX not in stdout:
         return None
@@ -289,27 +296,44 @@ def parse_sentinel(stdout: str) -> Sentinel | None:
     if found is None:
         return None
 
+    def _clean(v, limit=300):
+        if v is None:
+            return None
+        s = str(v)[:limit]
+        return sanitize(s) if sanitize else s
+
     payload = found[len(SENTINEL_PREFIX):].strip()
     try:
         data = json.loads(payload)
     except (ValueError, TypeError):
-        return Sentinel(malformed=True, raw=payload[:300])
+        return Sentinel(malformed=True, raw=_clean(payload))
     if not isinstance(data, dict):
-        return Sentinel(malformed=True, raw=payload[:300])
+        return Sentinel(malformed=True, raw=_clean(payload))
     if data.get("schema") != SENTINEL_SCHEMA:
-        return Sentinel(malformed=True, raw=payload[:300])
+        return Sentinel(malformed=True, raw=_clean(payload))
 
     outcome = data.get("outcome")
     if outcome is not None and outcome not in LADDER:
-        return Sentinel(malformed=True, raw=payload[:300])
+        return Sentinel(malformed=True, raw=_clean(payload))
 
     metrics = data.get("metrics")
+    if isinstance(metrics, dict):
+        # Metrics are meant to be numbers. Anything else is free text from an
+        # untrusted process and gets the same treatment as the summary.
+        metrics = {
+            str(k)[:64]: (v if isinstance(v, (int, float, bool))
+                          else _clean(v, 120))
+            for k, v in list(metrics.items())[:20]
+        }
+    else:
+        metrics = {}
+
     return Sentinel(
         outcome=outcome,
-        reason_code=data.get("reason_code"),
-        summary=data.get("summary"),
-        metrics=metrics if isinstance(metrics, dict) else {},
-        raw=payload[:300],
+        reason_code=_clean(data.get("reason_code"), 120),
+        summary=_clean(data.get("summary")),
+        metrics=metrics,
+        raw=_clean(payload),
     )
 
 
@@ -343,6 +367,7 @@ def classify(
     money: str = MONEY_NONE,
     allow_critical: bool = False,
     strict_domain_codes: bool = True,
+    sanitize=None,
 ) -> Outcome:
     """
     Reconcile every severity channel into one verdict.
@@ -373,7 +398,7 @@ def classify(
             "signal": DEGRADED,
             "wrapper_error": DEGRADED,
         }[state]
-        sent = parse_sentinel(stdout)
+        sent = parse_sentinel(stdout, sanitize)
         if sent and sent.outcome and rank(sent.outcome) > rank(sev):
             # A sentinel may still RAISE. A job that printed "critical" and then
             # timed out is at least as bad as the timeout suggests.
@@ -423,7 +448,7 @@ def classify(
         notes.append(f"unclassified exit code {code}")
 
     # ---- 3/4. Sentinel may raise, never lower ---------------------------
-    sent = parse_sentinel(stdout)
+    sent = parse_sentinel(stdout, sanitize)
     severity = floor
     summary = None
     metrics: dict = {}
@@ -492,7 +517,7 @@ def _clamp_critical(out: Outcome, allow_critical: bool, money: str) -> Outcome:
 
 
 # --------------------------------------------------------------------------
-# Dedup — the fix for "28 identical red cards"
+# Dedup — the fix for "many identical red cards, one condition"
 # --------------------------------------------------------------------------
 _STACK_NOISE = [
     (re.compile(r"0x[0-9a-fA-F]+"), "0xADDR"),
@@ -552,11 +577,10 @@ def fingerprint(
 # condition an agent cannot fix by editing source, and dispatching one is spend
 # with no possible benefit.
 #
-# Measured: 28 of a trading watchdog's failures in one day were timeouts, and the
-# job was healthy the whole time (p50 4.9s against a 120s ceiling) — the cause was
-# an upstream outage. Under this gate, zero of them reach an agent. When a timeout
-# IS the job's own fault the fix is a spec change, which the runner should SAY
-# rather than send a model at.
+# Seen in practice: a watchdog's timeout failures were an upstream outage while
+# the job itself was healthy. Under this gate, zero of them reach an agent. When a
+# timeout IS the job's own fault the fix is a spec change, which the runner should
+# SAY rather than send a model at.
 NON_REPAIRABLE = {
     "timeout": "job exceeded its own timeout — usually a spec or capacity "
                "problem, not a code defect. Check timeout vs schedule interval.",

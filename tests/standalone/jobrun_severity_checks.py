@@ -14,7 +14,7 @@ Run: python3 test_jobrun_severity.py
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'skills' / 'scheduled-job-runner' / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'skills' / 'scheduled-job-runner' / 'scripts'))
 
 from jobrun_severity import (  # noqa: E402
     CRITICAL,

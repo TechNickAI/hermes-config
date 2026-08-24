@@ -16,7 +16,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'skills' / 'scheduled-job-runner' / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'skills' / 'scheduled-job-runner' / 'scripts'))
 
 import jobrun_repair as R  # noqa: E402
 from jobrun_severity import DEGRADED, MONEY_NONE  # noqa: E402
@@ -154,7 +154,12 @@ ticks, disp, row, conn, clock = soak(
 esc = R.escalation_due(row, clock.now())
 check("after 10 days unacknowledged, escalation is due",
       esc in ("quarantine", "escalate_24h"), str(esc))
+# Stub the real pause: no scheduler exists in this sandbox, and quarantine()
+# now refuses to claim a stop it could not perform.
+_real_pause = R._pause_scheduled_job
+R._pause_scheduled_job = lambda job_id, reason: (True, "stubbed")
 did, msg = R.quarantine(conn, row)
+R._pause_scheduled_job = _real_pause
 check("non-critical job is quarantined, not left spinning", did, msg[:60])
 row2 = conn.execute(
     "SELECT * FROM incidents WHERE fingerprint='soak-fp'").fetchone()

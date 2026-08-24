@@ -595,6 +595,15 @@ def preflight(spec: Spec, argv: list[str]) -> list[str]:
             problems.append(f"cannot create {d}: {exc}")
     if spec.timeout <= 0:
         problems.append("timeout must be > 0")
+    # MONEY RECONCILIATION HAPPENS BEFORE THE CHILD RUNS. A spec that declares
+    # paper/none while its script carries live-trading markers is a
+    # CONFIGURATION ERROR, not something to discover from a failure card after
+    # the job has already traded. Checking it only on the failure path meant a
+    # successful mismatched run was never checked at all.
+    try:
+        _v2_money(spec)
+    except Exception as exc:      # MoneyMismatch and anything it wraps
+        problems.append(str(exc))
     return problems
 
 
@@ -1153,6 +1162,13 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         #        This is the fix for a noisy job: set it here, do not edit the
         #        script.
         if state == "success":
+            # Close any open condition for this job. THE BUG THIS FIXES:
+            # record_success() existed but was never called, so `consecutive`
+            # never reset. Two identical failures separated by a thousand
+            # healthy runs would satisfy the two-consecutive gate and dispatch
+            # a repair agent for a job that is fundamentally fine. The
+            # scheduled run IS the half-open probe; this is where it closes.
+            _v2_record_success(spec)
             if spec.output_policy == "silent" and not spec.notify_on_success:
                 return EXIT_OK
             if raw_out:
@@ -1169,12 +1185,14 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         # guarding looked identical. Severity now comes from the reconciled
         # outcome; `critical = true` raises the CEILING a job may reach rather
         # than the floor of every card it emits.
-        outcome = _v2_classify(spec, state, rc, raw_out)
+        # Preflight already reconciled money and refused to run on a dangerous
+        # mismatch, so this cannot raise here.
         money = _v2_money(spec)
+        outcome = _v2_classify(spec, state, rc, raw_out, money)
 
         # Dedup by CONDITION. A repeated identical alert is an unacknowledged
         # alarm, not redundancy: collapse it into one card carrying a count.
-        incident = _v2_incident(spec, outcome, err or out, sha, log_path)
+        incident = _v2_incident(spec, outcome, err or out, sha, log_path, money)
 
         # Failure: one concise, actionable incident card — not a stdout dump.
         head = {
@@ -1188,6 +1206,23 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             incident=incident, dur=dur, sha=sha, err=err, out=out,
             log_path=log_path, run_id=run_id,
         )
+
+        # DEDUP ACTUALLY SUPPRESSES HERE. Counting occurrences without gating
+        # delivery just produced an annotated flood — the first cut printed and
+        # notified on every tick while displaying a growing occurrence count.
+        speak, why = should_speak(incident, getattr(outcome, "severity", ""))
+        if not speak:
+            # Silent repeat: the ledger and incidents.db already recorded it.
+            # One short line on stdout so a human reading logs by hand can see
+            # the run happened and was deliberately not delivered.
+            print(f"(suppressed: {why})")
+            return {
+                "child_failure": EXIT_CHILD,
+                "timeout": EXIT_TIMEOUT,
+                "signal": EXIT_SIGNAL,
+                "wrapper_error": EXIT_WRAPPER,
+            }.get(state, EXIT_WRAPPER)
+
         print(card)
 
         # Notify directly. The scheduler may never deliver this card at all
@@ -1241,37 +1276,81 @@ def _v2_mods():
         return None, None
 
 
+def _v2_record_success(spec) -> None:
+    """
+    Close open conditions for a job that just ran clean.
+
+    Never raises into the run path: a bookkeeping failure must not fail a job
+    that actually worked.
+    """
+    _, rep = _v2_mods()
+    if rep is None:
+        return
+    try:
+        conn = rep.connect()
+        try:
+            rep.record_success(conn, job_id=spec.job_id)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _resolved_script_path(spec) -> Path | None:
+    """
+    The path the runner will ACTUALLY execute.
+
+    Money detection must read the same bytes that run. Resolving it separately
+    (e.g. against ``cwd``) means a relative script with a cwd set gets scanned
+    at the wrong path, silently classifying a live-money job as `none` and
+    making it eligible for automatic repair.
+    """
+    if not spec.script:
+        return None
+    p = Path(spec.script)
+    if p.is_absolute():
+        return p if p.is_file() else None
+    for base in (HERMES_HOME / "scripts", HERMES_HOME,
+                 Path(spec.cwd) if spec.cwd else None):
+        if base is None:
+            continue
+        cand = base / spec.script
+        if cand.is_file():
+            return cand
+    return None
+
+
 def _v2_money(spec) -> str:
     """
     Reconcile the spec's DECLARED money class with what the script DOES.
 
-    A guard job once shipped "🛑 CRITICAL — this job moves real money" on a paper desk
-    because one hand-set boolean decided it. Declaring paper on a live script is
-    a hard error; over-declaring live is allowed (louder, never quieter).
+    A guard job once shipped "🛑 CRITICAL — this job moves real money" on a
+    paper desk because one hand-set boolean decided it. Declaring paper on a
+    live script RAISES MoneyMismatch; the caller must treat that as a
+    configuration error and refuse to run, not discover it after the fact.
     """
     sev, _ = _v2_mods()
     if sev is None:
         return "none"
     text = ""
-    try:
-        if spec.script:
-            p = Path(spec.script)
-            if not p.is_absolute():
-                p = Path(spec.cwd or HERMES_HOME) / "scripts" / spec.script
-            if p.is_file():
-                text = p.read_text(errors="replace")
-    except OSError:
-        text = ""
+    p = _resolved_script_path(spec)
+    if p is not None:
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            text = ""
     detected = sev.detect_money(text, HERMES_HOME)
-    try:
-        return sev.reconcile_money(getattr(spec, "money", None), detected)
-    except Exception as exc:      # MoneyMismatch
-        print(f"SPEC ERROR: {exc}", file=sys.stderr)
-        return sev.MONEY_LIVE     # fail LOUD, never quiet
+    # Propagates MoneyMismatch. Callers decide; this function does not guess.
+    return sev.reconcile_money(getattr(spec, "money", None), detected)
 
 
-def _v2_classify(spec, state, rc, raw_out):
-    """Classify this RUN. Falls back to a v1-shaped verdict if v2 is absent."""
+def _v2_classify(spec, state, rc, raw_out, money="none"):
+    """Classify this RUN. Falls back to a v1-shaped verdict if v2 is absent.
+
+    ``money`` is passed in rather than recomputed: preflight has already
+    reconciled it, and re-deriving it here would read the script a second time
+    and could disagree with the value the run was authorized under.
+    """
     sev, _ = _v2_mods()
     if sev is None:
         class _Fallback:
@@ -1285,8 +1364,11 @@ def _v2_classify(spec, state, rc, raw_out):
     try:
         return sev.classify(
             state=state, exit_code=rc, stdout=raw_out or "",
-            money=_v2_money(spec), allow_critical=bool(spec.critical),
+            money=money, allow_critical=bool(spec.critical),
             strict_domain_codes=False,   # legacy scripts still use 3-9
+            # Free text from the child is untrusted: run it through the same
+            # redaction as stdout/stderr before it can reach a card or a chat.
+            sanitize=redact,
         )
     except Exception as exc:
         print(f"(severity classification failed: {exc})", file=sys.stderr)
@@ -1300,7 +1382,7 @@ def _v2_classify(spec, state, rc, raw_out):
         return _Err()
 
 
-def _v2_incident(spec, outcome, error_text, sha, log_path):
+def _v2_incident(spec, outcome, error_text, sha, log_path, money="none"):
     """
     Record the condition and decide about repair. Returns a dict or None.
 
@@ -1321,7 +1403,7 @@ def _v2_incident(spec, outcome, error_text, sha, log_path):
             return rep.handle_failure(
                 conn, fingerprint=fp, job_id=spec.job_id, host=host,
                 reason_code=outcome.reason_code, severity=outcome.severity,
-                money=_v2_money(spec), error_text=error_text or "",
+                money=money, error_text=error_text or "",
                 deployed_sha=sha, script_path=str(spec.script or ""),
                 log_path=log_path or "",
                 dry_run=_repair_shadow_mode(),
@@ -1385,6 +1467,49 @@ def _v2_render(*, outcome, spec, money, head, incident, dur, sha, err, out,
         lines.append(f"Log: {log_path}")
     lines.append(f"Run: {run_id[:8]}")
     return "\n".join(lines)
+
+
+def should_speak(incident, severity: str) -> tuple[bool, str]:
+    """
+    Decide whether THIS occurrence of a condition gets a fresh notification.
+
+    THE BUG THIS FIXES: v2's first cut recorded an occurrence count and then
+    printed and notified on every single tick anyway. A job repeating one
+    condition N times still produced N notifications — the exact flood the
+    dedup was built to stop. Counting is not suppressing.
+
+    Speak on:
+      * the FIRST occurrence of a condition (someone must be told),
+      * escalation milestones (1h, 4h, 24h) so an unacknowledged alarm gets
+        louder over time rather than repeating at full volume,
+      * a quarantine decision (a job being stopped is news),
+      * any CRITICAL run, always. A live-money guard that keeps failing must
+        never be summarized into silence, because a missed page there is
+        unrecoverable in a way a duplicate page is not.
+
+    Stay silent on every other repeat: the ledger and incidents.db still record
+    it, and `jobrun_repair.py --status` shows the running count.
+    """
+    if severity == "critical":
+        return True, "critical always speaks"
+    if not incident:
+        return True, "no incident state (fail open)"
+    if incident.get("occurrence_count", 1) <= 1:
+        return True, "first occurrence"
+    if incident.get("escalation"):
+        return True, f"escalation milestone: {incident['escalation']}"
+    q = incident.get("quarantine")
+    if q and q.get("applied"):
+        return True, "quarantine applied"
+    if incident.get("dispatched") and not incident.get("shadow"):
+        # A REAL repair attempt is news. A shadow-mode rehearsal is not — it
+        # changed nothing, and letting it speak would put a second card on
+        # occurrence 2 of every condition, which is most of the flood back.
+        return True, "repair dispatched"
+    return False, (
+        f"duplicate of an open condition "
+        f"(occurrence {incident.get('occurrence_count')})"
+    )
 
 
 def selftest() -> int:
