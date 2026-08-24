@@ -386,6 +386,10 @@ class Spec:
         "overlap", "owner", "env", "timezone", "notify_on_success", "retries",
         "retry_backoff", "args", "python", "auto_install_uv", "output_policy",
         "heartbeat_url", "critical", "notify_target", "notify_command",
+        # v2: declared money class. The runner independently DETECTS from the
+        # script and refuses to run on a dangerous disagreement (declaring
+        # paper on a live script). Optional — omitted means "trust detection".
+        "money",
     }
 
     def __init__(self, data: dict, path: Path | None = None):
@@ -454,6 +458,15 @@ class Spec:
         # It deliberately does NOT change execution: the runner must not
         # become a second, weaker authority over domain state.
         self.critical = bool(data.get("critical", False))
+        # v2: declared money class ("live" | "paper" | "none"), or None to let
+        # the runner infer it from the script. Validated at classify time
+        # against what the script actually does.
+        self.money = data.get("money")
+        if self.money is not None and self.money not in ("live", "paper", "none"):
+            raise ConfigError(
+                f"{self.job_id}: money must be live|paper|none, "
+                f"got {self.money!r}"
+            )
         # Where a FAILURE goes. Hermes cron drops the alert entirely when a job
         # is deliver=local (_resolve_delivery_targets returns [], and
         # _deliver_result returns None, which the scheduler cannot tell apart
@@ -1150,6 +1163,19 @@ def run(spec: Spec, dry_run: bool = False) -> int:
                     sys.stdout.write("\n")
             return EXIT_OK
 
+        # ---- v2: classify the RUN, not the job. ----------------------------
+        # v1 rendered "🛑 CRITICAL — this job moves real money" from a hand-set
+        # boolean, so a 120s network timeout and a guard that genuinely stopped
+        # guarding looked identical. Severity now comes from the reconciled
+        # outcome; `critical = true` raises the CEILING a job may reach rather
+        # than the floor of every card it emits.
+        outcome = _v2_classify(spec, state, rc, raw_out)
+        money = _v2_money(spec)
+
+        # Dedup by CONDITION. A repeated identical alert is an unacknowledged
+        # alarm, not redundancy: collapse it into one card carrying a count.
+        incident = _v2_incident(spec, outcome, err or out, sha, log_path)
+
         # Failure: one concise, actionable incident card — not a stdout dump.
         head = {
             "child_failure": f"exited {rc}",
@@ -1157,28 +1183,11 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             "signal": f"killed by {signame}",
             "wrapper_error": "runner error",
         }.get(state, state)
-        lines = [
-            (f"🛑 CRITICAL — {spec.job_id} {head}" if spec.critical
-             else f"⚠️ {spec.job_id} {head}"),
-            f"Host: {os.uname().nodename}  ·  Duration: {dur:.1f}s  ·  Attempts: {attempt}",
-        ]
-        if spec.critical:
-            # A money job that stopped working is not the same event as a
-            # report generator that stopped working. Say so in the first line.
-            lines.append("This job moves real money. Verify state before rerunning.")
-        # Reuse the SHA captured BEFORE launch, so the card and the ledger
-        # can never disagree about which commit produced this outcome.
-        if sha:
-            lines.append(f"Code: {sha}")
-        if spec.owner:
-            lines.append(f"Owner: {spec.owner}")
-        detail = (err.strip() or out.strip())
-        if detail:
-            lines.append(f"Error: {detail.splitlines()[-1][:300]}")
-        if log_path:
-            lines.append(f"Log: {log_path}")
-        lines.append(f"Run: {run_id[:8]}")
-        card = "\n".join(lines)
+        card = _v2_render(
+            outcome=outcome, spec=spec, money=money, head=head,
+            incident=incident, dur=dur, sha=sha, err=err, out=out,
+            log_path=log_path, run_id=run_id,
+        )
         print(card)
 
         # Notify directly. The scheduler may never deliver this card at all
@@ -1207,6 +1216,175 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             "signal": EXIT_SIGNAL,
             "wrapper_error": EXIT_WRAPPER,
         }.get(state, EXIT_WRAPPER)
+
+
+# ---------------------------------------------------------------------------
+# v2 severity + repair integration
+# ---------------------------------------------------------------------------
+# These import LAZILY and degrade to v1 behavior if the modules are missing.
+# A runner that refuses to run because its alerting sidecar is absent would be
+# a worse failure than the noise it was built to fix.
+_V2_SHADOW_DEFAULT = True   # repair dispatch is SHADOW until deliberately armed
+
+
+def _v2_mods():
+    """Return (severity, repair) modules, or (None, None) if unavailable."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import jobrun_severity as sev
+        try:
+            import jobrun_repair as rep
+        except ImportError:
+            rep = None
+        return sev, rep
+    except ImportError:
+        return None, None
+
+
+def _v2_money(spec) -> str:
+    """
+    Reconcile the spec's DECLARED money class with what the script DOES.
+
+    A guard job once shipped "🛑 CRITICAL — this job moves real money" on a paper desk
+    because one hand-set boolean decided it. Declaring paper on a live script is
+    a hard error; over-declaring live is allowed (louder, never quieter).
+    """
+    sev, _ = _v2_mods()
+    if sev is None:
+        return "none"
+    text = ""
+    try:
+        if spec.script:
+            p = Path(spec.script)
+            if not p.is_absolute():
+                p = Path(spec.cwd or HERMES_HOME) / "scripts" / spec.script
+            if p.is_file():
+                text = p.read_text(errors="replace")
+    except OSError:
+        text = ""
+    detected = sev.detect_money(text, HERMES_HOME)
+    try:
+        return sev.reconcile_money(getattr(spec, "money", None), detected)
+    except Exception as exc:      # MoneyMismatch
+        print(f"SPEC ERROR: {exc}", file=sys.stderr)
+        return sev.MONEY_LIVE     # fail LOUD, never quiet
+
+
+def _v2_classify(spec, state, rc, raw_out):
+    """Classify this RUN. Falls back to a v1-shaped verdict if v2 is absent."""
+    sev, _ = _v2_mods()
+    if sev is None:
+        class _Fallback:
+            severity = "critical" if spec.critical else "degraded"
+            reason_code = state
+            summary = None
+            clamped_from = None
+            metadata_missing = True
+            notes: list = []
+        return _Fallback()
+    try:
+        return sev.classify(
+            state=state, exit_code=rc, stdout=raw_out or "",
+            money=_v2_money(spec), allow_critical=bool(spec.critical),
+            strict_domain_codes=False,   # legacy scripts still use 3-9
+        )
+    except Exception as exc:
+        print(f"(severity classification failed: {exc})", file=sys.stderr)
+        class _Err:
+            severity = "degraded"
+            reason_code = state
+            summary = None
+            clamped_from = None
+            metadata_missing = True
+            notes: list = []
+        return _Err()
+
+
+def _v2_incident(spec, outcome, error_text, sha, log_path):
+    """
+    Record the condition and decide about repair. Returns a dict or None.
+
+    NEVER raises into the run path: an alerting sidecar must not be able to
+    fail a job that otherwise worked.
+    """
+    sev, rep = _v2_mods()
+    if sev is None or rep is None:
+        return None
+    try:
+        host = os.uname().nodename
+        fp = sev.fingerprint(
+            host=host, job_id=spec.job_id, reason_code=outcome.reason_code,
+            error_text=error_text or "", deployed_sha=sha,
+        )
+        conn = rep.connect()
+        try:
+            return rep.handle_failure(
+                conn, fingerprint=fp, job_id=spec.job_id, host=host,
+                reason_code=outcome.reason_code, severity=outcome.severity,
+                money=_v2_money(spec), error_text=error_text or "",
+                deployed_sha=sha, script_path=str(spec.script or ""),
+                log_path=log_path or "",
+                dry_run=_repair_shadow_mode(),
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"(incident tracking failed: {exc})", file=sys.stderr)
+        return None
+
+
+def _repair_shadow_mode() -> bool:
+    """
+    Shadow unless explicitly armed, per profile.
+
+    Armed by creating `$HERMES_HOME/jobstate/repair_armed`. A FILE rather than a
+    config key on purpose: it is trivially auditable, trivially revocable, and
+    per-profile, so arming a low-risk profile cannot silently arm a money profile.
+    """
+    if not _V2_SHADOW_DEFAULT:
+        return False
+    return not (HERMES_HOME / "jobstate" / "repair_armed").exists()
+
+
+def _v2_render(*, outcome, spec, money, head, incident, dur, sha, err, out,
+               log_path, run_id):
+    """Render the incident card from the RUN's severity."""
+    sev, _ = _v2_mods()
+    occ = (incident or {}).get("occurrence_count", 1)
+    note = (incident or {}).get("note")
+    if sev is not None:
+        try:
+            card = sev.render_card(
+                outcome=outcome, job_id=spec.job_id, host=os.uname().nodename,
+                money=money, occurrence_count=occ,
+                first_seen_at=None, duration_s=dur, deployed_sha=sha,
+                owner=spec.owner, log_path=log_path, run_id=run_id,
+                repair_note=note,
+            )
+            # Keep the RAW termination detail ("exited 7", "timed out after
+            # 60s", "killed by SIGKILL"). The severity line says how bad it is;
+            # this says what physically happened, and dropping it cost a real
+            # debugging signal the v1 card had. Found by the pre-existing
+            # contract tests, which is exactly what they are for.
+            if head:
+                card = card.replace(
+                    f"— {spec.job_id}", f"— {spec.job_id} ({head})", 1
+                ) if f"— {spec.job_id}" in card else f"{card}\nDetail: {head}"
+            detail = (err.strip() or out.strip())
+            if detail and not outcome.summary:
+                card += f"\nError: {detail.splitlines()[-1][:300]}"
+            return card
+        except Exception:
+            pass
+    glyph = "🛑" if getattr(outcome, "severity", "") == "critical" else "⚠️"
+    lines = [f"{glyph} {spec.job_id} {head}",
+             f"Host: {os.uname().nodename}  ·  Duration: {dur:.1f}s"]
+    if sha:
+        lines.append(f"Code: {sha}")
+    if log_path:
+        lines.append(f"Log: {log_path}")
+    lines.append(f"Run: {run_id[:8]}")
+    return "\n".join(lines)
 
 
 def selftest() -> int:
