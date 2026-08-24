@@ -25,7 +25,17 @@ echo
 
 # ---------------------------------------------------------------- Hermes itself
 if command -v hermes >/dev/null 2>&1; then
-  ok "hermes CLI on PATH ($(hermes --version 2>/dev/null | head -1 || echo 'version unknown'))"
+  if hermes_output=$(hermes --version 2>/dev/null); then
+    hermes_version=$(printf '%s\n' "$hermes_output" | head -1)
+  else
+    hermes_version=""
+  fi
+  if [ -n "$hermes_version" ]; then
+    ok "hermes CLI on PATH ($hermes_version)"
+  else
+    bad "hermes found at $(command -v hermes) but did not return a version: broken install or stale shim"
+    note "reinstall Hermes, or remove the stale shim from PATH"
+  fi
 else
   bad "hermes CLI not found — install Hermes first, this repo only configures it"
   note "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
