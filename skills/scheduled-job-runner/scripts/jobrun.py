@@ -1612,6 +1612,14 @@ def selftest() -> int:
     # Redirect the lock too, or self-test appends serialize against the real
     # profile's lock file and the isolation is only partial.
     LEDGER_LOCK = STATE_DIR / "runs.jsonl.lock"
+    # AND the incident database. The v2 integration records every failure as an
+    # incident, so without this the self-test's deliberately-failing fixtures
+    # (st-fail, st-timeout) are written into the PRODUCTION incidents db and
+    # show up forever as open conditions on a healthy profile. Caught by the
+    # fleet watch reporting st-fail as an open incident on two profiles that
+    # have no such job — a monitor's first real find was a bug in its own
+    # tooling, which is the argument for pointing it at yourself first.
+    os.environ["JOBRUN_INCIDENT_DB"] = str(STATE_DIR / "incidents.db")
     for _d in (STATE_DIR, LOG_DIR, LOCK_DIR):
         _d.mkdir(parents=True, exist_ok=True)
 

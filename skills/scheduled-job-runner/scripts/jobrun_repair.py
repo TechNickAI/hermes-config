@@ -147,6 +147,15 @@ def _home() -> Path:
 
 
 def _db_path() -> Path:
+    # An explicit override exists so a self-test or fixture run can redirect the
+    # incident store the same way it redirects the ledger. Without it, tests
+    # whose fixtures deliberately fail write permanent "open incidents" into the
+    # production database of whatever profile happened to run them.
+    override = os.environ.get("JOBRUN_INCIDENT_DB")
+    if override:
+        p = Path(override)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
     d = _home() / "jobstate"
     d.mkdir(parents=True, exist_ok=True)
     return d / "incidents.db"
