@@ -112,7 +112,7 @@ Four `SOUL.md` starters: `personal-assistant`, `engineer`, `it-admin`,
 the single highest-leverage file in your setup. Copy one, then make it yours. See
 [`templates/soul/README.md`](templates/soul/README.md).
 
-### `skills/`: 25 procedural skills
+### `skills/`: 26 procedural skills
 
 Skills are markdown procedures the agent loads on demand. **A skill is just a
 directory** — `cp -r` it into `~/.hermes/skills/` and it works.
@@ -132,15 +132,16 @@ directory** — `cp -r` it into `~/.hermes/skills/` and it works.
 
 **Everyday agent hygiene**
 
-| Skill             | What it does                                                       |                 |
-| ----------------- | ------------------------------------------------------------------ | --------------- |
-| `keep-going`      | `/keep_going` — restart an agent that stopped short of the goal    |                 |
-| `memory-cleanup`  | Shrink a bloated `MEMORY.md` / `USER.md` without losing signal     |                 |
-| `moa-solve`       | Throw multiple models at one hard problem, extract the best answer |                 |
-| `project-steward` | Run a portfolio of long-running projects as a chief of staff       | **needs setup** |
-| `mob-check`       | What real people are saying right now — Reddit, X, HN, YouTube     |                 |
-| `email-steward`   | Triage inboxes safely with cron, header rules, and isolated reads  | **needs setup** |
-| `deep-dive`       | "Go figure this out" — research a question across every source     |                 |
+| Skill                | What it does                                                       |                 |
+| -------------------- | ------------------------------------------------------------------ | --------------- |
+| `keep-going`         | `/keep_going` — restart an agent that stopped short of the goal    |                 |
+| `memory-cleanup`     | Shrink a bloated `MEMORY.md` / `USER.md` without losing signal     |                 |
+| `user-profile-audit` | Audit a `USER.md` for secrets, PII, and misfiled agent notes       |                 |
+| `moa-solve`          | Throw multiple models at one hard problem, extract the best answer |                 |
+| `project-steward`    | Run a portfolio of long-running projects as a chief of staff       | **needs setup** |
+| `mob-check`          | What real people are saying right now — Reddit, X, HN, YouTube     |                 |
+| `email-steward`      | Triage inboxes safely with cron, header rules, and isolated reads  | **needs setup** |
+| `deep-dive`          | "Go figure this out" — research a question across every source     |                 |
 
 **Code review & GitHub**
 
