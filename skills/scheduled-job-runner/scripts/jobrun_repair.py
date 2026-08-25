@@ -478,6 +478,18 @@ RULES, in priority order:
    stop and write up what you found instead.
 8. You have {max_minutes} minutes. If you are not converging, stop and report.
 
+DECLARE YOUR OUTCOME. End your report with EXACTLY ONE of these lines, alone on
+the last line. This is parsed, and it is the difference between "an agent ran"
+and "something was actually fixed" — a run that investigates carefully and
+changes nothing is a legitimate result, but it must never be recorded as a
+repair:
+
+    REPAIR-OUTCOME: patched <pr-url-or-branch>   you changed code and opened a PR
+    REPAIR-OUTCOME: spec-defect <one line>       the spec is wrong, not the code
+    REPAIR-OUTCOME: environmental <one line>     credential/outage/disk, unpatchable
+    REPAIR-OUTCOME: not-reproducible <one line>  it did not fail when you ran it
+    REPAIR-OUTCOME: declined <one line>          you deliberately made no change
+
 Finish with a short report: what broke, why, what you changed, the PR URL, and
 what you could not verify.
 """
@@ -498,6 +510,35 @@ def build_prompt(row: sqlite3.Row, *, spec_path="", script_path="",
         error_text=(error_text or "(none captured)")[:3000],
         max_minutes=ATTEMPT_MAX_MINUTES,
     )
+
+
+def _classify_agent_report(out: str) -> str:
+    """
+    What did the repair agent actually DO?
+
+    A finished process is not a fix. The first live dispatch proved it: the
+    agent investigated correctly, found the failing script had no repository to
+    open a PR against, and deliberately changed nothing — and that was recorded
+    as `completed`, which reads as "repaired" to every consumer downstream. An
+    honest refusal and a landed patch must not share a label.
+
+    Only an explicit `patched` declaration counts as a repair attempt that
+    produced a change. Everything else — including a missing declaration — is
+    recorded as what it is, and none of them route to `review_pending`, because
+    there is no change to review.
+    """
+    declared = None
+    for line in reversed((out or "").strip().splitlines()):
+        line = line.strip()
+        if line.upper().startswith("REPAIR-OUTCOME:"):
+            declared = line.split(":", 1)[1].strip().split()[0].lower()
+            break
+    if declared in ("patched", "spec-defect", "environmental",
+                    "not-reproducible", "declined"):
+        return "patched" if declared == "patched" else declared
+    # No declaration. The agent ran and told us nothing parseable, so we must
+    # not assume it fixed anything.
+    return "no_declaration"
 
 
 def _hermes_cli() -> str:
@@ -586,7 +627,7 @@ def dispatch(
         elif proc.returncode != 0:
             outcome, detail = "agent_failed", (proc.stderr or out)[-500:]
         else:
-            outcome, detail = "completed", out[-1500:]
+            outcome, detail = _classify_agent_report(out), out[-1500:]
     except subprocess.TimeoutExpired:
         outcome, detail = "timeout", f"exceeded {ATTEMPT_MAX_MINUTES}m"
     except (OSError, ValueError) as exc:
@@ -598,9 +639,15 @@ def dispatch(
     )
     # A completed agent does NOT mean a fixed job. Only a later clean run
     # proves that. Park it for review rather than declaring victory.
+    #
+    # And only a run that actually PATCHED something has anything to review.
+    # An agent that correctly declined, or found the defect in the spec, or hit
+    # an environmental cause, produced no change — routing those to
+    # review_pending invents a pending review that does not exist and hides a
+    # condition that still needs a human.
     conn.execute(
         "UPDATE incidents SET phase=?, lease_until=NULL WHERE fingerprint=?",
-        ("review_pending" if outcome == "completed" else "escalated",
+        ("review_pending" if outcome == "patched" else "escalated",
          row["fingerprint"]),
     )
     conn.commit()

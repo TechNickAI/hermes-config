@@ -8,6 +8,7 @@ than a shared smoke test.
 """
 
 import os
+import pathlib
 import subprocess
 import sys
 import tempfile
@@ -427,3 +428,56 @@ def test_exit_map_cannot_excuse_a_timeout():
     r = _run(home, "--spec", "slow")
     assert r.returncode != 0, "a timeout must never be downgraded by exit_map"
     assert "noteworthy" not in r.stdout.lower()
+
+
+# --------------------------------------------------------------------------
+# "The agent finished" is not "the job was fixed"
+# --------------------------------------------------------------------------
+def _cls(text):
+    """Load the classifier the way the runner does: with its sibling modules
+    importable. Loading jobrun_repair.py in isolation fails inside dataclass
+    construction, because it resolves names from the scripts/ directory."""
+    scripts = (pathlib.Path(__file__).resolve().parent.parent /
+               "skills/scheduled-job-runner/scripts")
+    sys.path.insert(0, str(scripts))
+    for mod in [m for m in sys.modules if m.startswith("jobrun")]:
+        del sys.modules[mod]
+    try:
+        import jobrun_repair
+        return jobrun_repair._classify_agent_report(text)
+    finally:
+        sys.path.remove(str(scripts))
+
+
+def test_only_an_explicit_patch_counts_as_a_repair():
+    assert _cls("done\nREPAIR-OUTCOME: patched https://x/pull/1") == "patched"
+
+
+def test_an_agent_that_declined_is_not_recorded_as_a_repair():
+    """The first live dispatch: the agent correctly refused to invent a fix for
+    a script with no repository, and that was recorded as 'completed' — which
+    reads as 'repaired' to everything downstream."""
+    out = ("Pushing a branch would mean manufacturing a change. I stopped.\n"
+           "REPAIR-OUTCOME: declined synthetic fixture, no repo")
+    assert _cls(out) == "declined"
+
+
+def test_a_report_with_no_declaration_is_never_assumed_fixed():
+    out = "I investigated carefully and wrote a nice summary with no marker."
+    assert _cls(out) == "no_declaration"
+
+
+def test_an_invented_outcome_word_is_not_trusted():
+    assert _cls("REPAIR-OUTCOME: totally-fixed-trust-me") == "no_declaration"
+
+
+def test_the_last_declaration_wins_over_one_quoted_mid_report():
+    out = ("I considered REPAIR-OUTCOME: patched but rejected it.\n"
+           "REPAIR-OUTCOME: declined nothing to change")
+    assert _cls(out) == "declined"
+
+
+def test_spec_and_environmental_causes_are_distinguishable():
+    assert _cls("REPAIR-OUTCOME: spec-defect timeout too short") == "spec-defect"
+    assert _cls("REPAIR-OUTCOME: environmental missing cred") == "environmental"
+    assert _cls("REPAIR-OUTCOME: not-reproducible ran clean") == "not-reproducible"
