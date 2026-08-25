@@ -115,14 +115,58 @@ def _read_cap(profile_home: Path) -> tuple[int, int, bool, bool, str | None]:
             note = f"config.yaml present but unreadable ({type(exc).__name__}) - caps are defaults"
     user_cap = _int_or(mem.get("user_char_limit", DEFAULT_USER_CAP), DEFAULT_USER_CAP)
     memory_cap = _int_or(mem.get("memory_char_limit", DEFAULT_MEMORY_CAP), DEFAULT_MEMORY_CAP)
-    return user_cap, memory_cap, "user_char_limit" in mem, "memory_char_limit" in mem, note
+    # A cap set to the default (or to a LOWER value, or to junk that fell back) is not
+    # "raised". Only an effective value above the documented default is the finding,
+    # because the finding is "this profile removed its forcing function".
+    return (
+        user_cap,
+        memory_cap,
+        user_cap > DEFAULT_USER_CAP,
+        memory_cap > DEFAULT_MEMORY_CAP,
+        note,
+    )
+
+
+def _secret_spans(text: str) -> list[tuple[int, int]]:
+    """Character ranges of everything a SECRET pattern matches in the raw text."""
+    spans = []
+    for rx, _ in SECRET_PATTERNS:
+        for m in re.finditer(rx, text):
+            spans.append(m.span())
+    return spans
+
+
+def _overlaps_secret(span: tuple[int, int], secret_spans: list[tuple[int, int]]) -> bool:
+    """True if this finding's own span intersects any secret span.
+
+    Redaction must be decided from POSITION in the source text, not by re-matching the
+    evidence slice. Two ways slice-matching leaks:
+      - `password: user@example.com` - the PII detector captures only the address, so
+        the slice no longer contains the `password:` label that made it a secret.
+      - a credential inside a 600-char entry - FAT_ENTRY's 60-char snippet may cut the
+        token mid-string so no pattern matches the fragment.
+    In both cases the fragment is still the secret. Span overlap catches them.
+    """
+    start, end = span
+    return any(start < s_end and s_start < end for s_start, s_end in secret_spans)
 
 
 def scan(text: str, user_cap: int) -> list[dict]:
     findings: list[dict] = []
+    secret_spans = _secret_spans(text)
 
-    def add(sev: Sev, code: str, msg: str, evidence: str = "") -> None:
-        findings.append({"severity": sev, "code": code, "message": msg, "evidence": evidence})
+    def add(sev: Sev, code: str, msg: str, evidence: str = "", span: tuple[int, int] | None = None) -> None:
+        redact = sev == HIGH and code == "SECRET"
+        if not redact and span is not None and _overlaps_secret(span, secret_spans):
+            redact = True
+        findings.append(
+            {
+                "severity": sev,
+                "code": code,
+                "message": msg,
+                "evidence": "<redacted>" if (redact and evidence) else evidence,
+            }
+        )
 
     n = len(text)
     ents = entries_of(text)
@@ -138,7 +182,17 @@ def scan(text: str, user_cap: int) -> list[dict]:
 
     for e in ents:
         if len(e) > FAT_ENTRY_CHARS:
-            add(LOW, "FAT_ENTRY", f"entry of {len(e)} chars welds concerns together", e[:60] + "...")
+            # The snippet is sliced from the entry, so locate it in the source to know
+            # whether it overlaps a secret.
+            offset = text.find(e)
+            snippet_span = (offset, offset + 60) if offset >= 0 else None
+            add(
+                LOW,
+                "FAT_ENTRY",
+                f"entry of {len(e)} chars welds concerns together",
+                e[:60] + "...",
+                snippet_span,
+            )
 
     for patterns, sev, code in (
         (SECRET_PATTERNS, HIGH, "SECRET"),
@@ -148,24 +202,13 @@ def scan(text: str, user_cap: int) -> list[dict]:
     ):
         for rx, label in patterns:
             for m in re.finditer(rx, text):
-                add(sev, code, label, m.group(0).strip()[:70])
+                add(sev, code, label, m.group(0).strip()[:70], m.span())
 
     for m in IMPERATIVE_RE.finditer(text):
-        add(LOW, "IMPERATIVE", "phrased as an instruction, not a declarative fact", m.group(0).strip())
+        add(LOW, "IMPERATIVE", "phrased as an instruction, not a declarative fact",
+            m.group(0).strip(), m.span())
 
     return findings
-
-
-def _contains_secret(value: str) -> bool:
-    """True if this evidence string contains anything a SECRET pattern would match.
-
-    Redaction cannot be keyed on the finding's own code: a credential sitting inside a
-    600-char entry is captured verbatim by FAT_ENTRY, and a password that happens to be
-    an email address is captured by PII. Both then printed in the clear. Every piece of
-    evidence is checked against the secret patterns regardless of which detector
-    produced it.
-    """
-    return any(re.search(rx, value) for rx, _ in SECRET_PATTERNS)
 
 
 def group(findings: list[dict]) -> list[dict]:
@@ -176,12 +219,11 @@ def group(findings: list[dict]) -> list[dict]:
             key, {"severity": f["severity"], "code": f["code"], "message": f["message"], "count": 0, "examples": []}
         )
         g["count"] += 1
-        # SECRET evidence is redacted HERE, not at render time, so that --json and any
-        # other consumer inherit the redaction. A render-time-only redaction leaks the
-        # moment someone adds a new output mode.
+        # Evidence arrives already redacted from scan(), which is the only place with
+        # the positional context to decide. Everything downstream - including --json
+        # and any future output mode - inherits that.
         if f["evidence"] and len(g["examples"]) < 3:
-            leaks = f["code"] == "SECRET" or _contains_secret(f["evidence"])
-            g["examples"].append("<redacted>" if leaks else f["evidence"])
+            g["examples"].append(f["evidence"])
     return sorted(grouped.values(), key=lambda g: (_ORDER[g["severity"]], g["code"]))
 
 
@@ -205,10 +247,10 @@ def audit(profile_home: Path) -> dict | None:
         "user_chars": len(text),
         "user_entries": len(entries_of(text)),
         "user_cap": user_cap,
-        "user_cap_overridden": user_over,
+        "user_cap_raised": user_over,
         "memory_chars": mem_chars,
         "memory_cap": mem_cap,
-        "memory_cap_overridden": mem_over,
+        "memory_cap_raised": mem_over,
         "config_note": cfg_note,
         "findings": group(scan(text, user_cap)),
     }
@@ -239,13 +281,17 @@ def audit(profile_home: Path) -> dict | None:
 
 
 def render(result: dict) -> None:
-    cap_note = " (RAISED)" if result["user_cap_overridden"] else ""
+    cap_note = " (RAISED above default)" if result["user_cap_raised"] else ""
     print(f"\n{'=' * 72}")
     print(
         f"{result['profile_home']}\n  USER.md {result['user_chars']} chars / cap "
         f"{result['user_cap']}{cap_note}, {result['user_entries']} entries"
     )
     print("=" * 72)
+    if result.get("config_note"):
+        # Without this the operator sees a cap number and cannot tell it was a guess.
+        print(f"  !! CAP UNVERIFIED: {result['config_note']}")
+        print("     OVER_CAP / NEAR_CAP below may be wrong for this profile.")
     if not result["findings"]:
         print("  clean")
         return
@@ -274,13 +320,16 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args()
 
+    missing: list[str] = []
     if args.homes:
         targets: list[Path] = []
         for h in args.homes:
             expanded = Path(h).expanduser()
             if not expanded.exists():
-                print(f"ERROR: path does not exist: {h}", file=sys.stderr)
-                return 3
+                # Record and continue: one stale path in a fleet list must not discard
+                # findings from every readable profile around it.
+                missing.append(h)
+                continue
             targets.extend(discover(expanded))
     else:
         base = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
@@ -292,7 +341,7 @@ def main() -> int:
     targets = list(dict.fromkeys(p.resolve() for p in targets))
 
     results = []
-    errors = []
+    errors = [{"profile_home": h, "error": "path does not exist"} for h in missing]
     for target in targets:
         try:
             r = audit(target)

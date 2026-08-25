@@ -8,6 +8,7 @@ control. A detector that fires on everything is as useless as one that never fir
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -83,7 +84,7 @@ def test_secret_evidence_is_redacted_in_rendered_output(capsys):
         "user_chars": 40,
         "user_entries": 1,
         "user_cap": 1375,
-        "user_cap_overridden": False,
+        "user_cap_raised": False,
         "findings": audit_mod.group(audit_mod.scan("api_key: sk-abcd1234efgh5678", 1375)),
     }
     audit_mod.render(result)
@@ -224,7 +225,7 @@ def test_raised_cap_is_read_from_profile_config(tmp_path):
     result = audit_mod.audit(home)
     assert result is not None
     if result["user_cap"] == 5000:  # yaml available
-        assert result["user_cap_overridden"] is True
+        assert result["user_cap_raised"] is True
         assert "OVER_CAP" not in {f["code"] for f in result["findings"]}
     else:  # pyyaml missing -> falls back to the documented default
         assert result["user_cap"] == audit_mod.DEFAULT_USER_CAP
@@ -326,11 +327,11 @@ def test_cap_override_flags_are_reported(tmp_path):
     result = audit_mod.audit(home)
     assert result["user_cap"] == 5000
     assert result["memory_cap"] == 9000
-    assert result["user_cap_overridden"] is True
-    assert result["memory_cap_overridden"] is True
+    assert result["user_cap_raised"] is True
+    assert result["memory_cap_raised"] is True
 
 
-def test_absent_overrides_are_reported_as_not_overridden(tmp_path):
+def test_absent_overrides_are_reported_as_not_raised(tmp_path):
     pytest.importorskip("yaml")
     home = tmp_path / "plain"
     (home / "memories").mkdir(parents=True)
@@ -338,9 +339,72 @@ def test_absent_overrides_are_reported_as_not_overridden(tmp_path):
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
 
     result = audit_mod.audit(home)
-    assert result["user_cap_overridden"] is False
-    assert result["memory_cap_overridden"] is False
+    assert result["user_cap_raised"] is False
+    assert result["memory_cap_raised"] is False
     assert result["user_cap"] == audit_mod.DEFAULT_USER_CAP
+
+
+@pytest.mark.parametrize("value,expected_raised", [(1000, False), (1375, False), (5000, True)])
+def test_raised_means_above_default_not_merely_present(tmp_path, value, expected_raised):
+    """A cap set AT or BELOW the default is not a raised-cap finding.
+
+    Keying this on "the key exists" labels a profile that pins the default, or
+    tightens below it, as RAISED - a false finding for the auditor.
+    """
+    pytest.importorskip("yaml")
+    home = tmp_path / f"cap-{value}"
+    (home / "memories").mkdir(parents=True)
+    (home / "memories" / "USER.md").write_text("short", encoding="utf-8")
+    (home / "config.yaml").write_text(f"memory:\n  user_char_limit: {value}\n", encoding="utf-8")
+
+    assert audit_mod.audit(home)["user_cap_raised"] is expected_raised
+
+
+def test_nonnumeric_cap_falls_back_and_is_not_labelled_raised(tmp_path):
+    pytest.importorskip("yaml")
+    home = tmp_path / "junkcap"
+    (home / "memories").mkdir(parents=True)
+    (home / "memories" / "USER.md").write_text("short", encoding="utf-8")
+    (home / "config.yaml").write_text("memory:\n  user_char_limit: notanumber\n", encoding="utf-8")
+
+    result = audit_mod.audit(home)
+    assert result["user_cap"] == audit_mod.DEFAULT_USER_CAP
+    assert result["user_cap_raised"] is False
+
+
+def test_unverified_cap_is_shown_in_the_text_report(capsys):
+    """An operator must never see a cap number without knowing it was a guess."""
+    audit_mod.render(
+        {
+            "profile_home": "/synthetic",
+            "user_chars": 10,
+            "user_entries": 1,
+            "user_cap": audit_mod.DEFAULT_USER_CAP,
+            "user_cap_raised": False,
+            "config_note": "config.yaml present but unreadable (ScannerError) - caps are defaults",
+            "findings": [],
+        }
+    )
+    out = capsys.readouterr().out
+    assert "CAP UNVERIFIED" in out
+    assert "unreadable" in out
+
+
+def test_a_missing_path_does_not_discard_the_other_profiles(tmp_path, capsys, monkeypatch):
+    """One stale path in a fleet list must not wipe out every readable profile."""
+    good = tmp_path / "good"
+    (good / "memories").mkdir(parents=True)
+    (good / "memories" / "USER.md").write_text("She prefers concise answers.", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys, "argv", ["audit_user_md.py", str(tmp_path / "nope"), str(good), "--json"]
+    )
+    rc = audit_mod.main()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 3, "an incomplete run must not report success"
+    assert len(payload["results"]) == 1, "the readable profile must still be audited"
+    assert any("nope" in e["profile_home"] for e in payload["errors"])
 
 
 def test_unparseable_config_is_surfaced_not_silently_defaulted(tmp_path):
@@ -389,6 +453,10 @@ def test_overflow_never_outranks_a_high_finding(tmp_path):
         ("api_key: sk-SUPERSECRET123456789 " + "x" * 650, "FAT_ENTRY"),
         # A password that is also an email was captured verbatim by PII.
         ("password: my.secret.pw@example.com", "PII"),
+        # The hard case: the PII slice contains NOTHING a secret pattern matches on
+        # its own, because the `password:` label that made it secret is outside the
+        # slice. Only span overlap against the source text catches this.
+        ("password: ordinary@example.com", "PII"),
     ],
 )
 def test_secret_is_redacted_even_when_a_non_secret_detector_captures_it(sample, code):
@@ -401,8 +469,19 @@ def test_secret_is_redacted_even_when_a_non_secret_detector_captures_it(sample, 
     target = [f for f in findings if f["code"] == code]
     assert target, f"expected a {code} finding for this fixture"
     assert target[0]["examples"] == ["<redacted>"]
-    assert "SUPERSECRET" not in json.dumps(findings)
-    assert "my.secret.pw" not in json.dumps(findings)
+    blob = json.dumps(findings)
+    for secret_value in ("SUPERSECRET", "my.secret.pw", "ordinary@example.com"):
+        assert secret_value not in blob
+
+
+def test_legitimate_pii_is_still_shown_as_evidence():
+    """Redacting all PII would make the report useless.
+
+    An email with no credential context is a normal PII finding and the auditor
+    needs to see it to apply the necessity test.
+    """
+    findings = audit_mod.group(audit_mod.scan("Her sender address is user@example.com", 1375))
+    assert "user@example.com" in json.dumps(findings)
 
 
 @pytest.mark.parametrize(
