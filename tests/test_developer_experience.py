@@ -159,6 +159,23 @@ def _cron_home(tmp_path, jobs, gateway_pid=None) -> pathlib.Path:
     return home
 
 
+def _assert_cron_warning_is_not_fatal(home, result) -> None:
+    """The cron check must warn without changing the script's exit status.
+
+    Asserting a literal exit 0 would be wrong: the exit code also reflects
+    unrelated checks, which differ between a developer machine with Hermes
+    installed and a bare CI runner. What matters is that adding the cron
+    condition does not turn a run into a failure, so compare against the same
+    HERMES_HOME with the cron store removed.
+    """
+    (home / "cron" / "jobs.json").unlink()
+    baseline = _run_verify_setup(home)
+    assert result.returncode == baseline.returncode, (
+        "the cron check changed the exit status; a stopped gateway is a warning, "
+        "not a setup failure"
+    )
+
+
 def test_verify_setup_warns_when_enabled_cron_has_no_live_gateway(tmp_path) -> None:
     """Enabled jobs with a dead gateway means nothing fires. Silence here is the bug."""
     # A pid that cannot be running, so the case is deterministic rather than
@@ -169,7 +186,7 @@ def test_verify_setup_warns_when_enabled_cron_has_no_live_gateway(tmp_path) -> N
 
     assert "no live gateway" in result.stdout, result.stdout
     assert "warn" in result.stdout
-    assert result.returncode == 0, "a stopped gateway is a warning, not a setup failure"
+    _assert_cron_warning_is_not_fatal(home, result)
 
 
 def test_verify_setup_warns_when_enabled_cron_has_no_pid_file(tmp_path) -> None:
@@ -179,7 +196,7 @@ def test_verify_setup_warns_when_enabled_cron_has_no_pid_file(tmp_path) -> None:
     result = _run_verify_setup(home)
 
     assert "no live gateway" in result.stdout, result.stdout
-    assert result.returncode == 0
+    _assert_cron_warning_is_not_fatal(home, result)
 
 
 def test_verify_setup_warns_when_the_gateway_pid_was_reused(tmp_path) -> None:
@@ -200,7 +217,7 @@ def test_verify_setup_warns_when_the_gateway_pid_was_reused(tmp_path) -> None:
 
     assert "not a hermes gateway" in result.stdout, result.stdout
     assert "alive" not in result.stdout
-    assert result.returncode == 0
+    _assert_cron_warning_is_not_fatal(home, result)
 
 
 def test_verify_setup_warns_when_the_gateway_pid_belongs_to_a_hermes_non_gateway(
@@ -221,7 +238,7 @@ def test_verify_setup_warns_when_the_gateway_pid_belongs_to_a_hermes_non_gateway
         impostor.wait()
 
     assert "not a hermes gateway" in result.stdout, result.stdout
-    assert result.returncode == 0
+    _assert_cron_warning_is_not_fatal(home, result)
 
 
 def test_verify_setup_warns_on_a_process_that_merely_mentions_the_gateway(tmp_path) -> None:
@@ -239,7 +256,7 @@ def test_verify_setup_warns_on_a_process_that_merely_mentions_the_gateway(tmp_pa
         impostor.wait()
 
     assert "not a hermes gateway" in result.stdout, result.stdout
-    assert result.returncode == 0
+    _assert_cron_warning_is_not_fatal(home, result)
 
 
 def test_verify_setup_reports_ok_when_gateway_is_alive(tmp_path) -> None:
