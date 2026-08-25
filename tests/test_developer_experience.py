@@ -11,6 +11,7 @@ decorative.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import subprocess
@@ -132,6 +133,185 @@ def test_verify_setup_reports_a_missing_install() -> None:
     )
     assert result.returncode == 1, "verify_setup.sh should exit 1 when Hermes is absent"
     assert "FAIL" in result.stdout
+
+
+def _run_verify_setup(hermes_home) -> subprocess.CompletedProcess:
+    """Drive verify_setup.sh against an isolated HERMES_HOME."""
+    return subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_setup.sh")],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{pathlib.Path(sys.executable).parent}:/usr/bin:/bin",
+            "HERMES_HOME": str(hermes_home),
+            "HOME": str(hermes_home),
+        },
+    )
+
+
+def _cron_home(tmp_path, jobs, gateway_pid=None) -> pathlib.Path:
+    """Build a HERMES_HOME with a cron store and optionally a gateway pid file."""
+    home = tmp_path / "hermes_home"
+    (home / "cron").mkdir(parents=True)
+    (home / "cron" / "jobs.json").write_text(jobs)
+    if gateway_pid is not None:
+        (home / "gateway.pid").write_text(json.dumps({"pid": gateway_pid, "kind": "hermes-gateway"}))
+    return home
+
+
+def _assert_cron_warning_is_not_fatal(home, result) -> None:
+    """The cron check must warn without changing the script's exit status.
+
+    Asserting a literal exit 0 would be wrong: the exit code also reflects
+    unrelated checks, which differ between a developer machine with Hermes
+    installed and a bare CI runner. What matters is that adding the cron
+    condition does not turn a run into a failure, so compare against the same
+    HERMES_HOME with the cron store removed.
+    """
+    (home / "cron" / "jobs.json").unlink()
+    baseline = _run_verify_setup(home)
+    assert result.returncode == baseline.returncode, (
+        "the cron check changed the exit status; a stopped gateway is a warning, "
+        "not a setup failure"
+    )
+
+
+def test_verify_setup_warns_when_enabled_cron_has_no_live_gateway(tmp_path) -> None:
+    """Enabled jobs with a dead gateway means nothing fires. Silence here is the bug."""
+    # A pid that cannot be running, so the case is deterministic rather than
+    # depending on a just-exited process not having its pid recycled.
+    home = _cron_home(tmp_path, json.dumps({"jobs": [{"id": "a", "enabled": True}]}), 999999)
+
+    result = _run_verify_setup(home)
+
+    assert "no live gateway" in result.stdout, result.stdout
+    assert "warn" in result.stdout
+    _assert_cron_warning_is_not_fatal(home, result)
+
+
+def test_verify_setup_warns_when_enabled_cron_has_no_pid_file(tmp_path) -> None:
+    """A missing gateway.pid is the same inert-cron condition as a dead pid."""
+    home = _cron_home(tmp_path, json.dumps({"jobs": [{"id": "a", "enabled": True}]}))
+
+    result = _run_verify_setup(home)
+
+    assert "no live gateway" in result.stdout, result.stdout
+    _assert_cron_warning_is_not_fatal(home, result)
+
+
+def test_verify_setup_warns_when_the_gateway_pid_was_reused(tmp_path) -> None:
+    """A live pid is not proof. Pid reuse must not be reported as a healthy gateway.
+
+    This is the whole point of the check: a dead gateway whose number got recycled
+    by some unrelated process is still a host where no cron job will ever fire.
+    """
+    impostor = subprocess.Popen(["sleep", "30"])
+    try:
+        home = _cron_home(
+            tmp_path, json.dumps({"jobs": [{"id": "a", "enabled": True}]}), impostor.pid
+        )
+        result = _run_verify_setup(home)
+    finally:
+        impostor.kill()
+        impostor.wait()
+
+    assert "not a hermes gateway" in result.stdout, result.stdout
+    assert "alive" not in result.stdout
+    _assert_cron_warning_is_not_fatal(home, result)
+
+
+def test_verify_setup_warns_when_the_gateway_pid_belongs_to_a_hermes_non_gateway(
+    tmp_path,
+) -> None:
+    """"hermes" alone in a command line is not a gateway. Only both words qualify."""
+    shim = tmp_path / "hermes-log-tailer"
+    shim.write_text("#!/bin/sh\nsleep 30\n")
+    shim.chmod(0o755)
+    impostor = subprocess.Popen([str(shim)])
+    try:
+        home = _cron_home(
+            tmp_path, json.dumps({"jobs": [{"id": "a", "enabled": True}]}), impostor.pid
+        )
+        result = _run_verify_setup(home)
+    finally:
+        impostor.kill()
+        impostor.wait()
+
+    assert "not a hermes gateway" in result.stdout, result.stdout
+    _assert_cron_warning_is_not_fatal(home, result)
+
+
+def test_verify_setup_warns_on_a_process_that_merely_mentions_the_gateway(tmp_path) -> None:
+    """Both words in a path is not a running gateway. `tail -f hermes-gateway.log` is not one."""
+    log = tmp_path / "hermes-gateway.log"
+    log.write_text("")
+    impostor = subprocess.Popen(["tail", "-f", str(log)])
+    try:
+        home = _cron_home(
+            tmp_path, json.dumps({"jobs": [{"id": "a", "enabled": True}]}), impostor.pid
+        )
+        result = _run_verify_setup(home)
+    finally:
+        impostor.kill()
+        impostor.wait()
+
+    assert "not a hermes gateway" in result.stdout, result.stdout
+    _assert_cron_warning_is_not_fatal(home, result)
+
+
+def test_verify_setup_reports_ok_when_gateway_is_alive(tmp_path) -> None:
+    """The healthy path must not warn, or the warning stops meaning anything.
+
+    Mirrors the real command shape, `.../hermes-agent/... gateway run`, so this
+    asserts the matcher accepts the actual gateway rather than a convenient shim.
+    """
+    shim = tmp_path / "hermes-agent-python"
+    shim.write_text("#!/bin/sh\nsleep 30\n")
+    shim.chmod(0o755)
+    gateway = subprocess.Popen([str(shim), "gateway", "run", "--replace"])
+    try:
+        home = _cron_home(
+            tmp_path, json.dumps({"jobs": [{"id": "a", "enabled": True}]}), gateway.pid
+        )
+        result = _run_verify_setup(home)
+    finally:
+        gateway.kill()
+        gateway.wait()
+
+    assert "gateway pid" in result.stdout, result.stdout
+    assert "alive" in result.stdout
+    assert "no live gateway" not in result.stdout
+    assert "not a hermes gateway" not in result.stdout
+
+
+def test_verify_setup_does_not_warn_when_no_cron_job_is_enabled(tmp_path) -> None:
+    """Disabled jobs cannot fail to fire, so a dead gateway is irrelevant."""
+    home = _cron_home(tmp_path, json.dumps({"jobs": [{"id": "a", "enabled": False}]}))
+
+    result = _run_verify_setup(home)
+
+    assert "none enabled" in result.stdout, result.stdout
+    assert "no live gateway" not in result.stdout
+
+
+def test_verify_setup_stays_silent_about_cron_when_none_is_configured(tmp_path) -> None:
+    """A host with no cron store is not a defect and must produce no cron line."""
+    home = tmp_path / "hermes_home"
+    home.mkdir()
+
+    result = _run_verify_setup(home)
+
+    assert "cron:" not in result.stdout, result.stdout
+
+
+def test_verify_setup_survives_a_malformed_cron_store(tmp_path) -> None:
+    """A corrupt jobs.json must skip the check, never traceback or fail the run."""
+    home = _cron_home(tmp_path, "{not json at all")
+
+    result = _run_verify_setup(home)
+
+    assert "Traceback" not in result.stdout + result.stderr
+    assert "cron:" not in result.stdout
 
 
 def test_readme_does_not_claim_universal_zero_setup() -> None:
