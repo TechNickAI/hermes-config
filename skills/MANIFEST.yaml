@@ -11,7 +11,7 @@
 #   use_when              the trigger conditions, for selective installation
 _generated_by: scripts/generate_manifest.py
 _do_not_edit: Regenerate with `python scripts/generate_manifest.py`; CI checks it.
-count: 25
+count: 26
 skills:
 - name: address-pr-comments
   version: 1.0.0
@@ -404,6 +404,21 @@ skills:
   - trust
   - oversight
   path: skills/trust-framework
+- name: user-profile-audit
+  version: 1.0.0
+  scope: solo
+  summary: Use when auditing or cleaning a bloated, junk, or unsafe USER.md — the Hermes user-profile memory store.
+  use_when: auditing or cleaning a bloated, junk, or unsafe USER.md — the Hermes user-profile memory store. Covers "what should be in USER.md", a fleet-wide user-profile review, and the case where an agent has been dumping overflow into USER.md because MEMORY.md filled up. Scores a profile against a researched…
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - memory
+  - user-profile
+  - audit
+  - privacy
+  - prompt-budget
+  - curation
+  path: skills/user-profile-audit
 - name: vapi-calls
   version: 1.0.0
   scope: solo
