@@ -80,6 +80,14 @@ The test for every candidate line:
 > it does not belong. If yes, it belongs — in the smallest form that still changes
 > behavior.
 
+Two supporting tests, each of which independently rules out a failure class seen in real
+profiles:
+
+- **Would the user expect this to be sent to every model provider and tool, on every
+  request?** This is what disqualifies secrets and account identifiers outright.
+- **Is it still likely to be true in six months?** Durable facts qualify; anything
+  point-in-time belongs in retrieval memory or session state.
+
 Six categories qualify:
 
 1. **Identity and role** — name, what they do, expertise level. Drives register and how
@@ -138,10 +146,22 @@ Anything that decays: hard dates, "currently", "this week", PR and issue numbers
 SHAs, in-flight task status, active-project lists that churn.
 
 A stale line does not merely waste budget — it actively misleads, because the agent
-cannot tell a live preference from an expired one. Published research on preference
-handling reports that systems frequently act on an originally-stated preference after
-the user has changed it, so contradictory or undated history is a real failure mode, not
-a tidiness concern.
+cannot tell a live preference from an expired one, and the failure is measured rather
+than theoretical:
+
+- **HorizonBench** ([arXiv:2604.17283](https://arxiv.org/abs/2604.17283), Apr 2026)
+  tests 25 frontier models on preferences that change over 6-month histories. The best
+  reaches 52.8%, most score at or below the 20% chance baseline, and **when models err
+  on an evolved preference, over a third of the time they pick the user's originally
+  stated value** rather than the updated one. The authors name state-tracking, not
+  context length, as the bottleneck.
+- **PrefEval** ([arXiv:2502.09597](https://arxiv.org/abs/2502.09597), ICLR 2025 oral)
+  found zero-shot preference-following accuracy falling below 10% at merely 10 turns,
+  and degrading even with prompting and retrieval.
+
+So an undated or contradictory entry is not untidiness. It is the exact input shape
+models are measurably worst at, sitting in the prompt on every turn. Supersede in place;
+never leave two entries that disagree.
 
 ### 4. Dossier material — remove
 
