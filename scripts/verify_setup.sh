@@ -59,17 +59,76 @@ fi
 
 # ----------------------------------------------------------------------- skills
 if [ -d "$HERMES_HOME/skills" ]; then
-  count=$(find "$HERMES_HOME/skills" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
-  ok "skills directory present ($count installed)"
-
   # A skill directory with no SKILL.md is a broken copy — the most common failure
   # mode of a partial or interrupted `cp -r`.
+  #
+  # But not every top-level directory is a skill. Hermes also supports CATEGORY
+  # directories that hold nested skills plus a DESCRIPTION.md, and it resolves
+  # skills by walking the tree (agent/skill_utils.py iter_skill_index_files uses
+  # os.walk, with no depth-1 assumption). Treating a category as a broken skill
+  # made this script report dozens of false failures on a healthy install, which
+  # is the exact inversion of what a verifier is for: a real failure becomes one
+  # line among many, and "incomplete copy" invites deleting a correct tree.
+  #
+  # Dot-directories are Hermes metadata, not skills. Hermes prunes them itself
+  # (EXCLUDED_SKILL_DIRS covers .hub, .archive, .git and friends), so flagging
+  # .hub or .curator_backups as broken skills is noise about internal state the
+  # user never copied.
+  #
+  # Nesting is not limited to one level: categories can hold sub-categories
+  # (mlops/inference/llama-cpp/SKILL.md is a real three-deep layout), so the
+  # search is unbounded in depth. It prunes the same support directories Hermes
+  # prunes — references/templates/assets/scripts can hold archived SKILL.md
+  # files that are progressive-disclosure data, not skill roots — plus dot and
+  # cache directories, so the count matches what Hermes will actually load.
+  #
+  # -mindepth 1, not 2: with -mindepth 2 the prune clause is never evaluated
+  # against a support directory sitting directly under the category, so an
+  # archived references/SKILL.md would still be counted and could make an
+  # incomplete copy look whole. Only reached when the directory has no SKILL.md
+  # of its own, so nothing is double counted.
+  count_nested_skills() {
+    find "$1" -mindepth 1 -type d \
+      \( -name '.*' -o -name '__pycache__' -o -name 'node_modules' \
+         -o -name 'references' -o -name 'templates' -o -name 'assets' -o -name 'scripts' \) -prune \
+      -o -name SKILL.md -type f -print 2>/dev/null | wc -l | tr -d ' '
+  }
+
+  skill_count=0
   while IFS= read -r d; do
     [ -n "$d" ] || continue
-    if [ ! -f "$d/SKILL.md" ]; then
-      bad "$(basename "$d") has no SKILL.md — incomplete copy, Hermes will ignore it"
+    name=$(basename "$d")
+    case "$name" in
+      .*) continue ;;
+    esac
+
+    if [ -f "$d/SKILL.md" ]; then
+      skill_count=$((skill_count + 1))
+      continue
+    fi
+
+    nested=$(count_nested_skills "$d")
+    if [ "${nested:-0}" -gt 0 ]; then
+      # A category. Its children are the skills.
+      skill_count=$((skill_count + nested))
+      if [ ! -f "$d/DESCRIPTION.md" ]; then
+        warn "$name is a category with $nested skill(s) but no DESCRIPTION.md"
+        note "add $d/DESCRIPTION.md so the category is described to the agent"
+      fi
+    elif [ -f "$d/DESCRIPTION.md" ]; then
+      # Described as a category, but nothing is behind it. It resolves to no
+      # skills at all, which is the same user-visible outcome as an incomplete
+      # copy, so it keeps the original contract and fails. The message says what
+      # is actually wrong rather than pointing at a missing SKILL.md that was
+      # never supposed to be there.
+      bad "$name is an empty category — DESCRIPTION.md but no skills inside"
+      note "copy a skill into $d/ or remove the directory"
+    else
+      bad "$name has no SKILL.md — incomplete copy, Hermes will ignore it"
     fi
   done < <(find "$HERMES_HOME/skills" -maxdepth 1 -mindepth 1 -type d)
+
+  ok "skills directory present ($skill_count installed)"
 
   # Dependency checks are driven by skills/MANIFEST.yaml rather than hardcoded here.
   # Hardcoding meant a skill could declare a dependency this script never checked —
@@ -130,12 +189,40 @@ if [ -d "$HERMES_HOME/plugins/cortex" ] || [ -d "$HERMES_HOME/plugins/memory/cor
   # Copying the plugin without pointing config at it is a no-op that looks like success.
   # Accept quoted forms too: provider: cortex / "cortex" / 'cortex' are all valid YAML,
   # and failing a correctly-configured setup is worse than not checking at all.
-  if [ -f "$HERMES_HOME/config.yaml" ] \
-    && grep -qE "^[[:space:]]*provider:[[:space:]]*[\"']?cortex[\"']?[[:space:]]*$" "$HERMES_HOME/config.yaml"; then
+  #
+  # Config is not only the root file. Each profile under profiles/<name>/config.yaml
+  # carries its own memory.provider, and a fleet can deliberately leave the root
+  # unset while every profile selects cortex. Checking the root alone reported a
+  # working memory backend as inert and invited a config edit that was not needed.
+  cortex_provider_re="^[[:space:]]*provider:[[:space:]]*[\"']?cortex[\"']?[[:space:]]*$"
+  cortex_selected_by=""
+
+  if [ -f "$HERMES_HOME/config.yaml" ] && grep -qE "$cortex_provider_re" "$HERMES_HOME/config.yaml"; then
+    cortex_selected_by="config.yaml"
+  fi
+
+  cortex_profiles=""
+  if [ -d "$HERMES_HOME/profiles" ]; then
+    while IFS= read -r profile_config; do
+      [ -n "$profile_config" ] || continue
+      if grep -qE "$cortex_provider_re" "$profile_config"; then
+        profile_name=$(basename "$(dirname "$profile_config")")
+        cortex_profiles="${cortex_profiles:+$cortex_profiles, }$profile_name"
+      fi
+    done < <(find "$HERMES_HOME/profiles" -maxdepth 2 -mindepth 2 -name config.yaml -type f 2>/dev/null | sort)
+  fi
+
+  if [ -n "$cortex_selected_by" ] && [ -n "$cortex_profiles" ]; then
+    ok "cortex selected in config.yaml and by profile(s): $cortex_profiles"
+  elif [ -n "$cortex_selected_by" ]; then
     ok "config.yaml selects the cortex memory provider"
+  elif [ -n "$cortex_profiles" ]; then
+    ok "cortex selected by profile(s): $cortex_profiles"
+    note "the root config.yaml does not select it, which is fine if that is deliberate"
   else
-    bad "cortex is copied but config.yaml does not select it — the plugin is inert"
+    bad "cortex is copied but no config selects it — the plugin is inert"
     note "set  memory.provider: cortex  in $HERMES_HOME/config.yaml"
+    note "or in a profile at $HERMES_HOME/profiles/<name>/config.yaml"
   fi
 fi
 
