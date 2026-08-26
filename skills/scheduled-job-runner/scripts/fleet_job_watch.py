@@ -51,6 +51,45 @@ for name, base in bases:
     led = os.path.join(base, "jobstate", "runs.jsonl")
     rec = {"profile": name, "runs": 0, "states": {}, "failures": [],
            "noteworthy": 0, "runner": "absent", "quiet": True}
+
+    # COVERAGE. The ledger only knows jobs jobrun executes. On one host that is
+    # 31 of 54 enabled cron jobs, so a ledger-only read reported "0 failures"
+    # while that host's deploy-drift watchdog failed five times in a row and
+    # paged the owner. The scheduler's own jobs.json is the real denominator;
+    # anything in it without a ledger entry is a job this monitor CANNOT see,
+    # and that has to be stated rather than silently omitted.
+    rec["cron_enabled"] = 0
+    rec["uncovered"] = []
+    cj = os.path.join(base, "cron", "jobs.json")
+    if os.path.isfile(cj):
+        try:
+            raw = json.load(open(cj, errors="replace"))
+            jobs = raw if isinstance(raw, list) else raw.get("jobs", [])
+        except Exception:
+            jobs = []
+        covered = set()
+        if os.path.isfile(led):
+            for line in open(led, errors="replace"):
+                line = line.strip()
+                if not line: continue
+                try: row = json.loads(line)
+                except Exception: continue
+                if row.get("event") == "job.finished":
+                    covered.add(row.get("job_id"))
+
+        def _slug(s):
+            o = "".join(ch if ch.isalnum() else "-" for ch in (s or "").lower())
+            while "--" in o: o = o.replace("--", "-")
+            return o.strip("-")
+
+        for j in jobs:
+            if not j.get("enabled"): continue
+            rec["cron_enabled"] += 1
+            if _slug(j.get("name")) not in covered:
+                rec["uncovered"].append({
+                    "name": j.get("name"),
+                    "script": j.get("script") or "(agent prompt)",
+                })
     jr = os.path.join(base, "scripts", "jobrun.py")
     if os.path.isfile(jr):
         t = open(jr, errors="replace").read()
@@ -163,6 +202,7 @@ import json, os
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from telethon.sync import TelegramClient
+from telethon.tl import functions
 since = datetime.now(timezone.utc) - timedelta(hours=%d)
 cfg = json.load(open(os.path.expanduser("~/.tgcli/config.json")))
 
@@ -189,12 +229,39 @@ if c is None:
     raise SystemExit
 
 counts = Counter(); samples = defaultdict(list)
-for d in c.iter_dialogs(limit=60):
+alerts = []
+per_topic = Counter()
+topic_names = {}
+
+# ALERT SHAPES. These are what the user actually reacts to, and a count can
+# never surface them. Matching is on the SCHEDULER'S OWN envelope plus explicit
+# failure markers -- not on scary words, which is the thing being audited.
+ALERT_MARKS = ("failed: script exited", "has failed", "runs in a row",
+               "\U0001f534", "\U0001f6d1", "critical", "drift",
+               "not in the repo", "stale code", "wedged", "halt")
+
+for d in c.iter_dialogs(limit=200):
     e = d.entity
     if not (getattr(e, "megagroup", False) or getattr(e, "broadcast", False)):
         continue
+    # FORUM TOPICS. These groups are forums; a flat iter_messages mixes every
+    # topic together and, worse, `limit` is consumed by whichever topic is
+    # chattiest. One forum ran ~190 messages/48h in a single busy topic, so a
+    # limit of 150 never reached the ops topic at all -- its alerts were
+    # counted into the forum total and then discarded, which is exactly how a
+    # monitor reports 144 messages and still sees nothing.
+    if getattr(e, "forum", False):
+        try:
+            r = c(functions.messages.GetForumTopicsRequest(
+                peer=e, offset_date=None, offset_id=0, offset_topic=0, limit=100))
+            for t_ in r.topics:
+                tid = getattr(t_, "id", None)
+                if tid is not None:
+                    topic_names[(d.name, tid)] = getattr(t_, "title", "?")
+        except Exception:
+            pass
     try:
-        for m in c.iter_messages(e, limit=150):
+        for m in c.iter_messages(e, limit=600):
             if not m.date or m.date < since: break
             body = m.message or ""
             if not body and getattr(m, "rich_message", None):
@@ -203,13 +270,37 @@ for d in c.iter_dialogs(limit=60):
                 except Exception:
                     body = ""
             if not body: continue
+            tid = None
+            rt = getattr(m, "reply_to", None)
+            if rt is not None:
+                tid = getattr(rt, "reply_to_top_id", None) or getattr(
+                    rt, "reply_to_msg_id", None)
+            topic = topic_names.get((d.name, tid))
             counts[d.name] += 1
+            per_topic[d.name + " / " + str(topic or tid or "-")] += 1
+            low = body.lower()
+            is_bot = False
+            try:
+                is_bot = bool(getattr(m.sender, "bot", False))
+            except Exception:
+                pass
+            # Carry the FULL body of anything alert-shaped. Judgement needs the
+            # text; a count cannot tell a real page from routine chatter.
+            if is_bot and any(k in low for k in ALERT_MARKS):
+                alerts.append({
+                    "chat": d.name, "topic": topic, "topic_id": tid,
+                    "at": m.date.isoformat(), "text": body[:1200],
+                })
             if len(samples[d.name]) < 5:
                 samples[d.name].append(body[:260].replace("\n", " | "))
     except Exception:
         continue
 c.disconnect()
-print(json.dumps({"per_chat": dict(counts.most_common(20)),
+alerts.sort(key=lambda a: a["at"])
+print(json.dumps({"per_chat": dict(counts.most_common(30)),
+                  "per_topic": dict(per_topic.most_common(60)),
+                  "alerts": alerts[-60:],
+                  "alert_count": len(alerts),
                   "samples": {k: v for k, v in list(samples.items())[:10]}}))
 '''
 
