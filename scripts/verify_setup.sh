@@ -139,6 +139,97 @@ if [ -d "$HERMES_HOME/plugins/cortex" ] || [ -d "$HERMES_HOME/plugins/memory/cor
   fi
 fi
 
+# ------------------------------------------------------------ gateway code skew
+# A gateway process serves the code it booted with. Pulling or checking out new code
+# does not restart anything, so a long-lived gateway can drift many commits behind the
+# checkout it runs from while every other check here still reports healthy. The failure
+# only surfaces later, as an ImportError in a cron job, which is exactly the "nothing
+# errors, the gap surfaces later" class this script exists to catch.
+#
+# The reference point is the last time HEAD actually moved (the reflog), not the HEAD
+# commit date. Checking out an older branch or tag rewrites the working tree while the
+# commit date goes backwards, and comparing against the commit date would miss that.
+# The reflog is only written when HEAD really moves, so a no-op pull cannot trigger this.
+checkout="$HERMES_HOME/hermes-agent"
+if [ -d "$checkout/.git" ] && command -v git >/dev/null 2>&1 && command -v pgrep >/dev/null 2>&1; then
+  # Extract the epoch from inside the reflog selector's braces rather than stripping
+  # non-digits from the whole token: the selector carries a ref name, and a ref with
+  # digits in it would otherwise concatenate into a bogus far-future timestamp.
+  disk_epoch=$(git -C "$checkout" log -g -1 --date=unix --format=%gd HEAD 2>/dev/null \
+    | sed -n 's/.*@{\([0-9][0-9]*\)}.*/\1/p')
+  if [ -z "$disk_epoch" ]; then
+    # No reflog (shallow clone, or the reflog expired). Fall back to the commit date.
+    disk_epoch=$(git -C "$checkout" log -1 --format=%ct 2>/dev/null)
+    case "$disk_epoch" in "" | *[!0-9]*) disk_epoch="" ;; esac
+  fi
+
+  # Pick the date dialect once, explicitly. BSD/macOS parses with -j -f, GNU with -d,
+  # and the two flags mean different things on the other platform, so probing beats
+  # letting one form fall through to the other on failure.
+  date_dialect=""
+  if date -j -f '%Y' '2000' +%s >/dev/null 2>&1; then
+    date_dialect="bsd"
+  elif date -d '2000-01-01' +%s >/dev/null 2>&1; then
+    date_dialect="gnu"
+  fi
+
+  if [ -n "$disk_epoch" ] && [ -n "$date_dialect" ]; then
+    # pgrep -f matches on the whole argv, so this script's own process tree matches
+    # whenever it is launched from a shell whose command line happens to contain the
+    # pattern (a CI step, an operator's one-liner). Walk our own ancestry once and skip
+    # those pids, otherwise the verifier reports itself as a stale gateway.
+    own_pids=" $$ "
+    walk=$$
+    # Capped and monotonic: ps can report a ppid that does not decrease (pid reuse,
+    # reparenting), and a smoke test that hangs is worse than one that misses a warning.
+    hops=0
+    while [ "$walk" -gt 1 ] 2>/dev/null && [ "$hops" -lt 32 ]; do
+      parent=$(ps -o ppid= -p "$walk" 2>/dev/null | tr -dc '0-9')
+      [ -n "$parent" ] || break
+      [ "$parent" -lt "$walk" ] 2>/dev/null || break
+      own_pids="$own_pids$parent "
+      walk="$parent"
+      hops=$((hops + 1))
+    done
+
+    skewed=0
+    while IFS= read -r pid; do
+      [ -n "$pid" ] || continue
+      case "$own_pids" in *" $pid "*) continue ;; esac
+      # LC_ALL=C so the weekday and month abbreviations match the parse format below
+      # regardless of the operator's locale. ps pads lstart, so squeeze before parsing.
+      started=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' | sed 's/^ *//; s/ *$//')
+      [ -n "$started" ] || continue
+      if [ "$date_dialect" = "bsd" ]; then
+        boot_epoch=$(LC_ALL=C date -j -f '%a %b %d %H:%M:%S %Y' "$started" +%s 2>/dev/null)
+      else
+        boot_epoch=$(LC_ALL=C date -d "$started" +%s 2>/dev/null)
+      fi
+      # A skew warning is a nicety and must never break the script, so anything that
+      # does not parse to a plain integer is skipped rather than guessed at.
+      boot_epoch=$(printf '%s' "$boot_epoch" | tr -d '[:space:]')
+      case "$boot_epoch" in "" | *[!0-9]*) continue ;; esac
+
+      if [ "$boot_epoch" -lt "$disk_epoch" ]; then
+        skewed=$((skewed + 1))
+        # Approximate, and only ever shown as approximate: --since counts by committer
+        # date, which rebases and cherry-picks reorder.
+        behind=$(git -C "$checkout" rev-list --count HEAD --since="@$boot_epoch" 2>/dev/null \
+          | tr -dc '0-9')
+        if [ -n "$behind" ] && [ "$behind" -gt 0 ]; then
+          warn "gateway pid $pid booted before the current checkout (~$behind commits behind)"
+        else
+          warn "gateway pid $pid booted before the checkout last changed, so it runs stale code"
+        fi
+      fi
+    done < <(pgrep -f 'hermes.*gateway run' 2>/dev/null)
+
+    if [ "$skewed" -gt 0 ]; then
+      note "restart to pick up the code on disk: hermes gateway restart"
+    fi
+  fi
+fi
+
 # ------------------------------------------------------------------------ result
 echo
 if [ "$fails" -gt 0 ]; then
