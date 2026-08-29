@@ -15,7 +15,8 @@ Output contract (cron runs this with ``no_agent: true``, so stdout IS the
 message that reaches a human):
 
   * everything healthy, nothing repaired -> print NOTHING (silent success)
-  * self-repaired                        -> report the repair, no alarm
+  * self-repaired                        -> keep repair facts in the run log,
+                                            but do not interrupt the owner
   * still broken / setup failure         -> alarm with the reason
   * unreachable / unparseable            -> warn as inconclusive, never "down"
 
@@ -213,8 +214,8 @@ def check(target: Target, query: str, timeout: int, retry_delay: int) -> dict[st
     return result
 
 
-def format_report(results: list[dict[str, Any]]) -> str:
-    """Render results as the message a human receives. Empty means silence."""
+def format_report(results: list[dict[str, Any]], *, audit_repairs: bool = True) -> str:
+    """Render owner-facing stdout; optionally retain repair facts on stderr."""
     broken = [r for r in results if r["state"] in ("broken", "setup")]
     odd = [r for r in results if r["state"] in ("unreachable", "indeterminate")]
     repaired = [r for r in results if r["state"] == "repaired"]
@@ -231,10 +232,17 @@ def format_report(results: list[dict[str, Any]]) -> str:
             lines.append(f"⚠️ Cortex check inconclusive on {len(odd)} of {len(results)} profiles")
         lines += [f"  {r['label']} ({r['state']}): {r['detail']}" for r in odd]
 
+    # A repair-only run restored the invariant and leaves no owner action. Its
+    # exact facts already remain in the jobrun log, so delivering them every
+    # night is success narration. Mixed reports still include repair context
+    # beneath a real broken/inconclusive headline.
     if repaired:
-        if not lines:
-            lines.append("🔧 Cortex self-repaired overnight")
-        lines += [f"  {r['label']}: {r['detail']}" for r in repaired]
+        repair_lines = [f"  {r['label']}: {r['detail']}" for r in repaired]
+        if lines:
+            lines += repair_lines
+        elif audit_repairs:
+            print("Cortex self-repaired overnight", file=sys.stderr)
+            print("\n".join(repair_lines), file=sys.stderr)
 
     # Blast radius: an alarm should say what is still fine, not just what broke.
     if lines and (broken or odd):

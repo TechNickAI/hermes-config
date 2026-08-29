@@ -180,17 +180,16 @@ def test_healthy_fleet_prints_nothing(mod):
     assert mod.format_report(results) == ""
 
 
-def test_repair_is_reported_without_alarming(mod):
+def test_repair_is_silent_after_restoring_health(mod, capsys):
     results = [
         {"label": "a", "state": "healthy"},
         {"label": "b", "state": "repaired", "detail": "fts_rebuilt (2/2 embedded)"},
     ]
 
-    report = mod.format_report(results)
-
-    assert "🔧" in report
-    assert "fts_rebuilt" in report
-    assert "🔴" not in report
+    assert mod.format_report(results) == ""
+    audit = capsys.readouterr().err
+    assert "fts_rebuilt" in audit
+    assert "2/2 embedded" in audit
 
 
 def test_broken_alarms_and_names_the_reason(mod):
@@ -355,6 +354,30 @@ def test_repairs_are_surfaced_with_coverage(mod, monkeypatch):
     assert result["state"] == "repaired"
     assert "fts_rebuilt" in result["detail"]
     assert "5/5" in result["detail"]
+
+
+def test_mixed_alarm_keeps_repair_context(mod):
+    """Silencing success must not erase context from a real alarm."""
+    report = mod.format_report([
+        {"label": "alpha", "state": "indeterminate",
+         "detail": "endpoint timed out"},
+        {"label": "beta", "state": "repaired",
+         "detail": "fts_rebuilt (5/5 embedded)"},
+        {"label": "gamma", "state": "healthy"},
+    ])
+
+    assert "inconclusive" in report
+    assert "alpha" in report and "endpoint timed out" in report
+    assert "beta" in report and "fts_rebuilt" in report
+
+
+def test_mixed_alarm_does_not_duplicate_repairs_to_stderr(mod, capsys):
+    mod.format_report([
+        {"label": "alpha", "state": "broken", "detail": "still corrupt"},
+        {"label": "beta", "state": "repaired", "detail": "fts_rebuilt"},
+    ])
+
+    assert capsys.readouterr().err == ""
 
 
 def test_unparseable_output_is_indeterminate_not_broken(mod, monkeypatch):
