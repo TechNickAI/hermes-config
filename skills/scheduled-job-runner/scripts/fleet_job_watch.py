@@ -233,12 +233,16 @@ alerts = []
 per_topic = Counter()
 topic_names = {}
 
-# ALERT SHAPES. These are what the user actually reacts to, and a count can
-# never surface them. Matching is on the SCHEDULER'S OWN envelope plus explicit
-# failure markers -- not on scary words, which is the thing being audited.
-ALERT_MARKS = ("failed: script exited", "has failed", "runs in a row",
-               "\U0001f534", "\U0001f6d1", "critical", "drift",
-               "not in the repo", "stale code", "wedged", "halt")
+# ALERT SHAPES. Scheduled-job traffic is identified STRUCTURALLY from the
+# scheduler's own envelope, never from scary words. Keyword-only matching hid
+# routine success cards, which made it impossible to judge noisy narration or
+# a quietly broken job. Direct bot alerts do not have that envelope, so keep a
+# narrow second lane for their explicit alert shapes.
+CRON_MARKERS = ("cronjob response:", "(job_id:",
+                "to stop or manage this job", "cron '")
+DIRECT_ALERT_MARKS = ("failed: script exited", "has failed", "runs in a row",
+                      "\U0001f534", "\U0001f6d1", "critical", "drift",
+                      "not in the repo", "stale code", "wedged", "halt")
 
 for d in c.iter_dialogs(limit=200):
     e = d.entity
@@ -284,12 +288,17 @@ for d in c.iter_dialogs(limit=200):
                 is_bot = bool(getattr(m.sender, "bot", False))
             except Exception:
                 pass
-            # Carry the FULL body of anything alert-shaped. Judgement needs the
-            # text; a count cannot tell a real page from routine chatter.
-            if is_bot and any(k in low for k in ALERT_MARKS):
+            # Carry every scheduled-job card. Judgement needs the full body to
+            # catch both real pages and success narration that should be silent.
+            # Direct bot alerts outside the scheduler envelope stay a narrow,
+            # explicit lane rather than turning scary-word matching into a
+            # severity classifier.
+            is_cron = any(k in low for k in CRON_MARKERS)
+            is_direct_alert = any(k in low for k in DIRECT_ALERT_MARKS)
+            if is_bot and (is_cron or is_direct_alert):
                 alerts.append({
                     "chat": d.name, "topic": topic, "topic_id": tid,
-                    "at": m.date.isoformat(), "text": body[:1200],
+                    "at": m.date.isoformat(), "text": body[:12000],
                 })
             if len(samples[d.name]) < 5:
                 samples[d.name].append(body[:260].replace("\n", " | "))
