@@ -15,7 +15,8 @@ Output contract (cron runs this with ``no_agent: true``, so stdout IS the
 message that reaches a human):
 
   * everything healthy, nothing repaired -> print NOTHING (silent success)
-  * self-repaired                        -> report the repair, no alarm
+  * self-repaired                        -> keep repair facts in the run log,
+                                            but do not interrupt the owner
   * still broken / setup failure         -> alarm with the reason
   * unreachable / unparseable            -> warn as inconclusive, never "down"
 
@@ -231,9 +232,11 @@ def format_report(results: list[dict[str, Any]]) -> str:
             lines.append(f"⚠️ Cortex check inconclusive on {len(odd)} of {len(results)} profiles")
         lines += [f"  {r['label']} ({r['state']}): {r['detail']}" for r in odd]
 
-    if repaired:
-        if not lines:
-            lines.append("🔧 Cortex self-repaired overnight")
+    # A repair-only run restored the invariant and leaves no owner action. Its
+    # exact facts already remain in the jobrun log, so delivering them every
+    # night is success narration. Mixed reports still include repair context
+    # beneath a real broken/inconclusive headline.
+    if repaired and lines:
         lines += [f"  {r['label']}: {r['detail']}" for r in repaired]
 
     # Blast radius: an alarm should say what is still fine, not just what broke.
