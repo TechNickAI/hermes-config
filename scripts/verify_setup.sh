@@ -158,7 +158,9 @@ if [ "$(basename "$(dirname "$HERMES_HOME")")" != "profiles" ] && [ -d "$profile
     warn "$profile_count profile(s) found; every check above covered only $HERMES_HOME"
     while IFS= read -r p; do
       [ -n "$p" ] || continue
-      note "not inspected: $(basename "$p")   re-run with: HERMES_HOME=$p scripts/verify_setup.sh"
+      # Quote the path so the printed command is copy-pastable even for a profile
+      # directory containing spaces or shell metacharacters.
+      note "not inspected: $(basename "$p")   re-run with: HERMES_HOME=$(printf '%q' "$p") scripts/verify_setup.sh"
 
       # Two shapes are cheap and unambiguous without a full re-run, and both are
       # already checked on the root home above.
@@ -175,7 +177,13 @@ if [ "$(basename "$(dirname "$HERMES_HOME")")" != "profiles" ] && [ -d "$profile
           case "$(basename "$sd")" in
             .*) continue ;;
           esac
-          if [ -z "$(find "$sd" -name SKILL.md -type f -print -quit 2>/dev/null)" ]; then
+          # Prune dot and cache directories during the walk, not just at the top
+          # level. Hermes ignores them, so an archived .archive/SKILL.md must not
+          # make an otherwise empty directory look whole.
+          found=$(find "$sd" \
+            \( -name '.*' -o -name '__pycache__' -o -name 'node_modules' \) -prune \
+            -o -name SKILL.md -type f -print -quit 2>/dev/null)
+          if [ -z "$found" ]; then
             if [ -f "$sd/DESCRIPTION.md" ]; then
               warn "$(basename "$p")/skills/$(basename "$sd") is an empty category, DESCRIPTION.md but no skills inside"
             else
