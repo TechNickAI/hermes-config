@@ -270,17 +270,56 @@ def test_selftest_does_not_pollute_the_real_ledger(home):
 
 
 def test_critical_job_failure_is_labelled(home):
-    """A failed money job must not read like a failed report generator."""
+    """A failed money job must not read like a failed report generator.
+
+    v2 CHANGE: `critical = true` no longer stamps CRITICAL on every failure.
+    It raises the CEILING a job may reach, and reaching it also requires the
+    script to actually touch live money. A job flagged critical whose script
+    shows no live-money markers is CLAMPED, and the clamp is reported as a
+    spec bug — that is the fix for a real incident where a paper-trading desk
+    emitted "This job moves real money" on every hiccup.
+    """
     script = home / "scripts" / "boom.py"
-    script.write_text('import sys\nsys.exit(9)\n')
+    # Exit 30 is the CRITICAL code, so the job genuinely ASKS for critical.
+    # With no live-money markers it must be clamped and told why. (An exit 9
+    # would be `failed_unknown`, which never reaches critical in the first
+    # place, so there would be nothing to clamp — a weaker test.)
+    script.write_text("import sys\nsys.exit(30)\n")
     _spec(home, "money",
           f'job_id = "money"\nscript = "{script}"\nruntime = "python"\n'
           "critical = true\ntimeout = 60\n")
     r = _run(home, "--spec", "money")
     assert r.returncode == EXIT_CHILD
-    assert "CRITICAL" in r.stdout, r.stdout
+    # No live-money markers in the script, so CRITICAL is clamped...
+    assert "DEGRADED" in r.stdout, r.stdout
+    # ...and the operator is told WHY, rather than it silently downgrading.
+    assert "SPEC BUG" in r.stdout or "clamped" in r.stdout, r.stdout
+    # The raw termination detail survives for debugging.
+    assert "exited 30" in r.stdout, r.stdout
     ledger = (home / "jobstate" / "runs.jsonl").read_text()
     assert '"critical": true' in ledger.lower()
+
+
+def test_critical_is_reached_only_by_a_live_money_job(home):
+    """The label must be earnable, or clamping it would just be censorship.
+
+    Condition 1 of the four-condition CRITICAL test is mechanical: real money
+    at risk right now. A script carrying live-trading markers, flagged
+    critical, exiting the critical code, DOES reach CRITICAL.
+    """
+    script = home / "scripts" / "livemoney.py"
+    script.write_text(
+        "import sys\n"
+        "TRADING_BASE = 'https://api.alpaca.markets'\n"
+        "sys.exit(30)\n"
+    )
+    _spec(home, "livemoney",
+          f'job_id = "livemoney"\nscript = "{script}"\nruntime = "python"\n'
+          "critical = true\ntimeout = 60\n")
+    r = _run(home, "--spec", "livemoney")
+    assert r.returncode == EXIT_CHILD
+    assert "CRITICAL" in r.stdout, r.stdout
+    assert "LIVE money" in r.stdout, r.stdout
 
 
 def test_noncritical_failure_is_not_labelled_critical(home):
@@ -494,14 +533,23 @@ def test_notify_target_is_not_required(home):
 
 
 def test_critical_failure_notification_is_marked_critical(home):
-    """The message a human wakes up to must say it guards money."""
+    """The message a human wakes up to must say it guards money.
+
+    v2 CHANGE: the money line is DERIVED from what the script does, not from a
+    hand-set flag, so this fixture carries live-trading markers. A flag alone
+    can no longer make a card claim real money is at risk.
+    """
     sink = home / "sent3.txt"
     fake = home / "scripts" / "fake_send3.sh"
     fake.write_text(f'#!/bin/bash\ncat > {sink}\n')
     fake.chmod(0o755)
 
     boom = home / "scripts" / "boom5.py"
-    boom.write_text("import sys\nsys.exit(7)\n")
+    boom.write_text(
+        "import sys\n"
+        "TRADING_BASE = 'https://api.alpaca.markets'\n"
+        "sys.exit(30)\n"
+    )
     _spec(home, "money2",
           f'job_id = "money2"\nscript = "{boom}"\nruntime = "python"\n'
           "critical = true\ntimeout = 60\n"
