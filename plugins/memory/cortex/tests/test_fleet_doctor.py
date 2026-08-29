@@ -180,13 +180,16 @@ def test_healthy_fleet_prints_nothing(mod):
     assert mod.format_report(results) == ""
 
 
-def test_repair_is_silent_after_restoring_health(mod):
+def test_repair_is_silent_after_restoring_health(mod, capsys):
     results = [
         {"label": "a", "state": "healthy"},
         {"label": "b", "state": "repaired", "detail": "fts_rebuilt (2/2 embedded)"},
     ]
 
     assert mod.format_report(results) == ""
+    audit = capsys.readouterr().err
+    assert "fts_rebuilt" in audit
+    assert "2/2 embedded" in audit
 
 
 def test_broken_alarms_and_names_the_reason(mod):
@@ -366,6 +369,15 @@ def test_mixed_alarm_keeps_repair_context(mod):
     assert "inconclusive" in report
     assert "alpha" in report and "endpoint timed out" in report
     assert "beta" in report and "fts_rebuilt" in report
+
+
+def test_mixed_alarm_does_not_duplicate_repairs_to_stderr(mod, capsys):
+    mod.format_report([
+        {"label": "alpha", "state": "broken", "detail": "still corrupt"},
+        {"label": "beta", "state": "repaired", "detail": "fts_rebuilt"},
+    ])
+
+    assert capsys.readouterr().err == ""
 
 
 def test_unparseable_output_is_indeterminate_not_broken(mod, monkeypatch):
