@@ -139,6 +139,66 @@ if [ -d "$HERMES_HOME/plugins/cortex" ] || [ -d "$HERMES_HOME/plugins/memory/cor
   fi
 fi
 
+# ---------------------------------------------------------------------- profiles
+# Every check above reads exactly one Hermes home. A machine running profiles has
+# several, and a profile is where the quiet copy failures actually accumulate. Without
+# this block the script inspects one home out of N and prints "healthy", which is the
+# same false-green it exists to prevent.
+#
+# Warnings only, never failures. A profile with no skills is a normal profile, and a
+# checker that fails on a healthy fleet gets ignored, which costs more than it catches.
+# The script does not re-invoke itself per profile either; it reports what it did not
+# check and the exact command to check it.
+profiles_dir="$HERMES_HOME/profiles"
+# Suppress when this run already targets a profile home, so a per-profile invocation
+# does not nag about its siblings or about itself.
+if [ "$(basename "$(dirname "$HERMES_HOME")")" != "profiles" ] && [ -d "$profiles_dir" ]; then
+  profile_count=$(find "$profiles_dir" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+  if [ "$profile_count" -gt 0 ]; then
+    warn "$profile_count profile(s) found; every check above covered only $HERMES_HOME"
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      note "not inspected: $(basename "$p")   re-run with: HERMES_HOME=$p scripts/verify_setup.sh"
+
+      # Two shapes are cheap and unambiguous without a full re-run, and both are
+      # already checked on the root home above.
+      #
+      # First: a skill directory that resolves to no skill at all, the shape an
+      # interrupted `cp -r` leaves behind. The test is "no SKILL.md anywhere beneath
+      # it", not "no SKILL.md directly inside it". Hermes resolves skills by walking
+      # the tree, so category directories holding nested skills are normal and a
+      # depth-1 test reports dozens of healthy categories as broken. Dot directories
+      # are Hermes metadata, not skills, and are skipped for the same reason.
+      if [ -d "$p/skills" ]; then
+        while IFS= read -r sd; do
+          [ -n "$sd" ] || continue
+          case "$(basename "$sd")" in
+            .*) continue ;;
+          esac
+          if [ -z "$(find "$sd" -name SKILL.md -type f -print -quit 2>/dev/null)" ]; then
+            if [ -f "$sd/DESCRIPTION.md" ]; then
+              warn "$(basename "$p")/skills/$(basename "$sd") is an empty category, DESCRIPTION.md but no skills inside"
+            else
+              warn "$(basename "$p")/skills/$(basename "$sd") has no SKILL.md anywhere, incomplete copy"
+            fi
+          fi
+        done < <(find "$p/skills" -maxdepth 1 -mindepth 1 -type d)
+      fi
+
+      # Second: a cortex plugin copied in but not selected by that profile's own
+      # config.yaml, which is inert and looks like success.
+      if [ -d "$p/plugins/cortex" ] || [ -d "$p/plugins/memory/cortex" ]; then
+        if [ -f "$p/config.yaml" ] \
+          && grep -qE "^[[:space:]]*provider:[[:space:]]*[\"']?cortex[\"']?[[:space:]]*$" "$p/config.yaml"; then
+          : # selected, nothing to report
+        else
+          warn "$(basename "$p") carries cortex but its config.yaml does not select it, so it is inert"
+        fi
+      fi
+    done < <(find "$profiles_dir" -maxdepth 1 -mindepth 1 -type d | sort)
+  fi
+fi
+
 # ------------------------------------------------------------------------ result
 echo
 if [ "$fails" -gt 0 ]; then
