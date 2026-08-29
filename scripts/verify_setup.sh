@@ -174,8 +174,11 @@ if [ "$(basename "$(dirname "$HERMES_HOME")")" != "profiles" ] && [ -d "$profile
       if [ -d "$p/skills" ]; then
         while IFS= read -r sd; do
           [ -n "$sd" ] || continue
+          # Skip what Hermes itself skips. The same names are pruned inside the
+          # walk below; keeping the two lists identical is what stops a cache
+          # directory from being reported as a broken skill.
           case "$(basename "$sd")" in
-            .*) continue ;;
+            .* | __pycache__ | node_modules) continue ;;
           esac
           # Prune dot and cache directories during the walk, not just at the top
           # level. Hermes ignores them, so an archived .archive/SKILL.md must not
