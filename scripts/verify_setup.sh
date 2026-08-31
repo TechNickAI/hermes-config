@@ -139,6 +139,61 @@ if [ -d "$HERMES_HOME/plugins/cortex" ] || [ -d "$HERMES_HOME/plugins/memory/cor
   fi
 fi
 
+# --------------------------------------------------------------------- approvals
+# approvals.cron_mode: 'off' does NOT disable approval gating, it AUTO-APPROVES.
+# Hermes resolves approve|off|allow|yes to approve and everything else to deny, so a
+# config written as "off" to mean "turn this feature off" gets the opposite of a safe
+# default: every guarded command in an unattended cron session runs with no human in
+# the loop. That is a deliberate posture for some agents and a surprise for others,
+# and nothing else in this script would tell you which one you have.
+#
+# Warn, never fail. This check exists to make the posture visible, not to overrule it.
+# Note on style: the resolver below spells the approve-set as a list, not a
+# `{"a", "b"}` set literal. bash 3.2 (still the system bash on macOS) mis-parses a
+# brace-comma literal inside a quoted heredoc nested in process substitution and
+# aborts the block with "ambiguous redirect". The list form is equivalent and safe.
+if command -v python3 >/dev/null 2>&1; then
+  while IFS=$'\t' read -r label resolved crons; do
+    [ -n "$label" ] || continue
+    case "$crons" in ''|*[!0-9]*) continue ;; esac
+    if [ "$resolved" = "approve" ] && [ "$crons" -gt 0 ]; then
+      warn "$label runs $crons cron job(s) with approvals.cron_mode resolving to auto-approve"
+      note "'off' means auto-approve, not disabled. Set cron_mode: deny to gate them"
+    fi
+  done < <(python3 - "$HERMES_HOME" <<'PYEOF'
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)  # no PyYAML: skip this check rather than fail the whole run
+
+APPROVE = ["approve", "off", "allow", "yes"]
+home = Path(sys.argv[1])
+candidates = [("this home", home)]
+candidates += [(f"profile {d.name}", d) for d in sorted((home / "profiles").glob("*")) if d.is_dir()]
+
+for label, base in candidates:
+    config = base / "config.yaml"
+    if not config.is_file():
+        continue
+    try:
+        with config.open() as handle:
+            data = yaml.safe_load(handle) or {}
+    except Exception:
+        continue
+    approvals = data.get("approvals")
+    mode = "deny"
+    if isinstance(approvals, dict):
+        mode = str(approvals.get("cron_mode", "deny")).lower().strip()
+    resolved = "approve" if mode in APPROVE else "deny"
+    crons = len(list((base / "cron").glob("*.json")))
+    print(f"{label}\t{resolved}\t{crons}")
+PYEOF
+)
+fi
+
 # ------------------------------------------------------------------------ result
 echo
 if [ "$fails" -gt 0 ]; then
