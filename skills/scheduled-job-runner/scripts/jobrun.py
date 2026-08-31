@@ -1311,6 +1311,12 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         # the failure mode worth engineering against. Recorded in the ledger
         # so a broken notifier cannot itself become the silent failure.
         notify_status = notify_failure(spec, card)
+        # Without a direct target, stdout is the scheduler's delivery surface;
+        # emitting the card counts as this runner's announcement. With a direct
+        # target, only the sender's confirmed `sent` result closes the retry gate.
+        _v2_record_notification(
+            incident, notify_status if spec.notify_target else "sent"
+        )
         if spec.notify_target:
             append_ledger({
                 "event": "job.notified",
@@ -1510,6 +1516,30 @@ def _repair_shadow_mode() -> bool:
     return not (HERMES_HOME / "jobstate" / "repair_armed").exists()
 
 
+def _v2_record_notification(incident, status: str) -> None:
+    """Feed direct-notifier truth back into the incident delivery gate."""
+    if not incident or not incident.get("fingerprint"):
+        return
+    _, rep = _v2_mods()
+    if rep is None:
+        return
+    try:
+        conn = rep.connect()
+        try:
+            rep.record_notification(
+                conn,
+                fingerprint=incident["fingerprint"],
+                status=status,
+                escalation=incident.get("escalation"),
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        # Notification bookkeeping cannot change the child outcome. Fail open
+        # on speaking instead: the missing state makes the next repeat eligible.
+        print(f"(notification tracking failed: {exc})", file=sys.stderr)
+
+
 def _v2_render(*, outcome, spec, money, head, incident, dur, sha, err, out,
                log_path, run_id):
     """Render the incident card from the RUN's severity."""
@@ -1576,6 +1606,9 @@ def should_speak(incident, severity: str) -> tuple[bool, str]:
         return True, "no incident state (fail open)"
     if incident.get("occurrence_count", 1) <= 1:
         return True, "first occurrence"
+    if (incident.get("notify_status")
+            and incident.get("notify_status") != "sent"):
+        return True, f"previous notification was not sent ({incident['notify_status']})"
     if incident.get("escalation"):
         return True, f"escalation milestone: {incident['escalation']}"
     q = incident.get("quarantine")

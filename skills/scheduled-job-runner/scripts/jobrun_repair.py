@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS incidents (
     acknowledged_at  TEXT,
     notified_at      TEXT,
     notify_status    TEXT,
+    announced_escalation TEXT,
     last_error       TEXT,
     deployed_sha     TEXT,
     quarantined_at   TEXT
@@ -169,6 +170,14 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
     conn.executescript(SCHEMA)
+    # CREATE TABLE IF NOT EXISTS does not add columns to an existing incident
+    # database. The escalation announcement watermark was added after the first
+    # rollout, so migrate in place rather than silently treating every reached
+    # milestone as new forever.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(incidents)")}
+    if "announced_escalation" not in cols:
+        conn.execute("ALTER TABLE incidents ADD COLUMN announced_escalation TEXT")
+        conn.commit()
     return conn
 
 
@@ -654,6 +663,15 @@ def dispatch(
     return outcome, detail
 
 
+_ESCALATION_RANK = {
+    None: 0,
+    "escalate_1h": 1,
+    "escalate_4h": 2,
+    "escalate_24h": 3,
+    "quarantine": 4,
+}
+
+
 def escalation_due(row: sqlite3.Row, now: datetime | None = None) -> str | None:
     """
     What to tell the human, based on the AGE of the condition, not run count.
@@ -670,12 +688,55 @@ def escalation_due(row: sqlite3.Row, now: datetime | None = None) -> str | None:
         return None
     age_h = (now - first).total_seconds() / 3600.0
 
+    due = None
     if age_h >= QUARANTINE_AFTER_HOURS and row["phase"] != "quarantined":
-        return "quarantine"
-    for h in reversed(ESCALATE_AT_HOURS):
-        if age_h >= h:
-            return f"escalate_{h}h"
-    return None
+        due = "quarantine"
+    else:
+        for h in reversed(ESCALATE_AT_HOURS):
+            if age_h >= h:
+                due = f"escalate_{h}h"
+                break
+
+    # A threshold is an edge, not a level. Returning `escalate_1h` on every
+    # five-minute run from hour 1 through hour 4 recreates the flood with a
+    # different headline. It remains pending until a notification is confirmed
+    # sent, then stays quiet until the next threshold advances.
+    announced = row["announced_escalation"]
+    if _ESCALATION_RANK.get(due, 0) <= _ESCALATION_RANK.get(announced, 0):
+        return None
+    return due
+
+
+def record_notification(
+    conn: sqlite3.Connection,
+    *,
+    fingerprint: str,
+    status: str,
+    escalation: str | None = None,
+) -> sqlite3.Row | None:
+    """Record whether the human notification actually left this process.
+
+    A failed send must not consume either the incident's first page or an
+    escalation milestone. Only `sent` advances the announcement watermark;
+    every failure stays eligible for retry on the next scheduled run.
+    """
+    now = _iso(_now())
+    if status == "sent":
+        conn.execute(
+            "UPDATE incidents SET notify_status=?, notified_at=?, "
+            "announced_escalation=COALESCE(?, announced_escalation) "
+            "WHERE fingerprint=?",
+            (status, now, escalation, fingerprint),
+        )
+    else:
+        conn.execute(
+            "UPDATE incidents SET notify_status=? WHERE fingerprint=?",
+            (status, fingerprint),
+        )
+    conn.commit()
+    return conn.execute(
+        "SELECT * FROM incidents WHERE fingerprint=?", (fingerprint,)
+    ).fetchone()
 
 
 def _pause_scheduled_job(job_id: str, reason: str) -> tuple[bool, str]:
@@ -792,6 +853,7 @@ def handle_failure(
         "shadow": bool(dry_run),
         "decision": decision.reason,
         "note": decision.as_note(),
+        "notify_status": row["notify_status"],
         "escalation": escalation_due(row),
         "quarantine": None,
     }

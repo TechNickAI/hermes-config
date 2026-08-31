@@ -12,6 +12,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -128,12 +129,71 @@ def test_repeated_critical_condition_is_delivered_once_not_every_tick():
     assert sink.read_text().count("---SEND---") == 1
 
 
+def test_critical_retries_until_one_notification_is_confirmed_sent():
+    home = _home()
+    sink = home / "sent.txt"
+    attempts = home / "attempts"
+    fake = home / "scripts" / "send.sh"
+    fake.write_text(
+        f'#!/bin/bash\nn=$(cat "{attempts}" 2>/dev/null || echo 0)\n'
+        f'n=$((n+1)); echo "$n" > "{attempts}"\n'
+        'if [ "$n" -eq 1 ]; then exit 9; fi\n'
+        f'cat >> "{sink}"\necho "---SEND---" >> "{sink}"\necho sent\n'
+    )
+    fake.chmod(0o755)
+    (home / "scripts" / "guard.py").write_text(
+        "import sys\nTRADING_BASE = 'https://api.alpaca.markets'\nsys.exit(30)\n"
+    )
+    (home / "jobs.d" / "guard.toml").write_text(
+        'job_id = "guard"\nscript = "guard.py"\nruntime = "python"\n'
+        'critical = true\ntimeout = 60\n'
+        f'notify_target = "telegram:-100:7"\nnotify_command = "{fake}"\n'
+    )
+
+    runs = [_run(home, "--spec", "guard") for _ in range(3)]
+    assert "notification failed_rc9" in runs[0].stdout
+    assert "CRITICAL" in runs[1].stdout, "failed first send suppressed the retry"
+    assert "suppressed" in runs[2].stdout, "confirmed delivery did not close the gate"
+    assert attempts.read_text().strip() == "2"
+    assert sink.read_text().count("---SEND---") == 1
+
+
 def test_escalation_milestone_breaks_the_silence():
     from jobrun import should_speak  # noqa: E402
 
     inc = {"occurrence_count": 50, "escalation": "escalate_4h"}
     speak, _ = should_speak(inc, DEGRADED)
     assert speak
+
+
+def test_escalation_milestone_speaks_once_then_waits_for_the_next(monkeypatch):
+    conn = R.connect(Path(tempfile.mkdtemp()) / "i.db")
+
+    class Clock:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(R, "_now", lambda: Clock.now)
+    kwargs = dict(
+        fingerprint="esc", job_id="guard", host="h",
+        reason_code="stale", severity="critical", money=MONEY_LIVE,
+        error_text="stale quote", deployed_sha="s", dry_run=True,
+    )
+    first = R.handle_failure(conn, **kwargs)
+    R.record_notification(conn, fingerprint="esc", status="sent",
+                          escalation=first["escalation"])
+
+    Clock.now += timedelta(hours=1, minutes=1)
+    at_one = R.handle_failure(conn, **kwargs)
+    assert at_one["escalation"] == "escalate_1h"
+    R.record_notification(conn, fingerprint="esc", status="sent",
+                          escalation=at_one["escalation"])
+
+    same_threshold = R.handle_failure(conn, **kwargs)
+    assert same_threshold["escalation"] is None
+
+    Clock.now += timedelta(hours=3)
+    at_four = R.handle_failure(conn, **kwargs)
+    assert at_four["escalation"] == "escalate_4h"
 
 
 # --------------------------------------------------------------------------
