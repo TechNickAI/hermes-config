@@ -92,13 +92,40 @@ def test_suppressed_runs_say_so_on_stdout():
     assert "suppressed" in r.stdout, r.stdout
 
 
-def test_critical_always_speaks_even_when_repeating():
-    """A live-money guard must never be summarized into silence."""
+def test_critical_repeat_is_suppressed_until_an_escalation_milestone():
+    """Top severity must not turn one condition into a high-cadence flood."""
     from jobrun import should_speak  # noqa: E402
 
     inc = {"occurrence_count": 99, "escalation": None, "dispatched": False}
     speak, why = should_speak(inc, "critical")
-    assert speak, why
+    assert not speak, why
+
+
+def test_repeated_critical_condition_is_delivered_once_not_every_tick():
+    """The real contract: critical still pages, but one condition pages once."""
+    home = _home()
+    sink = home / "sent.txt"
+    fake = home / "scripts" / "send.sh"
+    fake.write_text(f'#!/bin/bash\ncat >> {sink}\necho "---SEND---" >> {sink}\necho sent\n')
+    fake.chmod(0o755)
+    (home / "scripts" / "guard.py").write_text(
+        "import sys\n"
+        "TRADING_BASE = 'https://api.alpaca.markets'\n"
+        "sys.exit(30)\n"
+    )
+    (home / "jobs.d" / "guard.toml").write_text(
+        'job_id = "guard"\nscript = "guard.py"\nruntime = "python"\n'
+        'critical = true\ntimeout = 60\n'
+        f'notify_target = "telegram:-100:7"\nnotify_command = "{fake}"\n'
+    )
+
+    cards = 0
+    for _ in range(5):
+        run = _run(home, "--spec", "guard")
+        cards += "CRITICAL" in run.stdout
+
+    assert cards == 1, f"expected 1 critical card from 5 identical failures, got {cards}"
+    assert sink.read_text().count("---SEND---") == 1
 
 
 def test_escalation_milestone_breaks_the_silence():

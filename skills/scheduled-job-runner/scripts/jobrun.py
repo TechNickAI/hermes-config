@@ -1565,15 +1565,13 @@ def should_speak(incident, severity: str) -> tuple[bool, str]:
       * escalation milestones (1h, 4h, 24h) so an unacknowledged alarm gets
         louder over time rather than repeating at full volume,
       * a quarantine decision (a job being stopped is news),
-      * any CRITICAL run, always. A live-money guard that keeps failing must
-        never be summarized into silence, because a missed page there is
-        unrecoverable in a way a duplicate page is not.
+      * CRITICAL at the first occurrence and escalation milestones, like every
+        other open condition. Top severity changes the card and the escalation
+        path; it does not turn a high-cadence job into an identical-page flood.
 
     Stay silent on every other repeat: the ledger and incidents.db still record
     it, and `jobrun_repair.py --status` shows the running count.
     """
-    if severity == "critical":
-        return True, "critical always speaks"
     if not incident:
         return True, "no incident state (fail open)"
     if incident.get("occurrence_count", 1) <= 1:
