@@ -242,6 +242,15 @@ check("different job -> different fingerprint", a != d)
 
 check("normalize strips timestamps", "TS" in normalize_error("boom at 2026-07-14T09:30:00Z"))
 check("normalize strips addresses", "0xADDR" in normalize_error("at 0xdeadbeef"))
+age_a = fingerprint(
+    host="h", job_id="guard", reason_code="stale_quote",
+    error_text="quote is 0.1h old (limit 5m)")
+age_b = fingerprint(
+    host="h", job_id="guard", reason_code="stale_quote",
+    error_text="quote is 0.2h old (limit 5m)")
+check("moving quote age stays one condition", age_a == age_b, f"{age_a} vs {age_b}")
+check("configured quote-age limit remains in the basis",
+      "limit 5m" in normalize_error("quote is 0.2h old (limit 5m)"))
 
 print("\n== failure_class ==")
 check("timeout classed", failure_class("timeout") == "timeout")

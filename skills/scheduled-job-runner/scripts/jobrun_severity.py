@@ -541,6 +541,11 @@ _STACK_NOISE = [
     (re.compile(r"0x[0-9a-fA-F]+"), "0xADDR"),
     (re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\S*"), "TS"),
     (re.compile(r"\bline \d+"), "line N"),
+    # A measured age moves every run while the condition does not. Without
+    # this, `quote is 0.1h old`, then `0.2h old`, fingerprints as two incidents
+    # and a five-minute guard bypasses dedup indefinitely. Keep the configured
+    # limit in the basis; normalize only the changing value before `old`.
+    (re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|s|m|h|d)\b(?=\s*old\b)"), "DUR"),
     (re.compile(r"\b\d{5,}\b"), "N"),
     (re.compile(r"/tmp/[^\s'\"]+"), "/tmp/PATH"),
     (re.compile(r"run_id[=: ]+\S+"), "run_id=RID"),
