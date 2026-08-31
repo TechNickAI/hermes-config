@@ -1606,9 +1606,9 @@ def should_speak(incident, severity: str) -> tuple[bool, str]:
         return True, "no incident state (fail open)"
     if incident.get("occurrence_count", 1) <= 1:
         return True, "first occurrence"
-    if (incident.get("notify_status")
-            and incident.get("notify_status") != "sent"):
-        return True, f"previous notification was not sent ({incident['notify_status']})"
+    if incident.get("notify_status") != "sent":
+        status = incident.get("notify_status") or "unconfirmed"
+        return True, f"previous notification was not sent ({status})"
     if incident.get("escalation"):
         return True, f"escalation milestone: {incident['escalation']}"
     q = incident.get("quarantine")

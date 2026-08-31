@@ -257,6 +257,19 @@ def record_failure(
             (fingerprint, job_id, host, reason_code, severity, money,
              now, now, error_text[:2000], deployed_sha),
         )
+    elif row["phase"] == "resolved":
+        # A recovered condition that returns is a NEW outage, even when its
+        # fingerprint is identical. Keep lifetime occurrence/repair budgets,
+        # but reset current-cycle timing and delivery state so a prior `sent`
+        # cannot suppress this cycle's first page.
+        conn.execute(
+            "UPDATE incidents SET occurrence_count = occurrence_count + 1, "
+            "consecutive = 1, phase='observing', first_seen_at=?, last_seen_at=?, "
+            "severity=?, acknowledged_at=NULL, notified_at=NULL, "
+            "notify_status=NULL, announced_escalation=NULL, last_error=?, "
+            "deployed_sha=? WHERE fingerprint=?",
+            (now, now, severity, error_text[:2000], deployed_sha, fingerprint),
+        )
     else:
         conn.execute(
             "UPDATE incidents SET occurrence_count = occurrence_count + 1, "
@@ -689,8 +702,19 @@ def escalation_due(row: sqlite3.Row, now: datetime | None = None) -> str | None:
     age_h = (now - first).total_seconds() / 3600.0
 
     due = None
-    if age_h >= QUARANTINE_AFTER_HOURS and row["phase"] != "quarantined":
-        due = "quarantine"
+    announced = row["announced_escalation"]
+    if age_h >= QUARANTINE_AFTER_HOURS:
+        if _ESCALATION_RANK.get(announced, 0) < _ESCALATION_RANK["quarantine"]:
+            due = "quarantine"
+        else:
+            # Quarantine is refused for live/critical jobs and may fail for an
+            # ordinary job. Those jobs keep running. After the one-time 72h
+            # page, preserve a bounded DAILY dead-man instead of either paging
+            # every tick or going silent forever.
+            notified = _parse(row["notified_at"])
+            if notified is None or now - notified >= timedelta(hours=24):
+                return "deadman_24h"
+            return None
     else:
         for h in reversed(ESCALATE_AT_HOURS):
             if age_h >= h:
@@ -701,7 +725,6 @@ def escalation_due(row: sqlite3.Row, now: datetime | None = None) -> str | None:
     # five-minute run from hour 1 through hour 4 recreates the flood with a
     # different headline. It remains pending until a notification is confirmed
     # sent, then stays quiet until the next threshold advances.
-    announced = row["announced_escalation"]
     if _ESCALATION_RANK.get(due, 0) <= _ESCALATION_RANK.get(announced, 0):
         return None
     return due
@@ -722,11 +745,18 @@ def record_notification(
     """
     now = _iso(_now())
     if status == "sent":
+        # Recurring dead-man reminders are cadence-controlled by notified_at,
+        # not consumed as a one-time escalation milestone.
+        milestone = (
+            escalation
+            if escalation in _ESCALATION_RANK and escalation is not None
+            else None
+        )
         conn.execute(
             "UPDATE incidents SET notify_status=?, notified_at=?, "
             "announced_escalation=COALESCE(?, announced_escalation) "
             "WHERE fingerprint=?",
-            (status, now, escalation, fingerprint),
+            (status, now, milestone, fingerprint),
         )
     else:
         conn.execute(
