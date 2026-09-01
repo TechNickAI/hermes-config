@@ -139,6 +139,78 @@ if [ -d "$HERMES_HOME/plugins/cortex" ] || [ -d "$HERMES_HOME/plugins/memory/cor
   fi
 fi
 
+# -------------------------------------------------------------- pause reach (ESTOP)
+# `hermes pause` writes an ESTOP sentinel under the HERMES_HOME of the process that
+# runs it, and every component checks the sentinel under its own HERMES_HOME. Installed
+# gateway services each carry their own HERMES_HOME in their service definition, so on a
+# multi-home box a pause engaged here can report success while gateways homed elsewhere
+# keep running. Nothing on the machine says so, which is the same quiet-gap failure this
+# script exists to catch.
+#
+# This reports where gateways are homed. It never writes or removes a sentinel, never
+# touches a service definition, and never increments fails: per-home pausing is a
+# legitimate choice, and the defect is that the reach of the control is invisible, not
+# that it is wrong.
+gateway_homes=""
+gateway_count=0
+
+# macOS launchd. Read the string that follows the HERMES_HOME key in the environment
+# block. A definition we cannot parse contributes nothing rather than a guess.
+if [ -d "$HOME/Library/LaunchAgents" ]; then
+  while IFS= read -r plist; do
+    [ -n "$plist" ] || continue
+    home=$(awk '
+      /<key>HERMES_HOME<\/key>/ { want = 1; next }
+      want && /<string>/ {
+        line = $0
+        sub(/.*<string>/, "", line)
+        sub(/<\/string>.*/, "", line)
+        print line
+        exit
+      }
+    ' "$plist" 2>/dev/null)
+    [ -n "$home" ] || continue
+    gateway_count=$((gateway_count + 1))
+    gateway_homes="$gateway_homes$home"$'\n'
+  done < <(find "$HOME/Library/LaunchAgents" -maxdepth 1 -name '*hermes*gateway*.plist' 2>/dev/null)
+fi
+
+# Linux systemd user units. Environment=HERMES_HOME=... with optional quoting.
+for unit_dir in "$HOME/.config/systemd/user" "/etc/systemd/user"; do
+  [ -d "$unit_dir" ] || continue
+  while IFS= read -r unit; do
+    [ -n "$unit" ] || continue
+    home=$(sed -n 's/^[[:space:]]*Environment=["]\{0,1\}HERMES_HOME=\([^"]*\)["]\{0,1\}[[:space:]]*$/\1/p' "$unit" 2>/dev/null | head -1)
+    [ -n "$home" ] || continue
+    gateway_count=$((gateway_count + 1))
+    gateway_homes="$gateway_homes$home"$'\n'
+  done < <(find "$unit_dir" -maxdepth 1 -name '*hermes*gateway*.service' 2>/dev/null)
+done
+
+# No installed gateway services is the normal single-machine case. Say nothing.
+if [ "$gateway_count" -gt 0 ]; then
+  # Trailing slashes would produce a false mismatch against an otherwise equal path.
+  # Compare as fixed whole lines (-Fx): a home like ~/.hermes contains a regex dot, and
+  # a pattern match there would silently swallow a genuinely different home.
+  checked_home="${HERMES_HOME%/}"
+  other_homes=$(printf '%s' "$gateway_homes" | sed 's:/*$::' | grep -Fxv "$checked_home" | sort -u)
+
+  if [ -z "$other_homes" ]; then
+    ok "pause reach: all $gateway_count installed gateway service(s) homed at the checked home"
+  else
+    other_count=$(printf '%s\n' "$other_homes" | grep -c .)
+    warn "pause reach: $other_count gateway home(s) differ from the checked home"
+    note "a pause engaged at $checked_home does not bind processes homed elsewhere,"
+    note "unless the installed Hermes carries the fleet-root ESTOP fallback"
+    note "(NousResearch/hermes-agent commit ad08a58)"
+    while IFS= read -r other; do
+      [ -n "$other" ] || continue
+      note "  gateway home: $other"
+    done <<< "$other_homes"
+    note "pause each home directly, or upgrade Hermes, if you meant to stop everything"
+  fi
+fi
+
 # ------------------------------------------------------------------------ result
 echo
 if [ "$fails" -gt 0 ]; then
