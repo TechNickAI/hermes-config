@@ -44,6 +44,12 @@ DEFAULT_QUERY = "memory"
 # constructor delete the index.
 MIN_CORPUS_RATIO = 0.5
 BACKUP_PREFIX = ".plugin.db.bak-doctor-"
+# Retention must cover EVERY Cortex DB backup, not just the doctor's own. Manual
+# repairs, memory cleanups and one-off scripts write sibling copies under other
+# suffixes (bak-memory-cleanup-, bak-embed-, bak-search-repair-, ...). Pruning
+# only BACKUP_PREFIX left those growing forever, which defeated the stated
+# "must not accumulate DB copies forever" policy. Match the whole family.
+BACKUP_GLOB = ".plugin.db.bak-*"
 EXIT_OK, EXIT_UNHEALTHY, EXIT_SETUP = 0, 1, 2
 
 
@@ -215,6 +221,10 @@ def prune_backups(store_path: Path, keep_days: int, db_dir: Path | None = None) 
 
     Backups are written beside db_path (via backup_database), which may live
     outside store_path when db_path is customised. db_dir covers that case.
+
+    Prunes the whole ``.plugin.db.bak-*`` family, not only this script's own
+    ``BACKUP_PREFIX``. Ad-hoc copies left by manual repairs and cleanup scripts
+    are the same class of artifact and were previously never reclaimed.
     """
     if keep_days <= 0:
         return []
@@ -224,7 +234,7 @@ def prune_backups(store_path: Path, keep_days: int, db_dir: Path | None = None) 
     if db_dir and db_dir != store_path:
         search_dirs.add(db_dir)
     for search_dir in search_dirs:
-        for path in search_dir.glob(f"{BACKUP_PREFIX}*"):
+        for path in search_dir.glob(BACKUP_GLOB):
             try:
                 if path.is_file() and path.stat().st_mtime < cutoff:
                     path.unlink()

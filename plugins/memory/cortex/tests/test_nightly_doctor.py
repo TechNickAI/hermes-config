@@ -675,3 +675,44 @@ def test_backup_pruning_covers_custom_db_directory(tmp_path, monkeypatch):
 
     assert stale.name in result["pruned_backups"], "stale backup in custom db dir must be pruned"
     assert not stale.exists()
+
+
+def test_backup_pruning_covers_non_doctor_backup_prefixes(tmp_path, monkeypatch):
+    """Retention must cover every .plugin.db.bak-* copy, not just the doctor's.
+
+    Manual repairs and cleanup scripts write sibling backups under other
+    suffixes (bak-memory-cleanup-, bak-embed-, bak-search-repair-, ...).
+    Globbing only BACKUP_PREFIX meant those were never reclaimed, so the
+    "must not accumulate DB copies forever" policy silently did not hold.
+    """
+    import os
+    import time
+
+    mod, st = make_store(tmp_path)
+    st.close()
+    monkeypatch.setattr(mod, "OpenAIEmbeddingClient", FakeEmbedder)
+
+    store_path = tmp_path / "cortex"
+    old_ts = time.time() - 40 * 86400
+
+    stale_foreign = [
+        store_path / ".plugin.db.bak-memory-cleanup-20200101T000000Z",
+        store_path / ".plugin.db.bak-embed-20200101000000",
+        store_path / ".plugin.db.bak-search-repair-20200101T000000",
+        store_path / ".plugin.db.bak-nightly-20200101T000000",
+    ]
+    for path in stale_foreign:
+        path.write_bytes(b"stale ad-hoc backup")
+        os.utime(path, (old_ts, old_ts))
+
+    # A recent foreign backup must survive: the rule is age-based, not prefix-based.
+    fresh_foreign = store_path / ".plugin.db.bak-memclean-recent"
+    fresh_foreign.write_bytes(b"recent ad-hoc backup")
+
+    result = mod.run(store_path, tmp_path, "memory", repair=False, keep_backup_days=14)
+
+    for path in stale_foreign:
+        assert path.name in result["pruned_backups"], f"{path.name} must be pruned"
+        assert not path.exists()
+    assert fresh_foreign.exists(), "a backup inside the retention window must be kept"
+    assert fresh_foreign.name not in result["pruned_backups"]
