@@ -83,10 +83,12 @@ def main() -> int:
 
     t0 = time.time()
     n = st.backfill_embeddings(force=args.force)
+    c = st.backfill_chunk_embeddings(force=args.force)
     dt = time.time() - t0
     stats = st.embedding_stats()
-    print(f"embedded {n} pages in {dt:.1f}s ({n / max(dt, 0.001):.1f}/s)")
+    print(f"embedded {n} pages + {c} chunks in {dt:.1f}s ({(n + c) / max(dt, 0.001):.1f}/s)")
     print(f"coverage: {stats['embedded']}/{stats['pages']} pages  by_model={stats['by_model']}")
+    print(f"chunks: {stats['chunks']} across {stats['chunked_pages']} oversized pages")
     if stats["embedded"] < stats["pages"]:
         print(f"WARNING: {stats['pages'] - stats['embedded']} pages still unembedded.", file=sys.stderr)
         return 5

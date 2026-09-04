@@ -410,7 +410,10 @@ def run(
             # force=True is only needed when the model name itself changed and
             # we want the whole corpus rewritten rather than row-by-row.
             changed = store.backfill_embeddings(force=bool(coverage["foreign_model_rows"]))
+            chunked = store.backfill_chunk_embeddings(force=bool(coverage["foreign_model_rows"]))
             result["repairs"].append(f"embeddings_backfilled:{changed}")
+            if chunked:
+                result["repairs"].append(f"chunks_backfilled:{chunked}")
         result["embeddings_after"] = embedding_probe(store)
 
         retriever = CortexRetriever(store)

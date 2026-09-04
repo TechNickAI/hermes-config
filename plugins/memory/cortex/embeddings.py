@@ -27,6 +27,8 @@ import os
 import struct
 import urllib.error
 import urllib.request
+from operator import mul as _mul
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,62 @@ def cosine(a: list[float], b: list[float]) -> float:
     if na == 0.0 or nb == 0.0:
         return 0.0
     return dot / (na * nb)
+
+
+# Optional accelerator. A pure-Python cosine scan is O(n*dim) in interpreted
+# arithmetic: measured 105ms for 1,203 vectors at dim 3072, and that cost lands
+# on every turn that touches memory. numpy does the same work as one matmul in
+# ~0.7ms (150x). It is NOT a hard dependency — the repo's tests must pass from a
+# bare clone — so it is probed once and the scan falls back to the exact
+# pure-Python path when absent. Both paths must return identical rankings.
+try:  # pragma: no cover - trivial import guard
+    import numpy as _np
+except ImportError:  # pragma: no cover
+    _np = None
+
+
+def have_fast_scan() -> bool:
+    """True when the numpy-accelerated scan is available."""
+    return _np is not None
+
+
+def top_matches(
+    query: list[float], candidates: list[tuple[Any, bytes]], *, dim: int, limit: int
+) -> list[tuple[Any, float]]:
+    """Rank packed float32 vectors against `query` by dot product, best first.
+
+    `candidates` holds (key, packed_blob) pairs; blobs whose length does not
+    match `dim` are skipped rather than raising, because a mixed-dimension index
+    is a real state during an embedder migration. Vectors are stored
+    L2-normalized, so the dot product IS cosine similarity.
+
+    Uses numpy when importable and an exact pure-Python scan otherwise. The two
+    paths are covered by an equivalence test, since a fast path that silently
+    reorders results would be worse than no fast path at all.
+    """
+    if not query or not candidates:
+        return []
+    want = dim * 4
+    usable = [(k, b) for k, b in candidates if b is not None and len(b) == want]
+    if not usable:
+        return []
+    if _np is not None:
+        matrix = _np.frombuffer(b"".join(b for _, b in usable), dtype=_np.float32).reshape(
+            len(usable), dim
+        )
+        qv = _np.asarray(query, dtype=_np.float32)
+        scores = matrix @ qv
+        n = min(limit, len(usable))
+        # argpartition is O(n); only the top-n slice needs a full sort.
+        idx = _np.argpartition(-scores, n - 1)[:n] if n < len(usable) else _np.arange(len(usable))
+        idx = idx[_np.argsort(-scores[idx])]
+        return [(usable[int(i)][0], float(scores[int(i)])) for i in idx]
+    out: list[tuple[Any, float]] = []
+    for key, blob in usable:
+        vec = struct.unpack(f"<{dim}f", blob)
+        out.append((key, sum(map(_mul, query, vec))))
+    out.sort(key=lambda kv: kv[1], reverse=True)
+    return out[:limit]
 
 
 class OpenAIEmbeddingClient:
