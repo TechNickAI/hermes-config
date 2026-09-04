@@ -110,6 +110,35 @@ def _flatten_title(raw: str) -> str:
     """
     return _TITLE_CONTROL_RE.sub(" ", raw).replace("\n", " ").strip()
 
+_DATE_IN_NAME_RE = re.compile(r"(20\d\d)-(\d\d)-(\d\d)")
+_DATE_FM_KEYS = ("date", "updated", "created")
+
+
+def content_date(rel_path: str, fm: dict) -> str | None:
+    """Best-effort CONTENT date for a page as an ISO string, or None.
+
+    Order: an explicit frontmatter date field, then a YYYY-MM-DD embedded in the
+    path (the convention for daily journals and dated snapshots).
+
+    Deliberately NOT mtime. A reindex, a bulk frontmatter migration, or an rsync
+    rewrites mtime for every page at once, which would make the whole store look
+    freshly authored and destroy any recency signal built on it.
+    """
+    for key in _DATE_FM_KEYS:
+        raw = fm.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        m = _DATE_IN_NAME_RE.search(text)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    m = _DATE_IN_NAME_RE.search(rel_path)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    return None
+
 
 def _safe_slug(s: str) -> str:
     """Turn an arbitrary string into a safe filename slug."""
@@ -238,6 +267,29 @@ class CortexStore:
             );
             CREATE INDEX IF NOT EXISTS chunk_embeddings_model_idx ON chunk_embeddings(model, dimensions);
         """)
+        # Additive migration for stores created before content_date existed.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(pages)")}
+        if "content_date" not in cols:
+            conn.execute("ALTER TABLE pages ADD COLUMN content_date TEXT")
+            # Backfill in place with UPDATE. Do NOT force a reindex here (e.g.
+            # by resetting mtime): the reindex path uses INSERT OR REPLACE,
+            # which REASSIGNS rowids, and pages_fts is an external-content table
+            # keyed by rowid — so a whole-store reindex desyncs the FTS index and
+            # lexical search starts raising "missing row N from content table".
+            # UPDATE preserves rowids, so the index stays intact.
+            for row in conn.execute("SELECT rel_path FROM pages").fetchall():
+                rel = str(row["rel_path"])
+                cd = None
+                try:
+                    text = (self.store_path / rel).read_text(encoding="utf-8")
+                    fm, _body = _parse_frontmatter(text)
+                    cd = content_date(rel, fm)
+                except OSError:
+                    cd = content_date(rel, {})
+                conn.execute(
+                    "UPDATE pages SET content_date = ? WHERE rel_path = ?", (cd, rel)
+                )
+        conn.execute("CREATE INDEX IF NOT EXISTS pages_content_date_idx ON pages(content_date)")
         conn.commit()
 
     # -- Indexing ----------------------------------------------------------
@@ -298,8 +350,9 @@ class CortexStore:
                     category = parts[0] if len(parts) > 1 else "_root"
                     try:
                         conn.execute(
-                            "INSERT OR REPLACE INTO pages (rel_path, category, title, tags, body, mtime, size) VALUES (?,?,?,?,?,?,?)",
-                            (rel, category, title, tags_str, body, mtime, p.stat().st_size),
+                            "INSERT OR REPLACE INTO pages (rel_path, category, title, tags, body, mtime, size, content_date) VALUES (?,?,?,?,?,?,?,?)",
+                            (rel, category, title, tags_str, body, mtime, p.stat().st_size,
+                             content_date(rel, fm)),
                         )
                         # Invalidate stale embedding so backfill regenerates it from new content
                         conn.execute("DELETE FROM page_embeddings WHERE rel_path = ?", (rel,))
