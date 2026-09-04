@@ -618,6 +618,71 @@ class CortexStore:
         cur = self._conn.execute("SELECT category, COUNT(*) as n FROM pages GROUP BY category")
         return {row["category"]: row["n"] for row in cur.fetchall()}
 
+    def knowledge_map(
+        self, *, max_chars: int = 2000, per_category: int = 6, max_title_chars: int = 60
+    ) -> str:
+        """Render a compact, budget-bounded map of what the store contains.
+
+        Retrieval can only find what the agent thinks to look for. Prefetch
+        injects a handful of matched snippets, which answers "what is relevant to
+        this turn" but never "what do I know about at all" — so a page nobody
+        queries for stays invisible no matter how good the ranker is. This
+        renders the shape of the store (categories, their sizes, and a sample of
+        page titles) so the agent can navigate deliberately with `list`/`read`
+        instead of guessing search terms.
+
+        Breadth beats depth here: knowing that a category *exists* is what
+        prevents the "didn't know to look" failure, so long titles are elided to
+        ``max_title_chars`` rather than allowed to consume the budget and push
+        whole categories off the map.
+
+        Deterministic by construction: categories sorted by descending page
+        count then name, titles sorted by recency then rel_path. The output is
+        hard-capped at ``max_chars`` because this lands in the system prompt on
+        every single turn — an unbounded map would silently tax the whole
+        session. Categories that do not fit are summarised as a remainder line
+        rather than dropped without trace.
+        """
+        counts = self.category_counts()
+        if not counts:
+            return ""
+        ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        lines: list[str] = []
+        used = 0
+        shown = 0
+
+        def _remainder(idx: int) -> str:
+            cats = len(ordered) - idx
+            pages = sum(c for _, c in ordered[idx:])
+            return f"- …{cats} more categories ({pages} pages) — use `list` to browse"
+
+        for category, n in ordered:
+            cur = self._conn.execute(
+                "SELECT title, rel_path FROM pages WHERE category = ? ORDER BY mtime DESC, rel_path LIMIT ?",
+                (category, per_category),
+            )
+            titles: list[str] = []
+            for r in cur.fetchall():
+                t = str(r["title"] or r["rel_path"]).strip()
+                if max_title_chars and len(t) > max_title_chars:
+                    t = t[: max_title_chars - 1].rstrip() + "…"
+                titles.append(t)
+            sample = ", ".join(titles)
+            more = n - len(titles)
+            if more > 0:
+                sample = f"{sample}, +{more} more" if sample else f"+{more} more"
+            line = f"- **{category}** ({n}): {sample}" if sample else f"- **{category}** ({n})"
+            # Reserve room for the remainder notice so truncation is always
+            # accounted for, never silently dropped at the budget edge.
+            projected = used + len(line) + 1
+            if lines and projected + len(_remainder(shown)) + 1 > max_chars:
+                lines.append(_remainder(shown))
+                break
+            lines.append(line)
+            used = projected
+            shown += 1
+        return "\n".join(lines)
+
     def close(self) -> None:
         """Close the calling thread's connection (if any).
 
