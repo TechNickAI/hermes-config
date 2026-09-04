@@ -95,6 +95,20 @@ def _serialize_frontmatter(fm: dict, body: str) -> str:
     return f"---\n{fm_text}\n---\n\n{body.lstrip()}"
 
 
+_TITLE_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def _flatten_title(raw: str) -> str:
+    """Collapse a page title to one safe inline line.
+
+    Titles are written by the agent itself and land in the SYSTEM PROMPT every
+    turn via the knowledge map. Newlines and control characters would let a
+    stored title break out of its list item and imitate prompt structure, so
+    they are collapsed to spaces before the title is ever rendered.
+    """
+    return _TITLE_CONTROL_RE.sub(" ", raw).replace("\n", " ").strip()
+
+
 def _safe_slug(s: str) -> str:
     """Turn an arbitrary string into a safe filename slug."""
     s = s.lower().strip()
@@ -647,6 +661,30 @@ class CortexStore:
         if not counts:
             return ""
         ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        # One windowed pass instead of a query per category: this runs on every
+        # turn, and `pages` has no index on `category`, so the N+1 form was N
+        # full table scans per turn.
+        samples: dict[str, list[str]] = {c: [] for c, _ in ordered}
+        cur = self._conn.execute(
+            """
+            SELECT category, title, rel_path FROM (
+                SELECT category, title, rel_path,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY category ORDER BY title ASC, rel_path ASC
+                       ) AS rn
+                FROM pages
+            ) WHERE rn <= ?
+            """,
+            (per_category,),
+        )
+        for r in cur.fetchall():
+            bucket = samples.get(str(r["category"]))
+            if bucket is None:
+                continue
+            t = _flatten_title(str(r["title"] or r["rel_path"]))
+            if max_title_chars and len(t) > max_title_chars:
+                t = t[: max_title_chars - 1].rstrip() + "…"
+            bucket.append(t)
         lines: list[str] = []
         used = 0
         shown = 0
@@ -657,16 +695,7 @@ class CortexStore:
             return f"- …{cats} more categories ({pages} pages) — use `list` to browse"
 
         for category, n in ordered:
-            cur = self._conn.execute(
-                "SELECT title, rel_path FROM pages WHERE category = ? ORDER BY mtime DESC, rel_path LIMIT ?",
-                (category, per_category),
-            )
-            titles: list[str] = []
-            for r in cur.fetchall():
-                t = str(r["title"] or r["rel_path"]).strip()
-                if max_title_chars and len(t) > max_title_chars:
-                    t = t[: max_title_chars - 1].rstrip() + "…"
-                titles.append(t)
+            titles = samples.get(category, [])
             sample = ", ".join(titles)
             more = n - len(titles)
             if more > 0:
@@ -675,7 +704,17 @@ class CortexStore:
             # Reserve room for the remainder notice so truncation is always
             # accounted for, never silently dropped at the budget edge.
             projected = used + len(line) + 1
-            if lines and projected + len(_remainder(shown)) + 1 > max_chars:
+            if projected + len(_remainder(shown)) + 1 > max_chars:
+                # Every line is budgeted, including the first: six maximum-length
+                # titles in one category would otherwise blow the advertised cap
+                # on its own. If nothing fits yet, degrade to counts-only rather
+                # than emit an over-budget line.
+                if not lines:
+                    bare = f"- **{category}** ({n})"
+                    if used + len(bare) + 1 + len(_remainder(shown)) + 1 <= max_chars:
+                        lines.append(bare)
+                        used += len(bare) + 1
+                        shown += 1
                 lines.append(_remainder(shown))
                 break
             lines.append(line)
