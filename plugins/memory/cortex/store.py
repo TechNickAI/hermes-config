@@ -630,8 +630,12 @@ class CortexStore:
         if target_model is None:
             # No compatible embeddings at this dimension — fall back to lexical.
             return []
+        # Scan carries ONLY identity + vector. Page bodies and chunk text are
+        # hydrated afterwards for the handful of winners: pulling every body
+        # into memory to build 240-char snippets cost ~29MB peak per query on a
+        # 1,200-page store, on the gateway thread, for text immediately discarded.
         sql = """
-            SELECT p.rel_path, p.category, p.title, p.tags, p.body, e.embedding, e.dimensions, e.model
+            SELECT e.rel_path, e.embedding
             FROM page_embeddings e
             JOIN pages p ON p.rel_path = e.rel_path
             WHERE e.dimensions = ?
@@ -641,19 +645,16 @@ class CortexStore:
         if category:
             sql += " AND p.category = ?"
             params.append(category)
-        meta: dict[str, sqlite3.Row] = {}
-        candidates: list[tuple[str, bytes]] = []
-        for row in self._conn.execute(sql, params).fetchall():
-            meta[row["rel_path"]] = row
-            candidates.append((row["rel_path"], row["embedding"]))
+        candidates: list[tuple[str, bytes]] = [
+            (row["rel_path"], row["embedding"]) for row in self._conn.execute(sql, params)
+        ]
 
         # Chunk tier: sub-page vectors for pages that were too large to embed
         # whole. A page can win on either tier; the best score for a page wins,
         # and a chunk hit carries its own excerpt so the snippet shows the text
         # that actually matched instead of the page's opening 240 chars.
         csql = """
-            SELECT c.rel_path, c.chunk_index, c.heading_path, c.text, c.embedding,
-                   p.category, p.title, p.tags
+            SELECT c.rel_path, c.chunk_index, c.embedding
             FROM chunk_embeddings c
             JOIN pages p ON p.rel_path = c.rel_path
             WHERE c.dimensions = ?
@@ -663,13 +664,12 @@ class CortexStore:
         if category:
             csql += " AND p.category = ?"
             cparams.append(category)
-        chunk_meta: dict[tuple[str, int], sqlite3.Row] = {}
         chunk_candidates: list[tuple[tuple[str, int], bytes]] = []
         try:
-            for row in self._conn.execute(csql, cparams).fetchall():
-                key = (row["rel_path"], row["chunk_index"])
-                chunk_meta[key] = row
-                chunk_candidates.append((key, row["embedding"]))
+            chunk_candidates = [
+                ((row["rel_path"], row["chunk_index"]), row["embedding"])
+                for row in self._conn.execute(csql, cparams)
+            ]
         except sqlite3.Error as e:
             logger.debug("CortexStore: chunk tier unavailable: %s", e)
 
@@ -677,41 +677,79 @@ class CortexStore:
         # top slots, so taking exactly `limit` chunk hits could yield one page.
         page_hits = top_matches(q, candidates, dim=qdim, limit=limit * 4 or 4)
         chunk_hits = top_matches(q, chunk_candidates, dim=qdim, limit=limit * 8 or 8)
+        if not page_hits and not chunk_hits:
+            return []
 
-        best: dict[str, dict] = {}
+        # Collapse to the best score per page BEFORE hydrating text, so only the
+        # surviving rows are ever read off disk.
+        winners: dict[str, tuple[float, tuple[str, int] | None]] = {}
         for rel, score in page_hits:
-            row = meta[rel]
-            body = row["body"] or ""
-            best[rel] = {
-                "rel_path": rel,
-                "category": row["category"],
-                "title": row["title"],
-                "tags": row["tags"],
-                "snippet": body[:240] + ("…" if len(body) > 240 else ""),
-                "score": -score,
-                "vector_score": score,
-                "source": "vector",
-            }
+            winners[rel] = (score, None)
         for key, score in chunk_hits:
             rel, _idx = key
-            prior = best.get(rel)
-            if prior is not None and prior["vector_score"] >= score:
-                continue
-            row = chunk_meta[key]
-            text = (row["text"] or "").strip()
-            heading = (row["heading_path"] or "").strip()
-            snippet = text[:240] + ("…" if len(text) > 240 else "")
-            best[rel] = {
-                "rel_path": rel,
-                "category": row["category"],
-                "title": row["title"],
-                "tags": row["tags"],
-                "snippet": snippet,
-                "score": -score,
-                "vector_score": score,
-                "source": "vector-chunk",
-                "heading_path": heading,
-            }
+            prior = winners.get(rel)
+            if prior is None or score > prior[0]:
+                winners[rel] = (score, key)
+
+        rels = list(winners)
+        placeholders = ",".join("?" for _ in rels)
+        meta = {
+            row["rel_path"]: row
+            for row in self._conn.execute(
+                f"SELECT rel_path, category, title, tags, body FROM pages"
+                f" WHERE rel_path IN ({placeholders})",
+                rels,
+            )
+        }
+        chunk_keys = [k for _score, k in winners.values() if k is not None]
+        chunk_meta: dict[tuple[str, int], sqlite3.Row] = {}
+        if chunk_keys:
+            cond = " OR ".join("(rel_path = ? AND chunk_index = ?)" for _ in chunk_keys)
+            flat: list[Any] = [v for k in chunk_keys for v in k]
+            try:
+                chunk_meta = {
+                    (row["rel_path"], row["chunk_index"]): row
+                    for row in self._conn.execute(
+                        f"SELECT rel_path, chunk_index, heading_path, text"
+                        f" FROM chunk_embeddings WHERE {cond}",
+                        flat,
+                    )
+                }
+            except sqlite3.Error as e:
+                logger.debug("CortexStore: chunk hydration failed: %s", e)
+
+        best: dict[str, dict] = {}
+        for rel, (score, key) in winners.items():
+            row = meta.get(rel)
+            if row is None:
+                continue  # page deleted between scan and hydration
+            crow = chunk_meta.get(key) if key is not None else None
+            if crow is not None:
+                text = (crow["text"] or "").strip()
+                snippet = text[:240] + ("…" if len(text) > 240 else "")
+                best[rel] = {
+                    "rel_path": rel,
+                    "category": row["category"],
+                    "title": row["title"],
+                    "tags": row["tags"],
+                    "snippet": snippet,
+                    "score": -score,
+                    "vector_score": score,
+                    "source": "vector-chunk",
+                    "heading_path": (crow["heading_path"] or "").strip(),
+                }
+            else:
+                body = row["body"] or ""
+                best[rel] = {
+                    "rel_path": rel,
+                    "category": row["category"],
+                    "title": row["title"],
+                    "tags": row["tags"],
+                    "snippet": body[:240] + ("…" if len(body) > 240 else ""),
+                    "score": -score,
+                    "vector_score": score,
+                    "source": "vector",
+                }
         rows = sorted(best.values(), key=lambda r: r["vector_score"], reverse=True)
         return rows[:limit]
 

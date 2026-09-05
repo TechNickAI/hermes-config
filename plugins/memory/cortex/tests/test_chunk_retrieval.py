@@ -313,3 +313,39 @@ def test_category_filter_applies_to_chunk_tier(tmp_path: Path) -> None:
 
     assert rows
     assert all(r["category"] == "topics" for r in rows)
+
+
+def test_vector_scan_does_not_load_every_body(tmp_path: Path) -> None:
+    """The scan must carry vectors only; text is hydrated for winners alone.
+
+    Selecting p.body for every embedded page to build 240-char snippets cost
+    ~29MB peak per query on a 1,200-page store, on the gateway thread, for text
+    that was immediately discarded.
+    """
+    pages = {f"topics/p{i}.md": f"# Page {i}\n\n" + f"filler body {i} " * 200 for i in range(12)}
+    store = _store_with(tmp_path, pages)
+    store.backfill_embeddings()
+
+    seen: list[str] = []
+    real_conn = store._conn
+
+    class _SpyConn:
+        def execute(self, sql, *args):
+            seen.append(" ".join(str(sql).split()))
+            return real_conn.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+    store._tls.conn = _SpyConn()
+    try:
+        rows = store.vector_search("filler body 3", limit=3)
+    finally:
+        store._tls.conn = real_conn
+
+    assert rows, "search should still return results"
+    scans = [s for s in seen if "FROM page_embeddings e" in s]
+    assert scans, "expected the page-embedding scan"
+    for s in scans:
+        selected = s.split("FROM")[0]
+        assert "body" not in selected, f"the scan must not select page bodies: {s}"
