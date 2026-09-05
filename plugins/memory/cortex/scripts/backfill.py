@@ -83,13 +83,26 @@ def main() -> int:
 
     t0 = time.time()
     n = st.backfill_embeddings(force=args.force)
+    c = st.backfill_chunk_embeddings(force=args.force)
     dt = time.time() - t0
     stats = st.embedding_stats()
-    print(f"embedded {n} pages in {dt:.1f}s ({n / max(dt, 0.001):.1f}/s)")
+    print(f"embedded {n} pages + {c} chunks in {dt:.1f}s ({(n + c) / max(dt, 0.001):.1f}/s)")
     print(f"coverage: {stats['embedded']}/{stats['pages']} pages  by_model={stats['by_model']}")
+    print(f"chunks: {stats['chunks']} across {stats['chunked_pages']} oversized pages")
     if stats["embedded"] < stats["pages"]:
         print(f"WARNING: {stats['pages'] - stats['embedded']} pages still unembedded.", file=sys.stderr)
         return 5
+    # Chunk coverage is a SEPARATE guarantee. Reporting "full coverage" while
+    # every oversized page is missing its chunks would hide exactly the gap the
+    # chunk tier exists to close.
+    oversized = st.oversized_page_count()
+    if oversized and stats["chunked_pages"] < oversized:
+        print(
+            f"WARNING: {oversized - stats['chunked_pages']} of {oversized} oversized pages "
+            "have no chunk embeddings — their tails are not semantically searchable.",
+            file=sys.stderr,
+        )
+        return 6
     print("OK: full coverage.")
     return 0
 

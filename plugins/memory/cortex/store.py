@@ -30,9 +30,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 try:  # package import (normal Hermes runtime)
-    from .embeddings import pack_vector, unpack_vector
+    from .embeddings import pack_vector, unpack_vector, top_matches
+    from .chunking import split_markdown, chunk_embedding_text
 except ImportError:  # flat import (tests add plugin dir to sys.path)
-    from embeddings import pack_vector, unpack_vector
+    from embeddings import pack_vector, unpack_vector, top_matches
+    from chunking import split_markdown, chunk_embedding_text
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +207,22 @@ class CortexStore:
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS page_embeddings_model_idx ON page_embeddings(model, dimensions);
+            -- Sub-page vectors for pages too large to embed whole. Only pages
+            -- over the embedder's input cap get rows here, so small pages keep
+            -- exactly one page-level vector and the index stays ~2x, not ~6x.
+            CREATE TABLE IF NOT EXISTS chunk_embeddings (
+                rel_path TEXT NOT NULL REFERENCES pages(rel_path) ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                heading_path TEXT,
+                text TEXT NOT NULL,
+                model TEXT NOT NULL,
+                dimensions INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                embedding BLOB NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (rel_path, chunk_index)
+            );
+            CREATE INDEX IF NOT EXISTS chunk_embeddings_model_idx ON chunk_embeddings(model, dimensions);
         """)
         conn.commit()
 
@@ -271,6 +289,7 @@ class CortexStore:
                         )
                         # Invalidate stale embedding so backfill regenerates it from new content
                         conn.execute("DELETE FROM page_embeddings WHERE rel_path = ?", (rel,))
+                        conn.execute("DELETE FROM chunk_embeddings WHERE rel_path = ?", (rel,))
                         changed += 1
                     except sqlite3.Error as e:
                         logger.debug("CortexStore: failed to index %s: %s", rel, e)
@@ -281,6 +300,7 @@ class CortexStore:
                 if rel not in seen:
                     conn.execute("DELETE FROM pages WHERE rel_path = ?", (rel,))
                     conn.execute("DELETE FROM page_embeddings WHERE rel_path = ?", (rel,))
+                    conn.execute("DELETE FROM chunk_embeddings WHERE rel_path = ?", (rel,))
                     changed += 1
 
             if changed:
@@ -399,6 +419,137 @@ class CortexStore:
             logger.info("CortexStore: embedded %d pages with %s", written, model)
         return written
 
+    # Pages at or under this many characters are embedded whole and get no chunk
+    # rows. The embedding client truncates its input at 8,000 chars, so anything
+    # above that is silently losing text today.
+    CHUNK_THRESHOLD_CHARS = 8000
+
+    def backfill_chunk_embeddings(self, *, force: bool = False, limit: int | None = None) -> int:
+        """Embed sub-page chunks for pages too large to embed whole.
+
+        Page-level vectors truncate at the embedder's input cap, so on a live
+        store 18% of pages were discarding 27% of all body text — and 111 of 114
+        large pages held content that existed ONLY past the cutoff. This indexes
+        those pages a second time at chunk granularity, which also fixes topic
+        dilution on multi-subject pages.
+
+        Small pages are skipped entirely: they are already fully represented by
+        their page vector, and every extra vector is per-turn scan latency.
+        Returns the number of chunk rows written.
+        """
+        if self.embedder is None:
+            return 0
+        conn = self._conn
+        model = getattr(self.embedder, "model", "unknown")
+        configured_dim = int(getattr(self.embedder, "dimensions", 0) or 0)
+
+        rows = conn.execute(
+            "SELECT rel_path, title, tags, body FROM pages ORDER BY mtime DESC"
+        ).fetchall()
+
+        pending: list[tuple[str, int, str, str, str]] = []  # rel, idx, heading, text, hash
+        touched: set[str] = set()
+        for row in rows:
+            body = row["body"] or ""
+            whole = self._embedding_text(row)
+            if len(whole) <= self.CHUNK_THRESHOLD_CHARS:
+                continue
+            existing = {
+                r["chunk_index"]: r
+                for r in conn.execute(
+                    "SELECT chunk_index, content_hash, model, dimensions FROM chunk_embeddings WHERE rel_path = ?",
+                    (row["rel_path"],),
+                ).fetchall()
+            }
+            chunks = split_markdown(body)
+            for idx, (heading, text) in enumerate(chunks):
+                etext = chunk_embedding_text(row["title"] or "", row["tags"] or "", heading, text)
+                h = self._embedding_hash(etext)
+                prior = existing.get(idx)
+                stale = (
+                    force
+                    or prior is None
+                    or prior["content_hash"] != h
+                    or prior["model"] != model
+                    or (configured_dim and prior["dimensions"] != configured_dim)
+                )
+                if stale:
+                    pending.append((row["rel_path"], idx, heading, text, h))
+                    touched.add(row["rel_path"])
+            # Drop rows for chunks that no longer exist (page shrank).
+            if len(existing) > len(chunks):
+                with self._write_lock:
+                    conn.execute(
+                        "DELETE FROM chunk_embeddings WHERE rel_path = ? AND chunk_index >= ?",
+                        (row["rel_path"], len(chunks)),
+                    )
+                    conn.commit()
+            if limit is not None and len(pending) >= limit:
+                break
+
+        if not pending:
+            return 0
+
+        by_rel = {r["rel_path"]: r for r in rows}
+        texts = [
+            chunk_embedding_text(
+                by_rel[rel]["title"] or "", by_rel[rel]["tags"] or "", heading, text
+            )
+            for rel, _idx, heading, text, _h in pending
+        ]
+        try:
+            vectors = self.embedder.embed(texts)
+        except Exception as e:
+            logger.warning("CortexStore: chunk embedding backfill failed: %s", e)
+            return 0
+        if len(vectors) != len(pending):
+            logger.warning(
+                "CortexStore: embedder returned %d vectors for %d chunks", len(vectors), len(pending)
+            )
+            return 0
+
+        now = datetime.now().isoformat(timespec="seconds")
+        written = 0
+        with self._write_lock:
+            try:
+                for (rel, idx, heading, text, h), vec in zip(pending, vectors):
+                    if not vec:
+                        continue
+                    try:
+                        blob = pack_vector([float(x) for x in vec])
+                    except (TypeError, ValueError) as e:
+                        logger.warning(
+                            "CortexStore: bad vector for %s#%d, skipping: %s", rel, idx, e
+                        )
+                        continue
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO chunk_embeddings
+                        (rel_path, chunk_index, heading_path, text, model, dimensions,
+                         content_hash, embedding, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rel, idx, heading, text, model, len(vec), h,
+                            blob, now,
+                        ),
+                    )
+                    written += 1
+                conn.commit()
+            except Exception as e:
+                # Never leave a write transaction open on a cached, per-thread
+                # connection: the lock is released on exit and the next writer
+                # would block behind an abandoned transaction.
+                conn.rollback()
+                logger.warning("CortexStore: chunk embedding write failed, rolled back: %s", e)
+                return 0
+        if written:
+            logger.info(
+                "CortexStore: embedded %d chunks across %d pages with %s",
+                written, len(touched), model,
+            )
+        return written
+
     def _resolve_vector_model(self, active_model: str, qdim: int) -> str | None:
         """Pick the stored embedding model to compare the query vector against.
 
@@ -494,8 +645,12 @@ class CortexStore:
         if target_model is None:
             # No compatible embeddings at this dimension — fall back to lexical.
             return []
+        # Scan carries ONLY identity + vector. Page bodies and chunk text are
+        # hydrated afterwards for the handful of winners: pulling every body
+        # into memory to build 240-char snippets cost ~29MB peak per query on a
+        # 1,200-page store, on the gateway thread, for text immediately discarded.
         sql = """
-            SELECT p.rel_path, p.category, p.title, p.tags, p.body, e.embedding, e.dimensions, e.model
+            SELECT e.rel_path, e.embedding
             FROM page_embeddings e
             JOIN pages p ON p.rel_path = e.rel_path
             WHERE e.dimensions = ?
@@ -505,29 +660,123 @@ class CortexStore:
         if category:
             sql += " AND p.category = ?"
             params.append(category)
-        rows = []
-        for row in self._conn.execute(sql, params).fetchall():
+        candidates: list[tuple[str, bytes]] = [
+            (row["rel_path"], row["embedding"]) for row in self._conn.execute(sql, params)
+        ]
+
+        # Chunk tier: sub-page vectors for pages that were too large to embed
+        # whole. A page can win on either tier; the best score for a page wins,
+        # and a chunk hit carries its own excerpt so the snippet shows the text
+        # that actually matched instead of the page's opening 240 chars.
+        csql = """
+            SELECT c.rel_path, c.chunk_index, c.embedding
+            FROM chunk_embeddings c
+            JOIN pages p ON p.rel_path = c.rel_path
+            WHERE c.dimensions = ?
+            AND c.model = ?
+        """
+        cparams: list[Any] = [qdim, target_model]
+        if category:
+            csql += " AND p.category = ?"
+            cparams.append(category)
+        chunk_candidates: list[tuple[tuple[str, int], bytes]] = []
+        try:
+            chunk_candidates = [
+                ((row["rel_path"], row["chunk_index"]), row["embedding"])
+                for row in self._conn.execute(csql, cparams)
+            ]
+        except sqlite3.Error as e:
+            logger.debug("CortexStore: chunk tier unavailable: %s", e)
+
+        # Over-fetch before collapsing: several chunks of one page can occupy the
+        # top slots, so taking exactly `limit` chunk hits could yield one page.
+        page_hits = top_matches(q, candidates, dim=qdim, limit=limit * 4 or 4)
+        chunk_hits = top_matches(q, chunk_candidates, dim=qdim, limit=limit * 8 or 8)
+        if not page_hits and not chunk_hits:
+            return []
+
+        # Collapse to the best score per page BEFORE hydrating text, so only the
+        # surviving rows are ever read off disk.
+        winners: dict[str, tuple[float, tuple[str, int] | None]] = {}
+        for rel, score in page_hits:
+            winners[rel] = (score, None)
+        for key, score in chunk_hits:
+            rel, _idx = key
+            prior = winners.get(rel)
+            if prior is None or score > prior[0]:
+                winners[rel] = (score, key)
+
+        rels = list(winners)
+        placeholders = ",".join("?" for _ in rels)
+        meta = {
+            row["rel_path"]: row
+            for row in self._conn.execute(
+                f"SELECT rel_path, category, title, tags, body FROM pages"
+                f" WHERE rel_path IN ({placeholders})",
+                rels,
+            )
+        }
+        chunk_keys = [k for _score, k in winners.values() if k is not None]
+        chunk_meta: dict[tuple[str, int], sqlite3.Row] = {}
+        if chunk_keys:
+            cond = " OR ".join("(rel_path = ? AND chunk_index = ?)" for _ in chunk_keys)
+            flat: list[Any] = [v for k in chunk_keys for v in k]
             try:
-                v = unpack_vector(row["embedding"])
-            except Exception:
-                continue
-            if len(v) != qdim:
-                continue
-            score = sum(a * b for a, b in zip(q, v))  # normalized vectors => cosine
-            body = row["body"] or ""
-            snippet = body[:240] + ("…" if len(body) > 240 else "")
-            rows.append({
-                "rel_path": row["rel_path"],
-                "category": row["category"],
-                "title": row["title"],
-                "tags": row["tags"],
-                "snippet": snippet,
-                "score": -score,  # preserve lower-is-better convention for combined sorting
-                "vector_score": score,
-                "source": "vector",
-            })
-        rows.sort(key=lambda r: r["vector_score"], reverse=True)
+                chunk_meta = {
+                    (row["rel_path"], row["chunk_index"]): row
+                    for row in self._conn.execute(
+                        f"SELECT rel_path, chunk_index, heading_path, text"
+                        f" FROM chunk_embeddings WHERE {cond}",
+                        flat,
+                    )
+                }
+            except sqlite3.Error as e:
+                logger.debug("CortexStore: chunk hydration failed: %s", e)
+
+        best: dict[str, dict] = {}
+        for rel, (score, key) in winners.items():
+            row = meta.get(rel)
+            if row is None:
+                continue  # page deleted between scan and hydration
+            crow = chunk_meta.get(key) if key is not None else None
+            if crow is not None:
+                text = (crow["text"] or "").strip()
+                snippet = text[:240] + ("…" if len(text) > 240 else "")
+                best[rel] = {
+                    "rel_path": rel,
+                    "category": row["category"],
+                    "title": row["title"],
+                    "tags": row["tags"],
+                    "snippet": snippet,
+                    "score": -score,
+                    "vector_score": score,
+                    "source": "vector-chunk",
+                    "heading_path": (crow["heading_path"] or "").strip(),
+                }
+            else:
+                body = row["body"] or ""
+                best[rel] = {
+                    "rel_path": rel,
+                    "category": row["category"],
+                    "title": row["title"],
+                    "tags": row["tags"],
+                    "snippet": body[:240] + ("…" if len(body) > 240 else ""),
+                    "score": -score,
+                    "vector_score": score,
+                    "source": "vector",
+                }
+        rows = sorted(best.values(), key=lambda r: r["vector_score"], reverse=True)
         return rows[:limit]
+
+    def oversized_page_count(self) -> int:
+        """Pages large enough to need the chunk tier.
+
+        Mirrors the threshold used by backfill_chunk_embeddings so coverage can
+        be checked without re-deriving the rule at the call site.
+        """
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM pages WHERE LENGTH(body) > ?", (self.CHUNK_THRESHOLD_CHARS,)
+        ).fetchone()[0]
 
     def embedding_stats(self) -> dict:
         cur = self._conn.execute(
@@ -536,7 +785,19 @@ class CortexStore:
         by_model = [dict(r) for r in cur.fetchall()]
         total_pages = self.count()
         total_embedded = sum(r["n"] for r in by_model)
-        return {"pages": total_pages, "embedded": total_embedded, "by_model": by_model}
+        try:
+            chunks, chunked_pages = self._conn.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT rel_path) FROM chunk_embeddings"
+            ).fetchone()
+        except sqlite3.Error:
+            chunks, chunked_pages = 0, 0
+        return {
+            "pages": total_pages,
+            "embedded": total_embedded,
+            "by_model": by_model,
+            "chunks": chunks or 0,
+            "chunked_pages": chunked_pages or 0,
+        }
 
     # -- Page CRUD ---------------------------------------------------------
 
