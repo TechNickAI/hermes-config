@@ -255,8 +255,7 @@ class CortexMemoryProvider(MemoryProvider):
         return [
             {"key": "store_path", "description": "Filesystem path to the Cortex KB", "default": default_store},
             {"key": "prefetch_limit", "description": "Pages injected before each turn", "default": "5"},
-            {"key": "knowledge_map", "description": "Show a category/title map of the KB in the system prompt", "default": "false", "choices": ["true", "false"]},
-            {"key": "knowledge_map_chars", "description": "Char budget for the knowledge map (0 disables)", "default": "2000"},
+            {"key": "knowledge_map_chars", "description": "Char budget for the knowledge map in the system prompt (0 disables)", "default": "2000"},
             {"key": "auto_journal", "description": "Append meaningful turns to daily/", "default": "false", "choices": ["true", "false"]},
             {"key": "auto_synthesize", "description": "Write session summaries to synthesis/", "default": "false", "choices": ["true", "false"]},
         ]
@@ -299,8 +298,10 @@ class CortexMemoryProvider(MemoryProvider):
             f"Active. {total} pages indexed ({breakdown}). Relevant pages are prefetched "
             f"automatically each turn. Use the `cortex` tool to search/read/write explicitly."
         )
-        if not _config_bool(self._config, "knowledge_map", default=False):
-            return header
+        # The map is always on. It is the only thing that tells the agent what
+        # exists without guessing a search term, so making it optional means
+        # the failure it fixes silently persists. Set knowledge_map_chars: 0
+        # to suppress it.
         try:
             budget = int(self._config.get("knowledge_map_chars", 2000))
         except (TypeError, ValueError):

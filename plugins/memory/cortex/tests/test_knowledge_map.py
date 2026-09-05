@@ -169,7 +169,7 @@ def test_provider_includes_map_in_system_prompt(tmp_path: Path) -> None:
     store_path.mkdir()
     _seed(store_path, {"ventures": 2})
     provider = CortexMemoryProvider(
-        config={"store_path": str(store_path), "semantic": False, "knowledge_map": True}
+        config={"store_path": str(store_path), "semantic": False}
     )
     provider.initialize("s", hermes_home=str(tmp_path / "home"))
 
@@ -177,22 +177,6 @@ def test_provider_includes_map_in_system_prompt(tmp_path: Path) -> None:
 
     assert "What is in the knowledge base" in block
     assert "**ventures** (2)" in block
-    provider.shutdown()
-
-
-def test_map_can_be_disabled(tmp_path: Path) -> None:
-    store_path = tmp_path / "cortex"
-    store_path.mkdir()
-    _seed(store_path, {"ventures": 2})
-    provider = CortexMemoryProvider(
-        config={"store_path": str(store_path), "semantic": False, "knowledge_map": "false"}
-    )
-    provider.initialize("s", hermes_home=str(tmp_path / "home"))
-
-    block = provider.system_prompt_block()
-
-    assert "What is in the knowledge base" not in block
-    assert "pages indexed" in block, "the original header must survive"
     provider.shutdown()
 
 
@@ -218,7 +202,6 @@ def test_malformed_char_budget_falls_back_to_default(tmp_path: Path) -> None:
         config={
             "store_path": str(store_path),
             "semantic": False,
-            "knowledge_map": True,
             "knowledge_map_chars": "not-a-number",
         }
     )
@@ -297,20 +280,20 @@ def test_tiny_budgets_are_still_honoured(tmp_path: Path) -> None:
         assert len(out) <= budget, f"budget {budget} produced {len(out)} chars: {out!r}"
 
 
-def test_knowledge_map_is_opt_in(tmp_path: Path) -> None:
-    """An upgrade must not silently start injecting titles into every prompt."""
+def test_knowledge_map_is_on_by_default(tmp_path: Path) -> None:
+    """The map is always present: no flag, no opt-in.
+
+    It is the only signal telling the agent what exists without guessing a
+    search term, so gating it behind a config key means the failure it fixes
+    silently persists on every profile that never sets the key.
+    """
     store_path = tmp_path / "cortex"
     store_path.mkdir()
     _seed(store_path, {"people": 2})
 
     provider = CortexMemoryProvider(config={"store_path": str(store_path), "semantic": False})
     provider.initialize("s", hermes_home=str(tmp_path / "home"))
-    assert "What is in the knowledge base" not in provider.system_prompt_block(), (
-        "map must default to off so an upgrade does not change every prompt"
+    assert "What is in the knowledge base" in provider.system_prompt_block(), (
+        "map must render with no configuration at all"
     )
-
-    on = CortexMemoryProvider(
-        config={"store_path": str(store_path), "semantic": False, "knowledge_map": True}
-    )
-    on.initialize("s2", hermes_home=str(tmp_path / "home2"))
-    assert "What is in the knowledge base" in on.system_prompt_block()
+    provider.shutdown()
