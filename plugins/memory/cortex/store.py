@@ -768,6 +768,16 @@ class CortexStore:
         rows = sorted(best.values(), key=lambda r: r["vector_score"], reverse=True)
         return rows[:limit]
 
+    def oversized_page_count(self) -> int:
+        """Pages large enough to need the chunk tier.
+
+        Mirrors the threshold used by backfill_chunk_embeddings so coverage can
+        be checked without re-deriving the rule at the call site.
+        """
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM pages WHERE LENGTH(body) > ?", (self.CHUNK_THRESHOLD_CHARS,)
+        ).fetchone()[0]
+
     def embedding_stats(self) -> dict:
         cur = self._conn.execute(
             "SELECT COUNT(*) AS n, MIN(dimensions) AS min_dim, MAX(dimensions) AS max_dim, model FROM page_embeddings GROUP BY model ORDER BY n DESC"

@@ -92,6 +92,17 @@ def main() -> int:
     if stats["embedded"] < stats["pages"]:
         print(f"WARNING: {stats['pages'] - stats['embedded']} pages still unembedded.", file=sys.stderr)
         return 5
+    # Chunk coverage is a SEPARATE guarantee. Reporting "full coverage" while
+    # every oversized page is missing its chunks would hide exactly the gap the
+    # chunk tier exists to close.
+    oversized = st.oversized_page_count()
+    if oversized and stats["chunked_pages"] < oversized:
+        print(
+            f"WARNING: {oversized - stats['chunked_pages']} of {oversized} oversized pages "
+            "have no chunk embeddings — their tails are not semantically searchable.",
+            file=sys.stderr,
+        )
+        return 6
     print("OK: full coverage.")
     return 0
 

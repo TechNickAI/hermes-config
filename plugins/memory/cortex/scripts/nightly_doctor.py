@@ -404,14 +404,19 @@ def run(
         semantic_in_use = _semantic_configured(plugin_config) or (
             semantic_enabled and coverage["embedded"] > 0
         )
-        if not coverage["ok"] and repair and embed_health and coverage["pages"] > 0:
-            # backfill_embeddings tracks staleness by content hash PLUS
-            # model/dimension, so drifted rows are recomputed without force.
-            # force=True is only needed when the model name itself changed and
-            # we want the whole corpus rewritten rather than row-by-row.
-            changed = store.backfill_embeddings(force=bool(coverage["foreign_model_rows"]))
+        if repair and embed_health and coverage["pages"] > 0:
+            # Page coverage and chunk coverage are INDEPENDENT. `coverage["ok"]`
+            # counts pages only, so on an existing store where every page is
+            # already embedded it is True and the chunk tier would never be
+            # built — precisely the upgrade case this feature exists for.
+            if not coverage["ok"]:
+                # backfill_embeddings tracks staleness by content hash PLUS
+                # model/dimension, so drifted rows are recomputed without force.
+                # force=True is only needed when the model name itself changed and
+                # we want the whole corpus rewritten rather than row-by-row.
+                changed = store.backfill_embeddings(force=bool(coverage["foreign_model_rows"]))
+                result["repairs"].append(f"embeddings_backfilled:{changed}")
             chunked = store.backfill_chunk_embeddings(force=bool(coverage["foreign_model_rows"]))
-            result["repairs"].append(f"embeddings_backfilled:{changed}")
             if chunked:
                 result["repairs"].append(f"chunks_backfilled:{chunked}")
         result["embeddings_after"] = embedding_probe(store)

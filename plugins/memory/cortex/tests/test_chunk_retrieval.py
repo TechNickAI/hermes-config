@@ -435,3 +435,25 @@ def test_chunk_evidence_survives_fusion_into_the_reranker(tmp_path: Path) -> Non
     docs = ret._rerank_texts([hit], query="ledger settlement figure agreed")
     assert "Matched section" in docs[0], "reranker input must carry the matched section"
     assert "forty two" in docs[0], "the rescuing passage must reach the reranker"
+
+
+def test_chunk_backfill_runs_when_page_coverage_is_already_healthy(tmp_path: Path) -> None:
+    """Page coverage and chunk coverage are independent guarantees.
+
+    On an existing store every page is already embedded, so a page-coverage
+    check reports healthy and a repair path gated on it would never build the
+    chunk tier — precisely the upgrade case the feature exists for.
+    """
+    big = "# Big\n\n" + "\n\n".join(f"## S{i}\n\n" + "x" * 3000 for i in range(4))
+    store = _store_with(tmp_path, {"topics/big.md": big})
+
+    # Simulate the existing deployment: pages fully embedded, no chunks yet.
+    store.backfill_embeddings()
+    stats = store.embedding_stats()
+    assert stats["embedded"] == stats["pages"], "page coverage is healthy"
+    assert stats["chunks"] == 0, "but the chunk tier is empty"
+    assert store.oversized_page_count() == 1
+
+    written = store.backfill_chunk_embeddings()
+    assert written > 0, "chunk backfill must run even when page coverage is complete"
+    assert store.embedding_stats()["chunked_pages"] == 1
