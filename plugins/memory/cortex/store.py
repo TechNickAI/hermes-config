@@ -97,6 +97,20 @@ def _serialize_frontmatter(fm: dict, body: str) -> str:
     return f"---\n{fm_text}\n---\n\n{body.lstrip()}"
 
 
+_TITLE_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def _flatten_title(raw: str) -> str:
+    """Collapse a page title to one safe inline line.
+
+    Titles are written by the agent itself and land in the SYSTEM PROMPT every
+    turn via the knowledge map. Newlines and control characters would let a
+    stored title break out of its list item and imitate prompt structure, so
+    they are collapsed to spaces before the title is ever rendered.
+    """
+    return _TITLE_CONTROL_RE.sub(" ", raw).replace("\n", " ").strip()
+
+
 def _safe_slug(s: str) -> str:
     """Turn an arbitrary string into a safe filename slug."""
     s = s.lower().strip()
@@ -878,6 +892,135 @@ class CortexStore:
     def category_counts(self) -> dict[str, int]:
         cur = self._conn.execute("SELECT category, COUNT(*) as n FROM pages GROUP BY category")
         return {row["category"]: row["n"] for row in cur.fetchall()}
+
+    def knowledge_map(
+        self, *, max_chars: int = 2000, per_category: int = 6, max_title_chars: int = 60
+    ) -> str:
+        """Render a compact, budget-bounded map of what the store contains.
+
+        Retrieval can only find what the agent thinks to look for. Prefetch
+        injects a handful of matched snippets, which answers "what is relevant to
+        this turn" but never "what do I know about at all" — so a page nobody
+        queries for stays invisible no matter how good the ranker is. This
+        renders the shape of the store (categories, their sizes, and a sample of
+        page titles) so the agent can navigate deliberately with `list`/`read`
+        instead of guessing search terms.
+
+        Breadth beats depth here: knowing that a category *exists* is what
+        prevents the "didn't know to look" failure, so long titles are elided to
+        ``max_title_chars`` rather than allowed to consume the budget and push
+        whole categories off the map.
+
+        Deterministic by construction: categories sorted by descending page
+        count then name, titles sorted by recency then rel_path. The output is
+        hard-capped at ``max_chars`` because this lands in the system prompt on
+        every single turn — an unbounded map would silently tax the whole
+        session. Categories that do not fit are summarised as a remainder line
+        rather than dropped without trace.
+        """
+        counts = self.category_counts()
+        if not counts:
+            return ""
+        ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        # One windowed pass instead of a query per category: this runs on every
+        # turn, and `pages` has no index on `category`, so the N+1 form was N
+        # full table scans per turn.
+        samples: dict[str, list[str]] = {c: [] for c, _ in ordered}
+        cur = self._conn.execute(
+            """
+            SELECT category, title, rel_path FROM (
+                SELECT category, title, rel_path,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY category ORDER BY title ASC, rel_path ASC
+                       ) AS rn
+                FROM pages
+            ) WHERE rn <= ?
+            """,
+            (per_category,),
+        )
+        for r in cur.fetchall():
+            bucket = samples.get(str(r["category"]))
+            if bucket is None:
+                continue
+            t = _flatten_title(str(r["title"] or r["rel_path"]))
+            if max_title_chars and len(t) > max_title_chars:
+                t = t[: max_title_chars - 1].rstrip() + "…"
+            bucket.append(t)
+        # BREADTH BEFORE DEPTH. Spending the budget in size order let the two
+        # largest categories consume it and hid 12 of 19 categories on a real
+        # store — including the small, high-value ones (learning, research,
+        # synthesis). The map's job is to tell the agent what EXISTS, so every
+        # category name is guaranteed a slot first, and sample titles are then
+        # distributed across categories with whatever budget remains.
+        lines: list[str] = []
+        bare = {c: f"- **{c}** ({n})" for c, n in ordered}
+
+        def _remainder(idx: int) -> str:
+            cats = len(ordered) - idx
+            pages = sum(c for _, c in ordered[idx:])
+            return f"- …{cats} more categories ({pages} pages) — use `list` to browse"
+
+        # Every category is named. Distribute the remaining budget round-robin
+        # so one large category cannot monopolise the title slots. The budget is
+        # enforced by MEASURING the rendered output after each added title, not
+        # by predicting its cost: the "+N more" suffix and the ": " separator
+        # appear and change as titles are added, and estimating them is exactly
+        # how a "hard cap" quietly becomes a soft one.
+        chosen: dict[str, list[str]] = {c: [] for c, _ in ordered}
+
+        def _render() -> str:
+            out: list[str] = []
+            for category, n in ordered:
+                titles = chosen[category]
+                if not titles:
+                    # No sample shown: the count already conveys the size, so a
+                    # bare "+N more" would be pure noise (and 25 of them cost
+                    # more than the entire skeleton).
+                    out.append(bare[category])
+                    continue
+                sample = ", ".join(titles)
+                more = n - len(titles)
+                if more > 0:
+                    sample = f"{sample}, +{more} more"
+                out.append(f"- **{category}** ({n}): {sample}")
+            return "\n".join(out)
+
+        # Measure the real skeleton, then only add titles while the MEASURED
+        # output stays inside the cap.
+        if len(_render()) > max_chars:
+            used = 0
+            lines = []
+            for idx, (category, _n) in enumerate(ordered):
+                line = bare[category]
+                if used + len(line) + 1 + len(_remainder(idx)) + 1 > max_chars:
+                    tail = _remainder(idx)
+                    # The remainder itself is subject to the cap. With a very
+                    # small budget nothing legitimate fits, and emitting an
+                    # over-budget line would break the guarantee the caller is
+                    # relying on to control prompt size.
+                    if used + len(tail) <= max_chars:
+                        lines.append(tail)
+                    break
+                lines.append(line)
+                used += len(line) + 1
+            out = "\n".join(lines)
+            return out if len(out) <= max_chars else ""
+
+        for depth in range(per_category):
+            progressed = False
+            for category, _n in ordered:
+                pool = samples.get(category, [])
+                if depth >= len(pool):
+                    continue
+                chosen[category].append(pool[depth])
+                if len(_render()) > max_chars:
+                    chosen[category].pop()
+                    continue
+                progressed = True
+            if not progressed:
+                break
+
+        return _render()
 
     def close(self) -> None:
         """Close the calling thread's connection (if any).
