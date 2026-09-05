@@ -9,6 +9,7 @@ block quietly taxing every request in the session. These tests target that.
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from pathlib import Path
@@ -61,7 +62,32 @@ def test_map_never_exceeds_char_budget(tmp_path: Path) -> None:
     for budget in (200, 500, 2000):
         out = store.knowledge_map(max_chars=budget)
         assert len(out) <= budget, f"budget {budget} produced {len(out)} chars"
-        assert "more categories" in out, "truncation must leave a visible trace"
+        # Either every category is named, or the ones that did not fit are
+        # accounted for by a visible remainder line. Silent dropping is the
+        # failure mode this guards.
+        named = len(re.findall(r"- \*\*", out))
+        if named < 25:
+            assert "more categories" in out, "dropped categories must leave a trace"
+
+
+def test_small_categories_stay_visible(tmp_path: Path) -> None:
+    """Breadth beats depth: a big category must not consume the whole map.
+
+    Spending the budget in size order hid 12 of 19 categories on a real store,
+    including the small high-value ones. The map exists to tell the agent what
+    EXISTS, so every category name is guaranteed a slot before any category
+    gets a second sample title.
+    """
+    store_path = tmp_path / "cortex"
+    store_path.mkdir()
+    _seed(store_path, {"daily": 400, "people": 400, "learning": 3, "synthesis": 2})
+    store = CortexStore(store_path=str(store_path))
+
+    out = store.knowledge_map(max_chars=600)
+
+    assert "**learning**" in out, "a small category must not be crowded out"
+    assert "**synthesis**" in out, "a small category must not be crowded out"
+    assert len(out) <= 600
 
 
 def test_long_titles_are_elided_so_breadth_survives(tmp_path: Path) -> None:

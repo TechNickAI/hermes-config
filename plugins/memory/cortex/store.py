@@ -685,42 +685,74 @@ class CortexStore:
             if max_title_chars and len(t) > max_title_chars:
                 t = t[: max_title_chars - 1].rstrip() + "…"
             bucket.append(t)
+        # BREADTH BEFORE DEPTH. Spending the budget in size order let the two
+        # largest categories consume it and hid 12 of 19 categories on a real
+        # store — including the small, high-value ones (learning, research,
+        # synthesis). The map's job is to tell the agent what EXISTS, so every
+        # category name is guaranteed a slot first, and sample titles are then
+        # distributed across categories with whatever budget remains.
         lines: list[str] = []
-        used = 0
-        shown = 0
+        bare = {c: f"- **{c}** ({n})" for c, n in ordered}
 
         def _remainder(idx: int) -> str:
             cats = len(ordered) - idx
             pages = sum(c for _, c in ordered[idx:])
             return f"- …{cats} more categories ({pages} pages) — use `list` to browse"
 
-        for category, n in ordered:
-            titles = samples.get(category, [])
-            sample = ", ".join(titles)
-            more = n - len(titles)
-            if more > 0:
-                sample = f"{sample}, +{more} more" if sample else f"+{more} more"
-            line = f"- **{category}** ({n}): {sample}" if sample else f"- **{category}** ({n})"
-            # Reserve room for the remainder notice so truncation is always
-            # accounted for, never silently dropped at the budget edge.
-            projected = used + len(line) + 1
-            if projected + len(_remainder(shown)) + 1 > max_chars:
-                # Every line is budgeted, including the first: six maximum-length
-                # titles in one category would otherwise blow the advertised cap
-                # on its own. If nothing fits yet, degrade to counts-only rather
-                # than emit an over-budget line.
-                if not lines:
-                    bare = f"- **{category}** ({n})"
-                    if used + len(bare) + 1 + len(_remainder(shown)) + 1 <= max_chars:
-                        lines.append(bare)
-                        used += len(bare) + 1
-                        shown += 1
-                lines.append(_remainder(shown))
+        # Every category is named. Distribute the remaining budget round-robin
+        # so one large category cannot monopolise the title slots. The budget is
+        # enforced by MEASURING the rendered output after each added title, not
+        # by predicting its cost: the "+N more" suffix and the ": " separator
+        # appear and change as titles are added, and estimating them is exactly
+        # how a "hard cap" quietly becomes a soft one.
+        chosen: dict[str, list[str]] = {c: [] for c, _ in ordered}
+
+        def _render() -> str:
+            out: list[str] = []
+            for category, n in ordered:
+                titles = chosen[category]
+                if not titles:
+                    # No sample shown: the count already conveys the size, so a
+                    # bare "+N more" would be pure noise (and 25 of them cost
+                    # more than the entire skeleton).
+                    out.append(bare[category])
+                    continue
+                sample = ", ".join(titles)
+                more = n - len(titles)
+                if more > 0:
+                    sample = f"{sample}, +{more} more"
+                out.append(f"- **{category}** ({n}): {sample}")
+            return "\n".join(out)
+
+        # Measure the real skeleton, then only add titles while the MEASURED
+        # output stays inside the cap.
+        if len(_render()) > max_chars:
+            used = 0
+            lines = []
+            for idx, (category, _n) in enumerate(ordered):
+                line = bare[category]
+                if used + len(line) + 1 + len(_remainder(idx)) + 1 > max_chars:
+                    lines.append(_remainder(idx))
+                    break
+                lines.append(line)
+                used += len(line) + 1
+            return "\n".join(lines)
+
+        for depth in range(per_category):
+            progressed = False
+            for category, _n in ordered:
+                pool = samples.get(category, [])
+                if depth >= len(pool):
+                    continue
+                chosen[category].append(pool[depth])
+                if len(_render()) > max_chars:
+                    chosen[category].pop()
+                    continue
+                progressed = True
+            if not progressed:
                 break
-            lines.append(line)
-            used = projected
-            shown += 1
-        return "\n".join(lines)
+
+        return _render()
 
     def close(self) -> None:
         """Close the calling thread's connection (if any).
