@@ -29,6 +29,7 @@ _plugin_dir = Path(str(_mod.__file__)).resolve().parent
 sys.path.insert(0, str(_plugin_dir))
 import chunking  # noqa: E402
 import embeddings as emb  # noqa: E402
+from retrieval import CortexRetriever  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -397,3 +398,40 @@ def test_write_failure_does_not_leave_an_open_transaction(tmp_path: Path) -> Non
 
     assert written == 0, "a failed batch must report nothing written"
     assert not real_conn.in_transaction, "transaction must be rolled back, not left open"
+
+
+def test_chunk_evidence_survives_fusion_into_the_reranker(tmp_path: Path) -> None:
+    """A lexical match at the page opening must not erase the chunk evidence.
+
+    Fusion prefers the highlighted lexical snippet for display, which is correct
+    for display. But the chunk excerpt is the passage the semantic tier actually
+    matched — the reason a long page surfaced at all. If fusion drops it, the
+    reranker judges the page on its opening lines instead of the real evidence.
+    """
+    tail = "the settlement figure agreed in the final session was forty two"
+    rel = "topics/ledger.md"
+    store = _store_with(tmp_path, {rel: f"# Ledger\n\nledger opening\n\n{tail}\n"})
+    ret = CortexRetriever(store)
+
+    fts_row = {
+        "rel_path": rel, "title": "Ledger", "tags": "",
+        "snippet": "**ledger** opening", "fts_score": 1.0, "source": "fts",
+    }
+    chunk_row = {
+        "rel_path": rel, "title": "Ledger", "tags": "", "snippet": tail,
+        "heading_path": "Ledger > Closing", "vector_score": 0.9, "source": "vector-chunk",
+    }
+
+    ret._fts_search = lambda *a, **k: [dict(fts_row)]  # type: ignore[method-assign]
+    store.vector_search = lambda q, *, limit=5, category=None: [dict(chunk_row)]  # type: ignore[method-assign]
+
+    rows = ret.search("ledger settlement figure agreed", limit=5)
+    hit = next(r for r in rows if r["rel_path"] == rel)
+
+    assert hit["snippet"] == "**ledger** opening", "display keeps the lexical snippet"
+    assert hit.get("chunk_evidence") == tail, "chunk evidence must survive fusion"
+    assert hit.get("heading_path") == "Ledger > Closing"
+
+    docs = ret._rerank_texts([hit], query="ledger settlement figure agreed")
+    assert "Matched section" in docs[0], "reranker input must carry the matched section"
+    assert "forty two" in docs[0], "the rescuing passage must reach the reranker"

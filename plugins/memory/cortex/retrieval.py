@@ -135,6 +135,15 @@ class CortexRetriever:
             pieces = [f"Title: {title}", f"Path: {rel}", f"Tags: {tags}"]
             if snippet:
                 pieces.append(f"Snippet: {snippet}")
+            # The chunk excerpt is why a long page surfaced at all. Give it a
+            # guaranteed slot: without this, a generic lexical match near the
+            # page opening replaces the display snippet and the reranker never
+            # sees the passage the semantic tier actually matched.
+            chunk_evidence = str(row.get("chunk_evidence") or "").replace("\n", " ").strip()
+            if chunk_evidence and chunk_evidence != snippet:
+                heading = str(row.get("heading_path") or "").strip()
+                label = f"Matched section ({heading})" if heading else "Matched section"
+                pieces.append(f"{label}: {chunk_evidence[:400]}")
             lower = body.lower()
             windows: list[str] = []
             seen_spans: set[tuple[int, int]] = set()
@@ -222,6 +231,17 @@ class CortexRetriever:
                     for key in ["fts_score", "vector_score"]:
                         if key in row:
                             merged[rel][key] = row[key]
+                # A chunk hit is the evidence that RESCUED this page: it is the
+                # text the semantic tier actually matched, often deep in a long
+                # page. The display snippet may legitimately become the
+                # highlighted lexical one, so the chunk excerpt is recorded
+                # separately and must survive fusion — otherwise the reranker
+                # never sees why the page surfaced at all. Set on first sight of
+                # the chunk row, whichever tier order it arrives in.
+                if row.get("source") == "vector-chunk" and row.get("snippet"):
+                    merged[rel].setdefault("chunk_evidence", row["snippet"])
+                    if row.get("heading_path"):
+                        merged[rel].setdefault("heading_path", row["heading_path"])
                 fusion[rel] += 1.0 / (k + rank)
 
         add_rows(fts_rows, "fts")
