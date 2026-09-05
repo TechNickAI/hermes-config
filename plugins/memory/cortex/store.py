@@ -270,25 +270,35 @@ class CortexStore:
         # Additive migration for stores created before content_date existed.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(pages)")}
         if "content_date" not in cols:
-            conn.execute("ALTER TABLE pages ADD COLUMN content_date TEXT")
-            # Backfill in place with UPDATE. Do NOT force a reindex here (e.g.
-            # by resetting mtime): the reindex path uses INSERT OR REPLACE,
-            # which REASSIGNS rowids, and pages_fts is an external-content table
-            # keyed by rowid — so a whole-store reindex desyncs the FTS index and
-            # lexical search starts raising "missing row N from content table".
-            # UPDATE preserves rowids, so the index stays intact.
-            for row in conn.execute("SELECT rel_path FROM pages").fetchall():
-                rel = str(row["rel_path"])
-                cd = None
-                try:
-                    text = (self.store_path / rel).read_text(encoding="utf-8")
-                    fm, _body = _parse_frontmatter(text)
-                    cd = content_date(rel, fm)
-                except OSError:
-                    cd = content_date(rel, {})
-                conn.execute(
-                    "UPDATE pages SET content_date = ? WHERE rel_path = ?", (cd, rel)
-                )
+            # ALTER and backfill must be ATOMIC. The column's existence is the
+            # completion marker, so a crash between the two would leave the
+            # column present and permanently unpopulated — recency silently
+            # dead with no way to detect it.
+            conn.execute("BEGIN")
+            try:
+                conn.execute("ALTER TABLE pages ADD COLUMN content_date TEXT")
+                # Backfill in place with UPDATE. Do NOT force a reindex here (e.g.
+                # by resetting mtime): rowid reassignment desyncs the external-content
+                # pages_fts index and lexical search starts raising "missing row N
+                # from content table". UPDATE preserves rowids.
+                for row in conn.execute("SELECT rel_path FROM pages").fetchall():
+                    rel = str(row["rel_path"])
+                    try:
+                        text = (self.store_path / rel).read_text(encoding="utf-8")
+                        fm, _body = _parse_frontmatter(text)
+                        cd = content_date(rel, fm)
+                    except Exception:
+                        # Unreadable, non-UTF-8, or malformed frontmatter: fall
+                        # back to a date in the path. A single bad file must never
+                        # abort the migration and leave the store unopenable.
+                        cd = content_date(rel, {})
+                    conn.execute(
+                        "UPDATE pages SET content_date = ? WHERE rel_path = ?", (cd, rel)
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         conn.execute("CREATE INDEX IF NOT EXISTS pages_content_date_idx ON pages(content_date)")
         conn.commit()
 
@@ -349,8 +359,21 @@ class CortexStore:
                     parts = rel.split("/", 1)
                     category = parts[0] if len(parts) > 1 else "_root"
                     try:
+                        # UPSERT, never INSERT OR REPLACE. `pages_fts` is an
+                        # external-content FTS5 table keyed by rowid; REPLACE
+                        # deletes and reinserts, which assigns a NEW rowid and
+                        # desyncs the index. The symptom is total lexical-search
+                        # failure ("missing row N from content table") after any
+                        # page edit. ON CONFLICT updates in place, preserving
+                        # the rowid and keeping the FTS triggers coherent.
                         conn.execute(
-                            "INSERT OR REPLACE INTO pages (rel_path, category, title, tags, body, mtime, size, content_date) VALUES (?,?,?,?,?,?,?,?)",
+                            "INSERT INTO pages (rel_path, category, title, tags, body, mtime, size, content_date)"
+                            " VALUES (?,?,?,?,?,?,?,?)"
+                            " ON CONFLICT(rel_path) DO UPDATE SET"
+                            " category=excluded.category, title=excluded.title,"
+                            " tags=excluded.tags, body=excluded.body,"
+                            " mtime=excluded.mtime, size=excluded.size,"
+                            " content_date=excluded.content_date",
                             (rel, category, title, tags_str, body, mtime, p.stat().st_size,
                              content_date(rel, fm)),
                         )

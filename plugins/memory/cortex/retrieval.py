@@ -55,7 +55,7 @@ def extract_phrases(q: str, *, max_phrases: int = 3) -> list[str]:
        exact match; the previous tokenizer discarded the quotes entirely, so
        `"chat admission busy"` searched for any page containing *chat* OR
        *admission* OR *busy*.
-    2. **Capitalized multi-word spans** — proper nouns. "Ali Katz" as a bare
+    2. **Capitalized multi-word spans** — proper nouns. "Dana Whitfield" as a bare
        disjunction matches every page mentioning either word, which on a
        personal knowledge base is most of them.
 
@@ -122,7 +122,7 @@ def _sanitize_query(q: str, max_tokens: int = 8) -> str:
     # Individual words are kept ALONGSIDE the phrase clause, never replaced by
     # it. The phrase is a precision signal that BM25 rewards; the bare tokens
     # are the recall floor. Dropping them would make an inexact proper noun
-    # ("Ali Katz" vs a page saying "Ali") return nothing at all — strictly worse
+    # ("Dana Whitfield" vs a page saying "Dana") return nothing at all — strictly worse
     # than the behavior being fixed.
     clauses.extend(keepers)
     if not clauses:
@@ -151,6 +151,12 @@ _RECENCY_HALF_LIFE_DAYS = 180.0
 # reorders near-ties, it must not let a fresh irrelevant page outrank a stale
 # exact answer.
 _RECENCY_MAX_BOOST = 0.30
+# How far down the list recency may reach. A capped multiplier bounds the SIZE
+# of the boost but not the DISTANCE a row can travel, because rank-derived
+# scores are near-uniform: without this window a fresh page ranked tenth
+# overtakes a much stronger match ranked first. Recency breaks near-ties among
+# comparably-relevant results, so it only reorders within a short head window.
+_RECENCY_WINDOW = 4
 
 
 def wants_recency(query: str) -> bool:
@@ -406,8 +412,12 @@ class CortexRetriever:
         dates = self._content_dates([r.get("rel_path") for r in rows])
         if not any(dates.values()):
             return rows
+        # Only the head of the list is eligible. Everything past the window
+        # keeps its order and its position, so recency can never pull a weak
+        # match up from deep in the list.
+        head, tail = rows[:_RECENCY_WINDOW], rows[_RECENCY_WINDOW:]
         scored: list[tuple[float, int, dict]] = []
-        for position, row in enumerate(rows):
+        for position, row in enumerate(head):
             cd = dates.get(str(row.get("rel_path") or ""))
             mult = _recency_multiplier(cd)
             out = dict(row)
@@ -424,7 +434,7 @@ class CortexRetriever:
             base = 1.0 / (60.0 + position)
             scored.append((base * mult, position, out))
         scored.sort(key=lambda t: (-t[0], t[1]))
-        return [row for _score, _pos, row in scored]
+        return [row for _score, _pos, row in scored] + tail
 
     def _content_dates(self, rel_paths: list[Any]) -> dict[str, str | None]:
         """Fetch content_date for the given pages; {} if the column is absent."""
@@ -452,10 +462,13 @@ class CortexRetriever:
         """
         reranker = getattr(self, "reranker", None)
         if reranker is None or not rows:
-            return self._apply_recency(query, rows[:limit])
+            return self._apply_recency(query, rows)[:limit]
         # Cap the rerank window: enough candidates to meaningfully reorder the
         # top `limit`, without shipping the whole store to the cross-encoder.
         window = max(limit * 4, 20)
         reranked = self._apply_rerank(query, rows[:window])
-        return self._apply_recency(query, reranked[:limit])
+        # Recency runs BEFORE truncation: a fresh page just outside `limit` must
+        # be able to move up. Truncating first would hide exactly the rows the
+        # signal exists to surface.
+        return self._apply_recency(query, reranked)[:limit]
 
