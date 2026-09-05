@@ -511,23 +511,38 @@ class CortexStore:
         now = datetime.now().isoformat(timespec="seconds")
         written = 0
         with self._write_lock:
-            for (rel, idx, heading, text, h), vec in zip(pending, vectors):
-                if not vec:
-                    continue
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO chunk_embeddings
-                    (rel_path, chunk_index, heading_path, text, model, dimensions,
-                     content_hash, embedding, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        rel, idx, heading, text, model, len(vec), h,
-                        pack_vector([float(x) for x in vec]), now,
-                    ),
-                )
-                written += 1
-            conn.commit()
+            try:
+                for (rel, idx, heading, text, h), vec in zip(pending, vectors):
+                    if not vec:
+                        continue
+                    try:
+                        blob = pack_vector([float(x) for x in vec])
+                    except (TypeError, ValueError) as e:
+                        logger.warning(
+                            "CortexStore: bad vector for %s#%d, skipping: %s", rel, idx, e
+                        )
+                        continue
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO chunk_embeddings
+                        (rel_path, chunk_index, heading_path, text, model, dimensions,
+                         content_hash, embedding, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rel, idx, heading, text, model, len(vec), h,
+                            blob, now,
+                        ),
+                    )
+                    written += 1
+                conn.commit()
+            except Exception as e:
+                # Never leave a write transaction open on a cached, per-thread
+                # connection: the lock is released on exit and the next writer
+                # would block behind an abandoned transaction.
+                conn.rollback()
+                logger.warning("CortexStore: chunk embedding write failed, rolled back: %s", e)
+                return 0
         if written:
             logger.info(
                 "CortexStore: embedded %d chunks across %d pages with %s",

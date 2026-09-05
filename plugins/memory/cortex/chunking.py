@@ -56,6 +56,10 @@ import re
 # Expressed in characters because the embedding limit is in characters.
 DEFAULT_TARGET_CHARS = 3000
 DEFAULT_MAX_CHARS = 6000
+# Per-field cap on the context prefix (title, heading path, tags). These are
+# page-derived strings: a pathological one must not crowd out the chunk body
+# inside the embedder's input limit.
+_MAX_CONTEXT_CHARS = 200
 
 # Split before ATX headings h1-h3. Deeper headings (h4+) usually subdivide a
 # single topic, so splitting on them fragments what should stay together.
@@ -173,8 +177,14 @@ def chunk_embedding_text(title: str, tags: str, heading_path: str, text: str) ->
     The page title and heading path are prepended so an excerpt carries its own
     context. This is the cheap, deterministic version of a contextual prefix:
     no LLM call, no per-chunk cost, and it survives re-indexing unchanged.
+
+    The context prefix is bounded. Titles and headings come from page content,
+    so an absurdly long one could otherwise consume the embedder's whole input
+    budget and push out the chunk body it was meant to describe.
     """
-    parts = [p for p in (title.strip() if title else "", heading_path.strip()) if p]
+    title_part = (title or "").strip()[:_MAX_CONTEXT_CHARS]
+    heading_part = (heading_path or "").strip()[:_MAX_CONTEXT_CHARS]
+    parts = [p for p in (title_part, heading_part) if p]
     header = " > ".join(parts)
-    tag_line = f"Tags: {tags}" if tags else ""
+    tag_line = f"Tags: {(tags or '').strip()[:_MAX_CONTEXT_CHARS]}" if tags else ""
     return "\n".join(p for p in (header, tag_line, "", text.strip()) if p is not None and p != "")

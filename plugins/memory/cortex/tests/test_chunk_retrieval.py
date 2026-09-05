@@ -13,6 +13,7 @@ per-turn latency).
 
 from __future__ import annotations
 
+import sqlite3
 import struct
 import sys
 from pathlib import Path
@@ -349,3 +350,50 @@ def test_vector_scan_does_not_load_every_body(tmp_path: Path) -> None:
     for s in scans:
         selected = s.split("FROM")[0]
         assert "body" not in selected, f"the scan must not select page bodies: {s}"
+
+
+def test_giant_heading_cannot_crowd_out_chunk_text() -> None:
+    """Context prefixes are page-derived, so they must be bounded.
+
+    An absurdly long title or heading would otherwise consume the embedder's
+    whole input budget and push out the body it was meant to describe.
+    """
+    text = "the actual chunk body that must survive"
+    out = chunking.chunk_embedding_text("T" * 5000, "g" * 5000, "H" * 5000, text)
+
+    assert text in out, "chunk body must survive an oversized context prefix"
+    assert len(out) < 1000, f"context prefix must be bounded, got {len(out)} chars"
+
+
+def test_write_failure_does_not_leave_an_open_transaction(tmp_path: Path) -> None:
+    """A mid-batch failure must roll back, not park a transaction on the conn.
+
+    Connections are cached per thread and the write lock is released on exit,
+    so an abandoned transaction would block the next writer indefinitely.
+    """
+    pages = {"topics/big.md": "# Big\n\n" + ("## S%d\n\n" % 0) + "x" * 9000}
+    store = _store_with(tmp_path, pages)
+
+    real_conn = store._conn
+    calls = {"n": 0}
+
+    class _FailingConn:
+        def execute(self, sql, *args):
+            if "INSERT OR REPLACE INTO chunk_embeddings" in str(sql):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return real_conn.execute(sql, *args)
+                raise sqlite3.OperationalError("simulated mid-batch failure")
+            return real_conn.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+    store._tls.conn = _FailingConn()
+    try:
+        written = store.backfill_chunk_embeddings()
+    finally:
+        store._tls.conn = real_conn
+
+    assert written == 0, "a failed batch must report nothing written"
+    assert not real_conn.in_transaction, "transaction must be rolled back, not left open"
