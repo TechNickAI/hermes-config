@@ -136,10 +136,26 @@ def _sanitize_query(q: str, max_tokens: int = 8) -> str:
 # best-matching page regardless of age. Recency is applied only on these,
 # because a global decay would bury evergreen pages (preferences, principles,
 # reference material) that have no date and never go stale.
+# Terms that signal temporal intent on their own. Deliberately excludes bare
+# "current" and "still", which are far more often ordinary vocabulary
+# ("electrical current flow", "the still image pipeline") than a request for
+# fresh information — those are handled below in temporal constructions only.
 _RECENCY_INTENT_RE = re.compile(
-    r"\b(current|currently|latest|newest|recent|recently|now|today|"
-    r"still|these days|up to date|up-to-date|as of|state of|"
+    r"\b(currently|latest|newest|recent|recently|nowadays|today|"
+    r"these days|up to date|up-to-date|as of|state of|"
     r"where (?:do|does|are|is) .* stand|what(?:'s| is) (?:the )?status)\b",
+    re.I,
+)
+# Ambiguous words that only signal recency inside a temporal construction.
+# "current"/"present" read as temporal when they QUALIFY a following noun
+# ("current status", "current model", "current balance") but not when they are
+# themselves the subject being asked about ("electrical current flow", "the
+# still image pipeline"), where a domain word precedes them.
+_RECENCY_CONTEXT_RE = re.compile(
+    r"(?<!\belectrical\s)(?<!\balternating\s)(?<!\bdirect\s)(?<!\bocean\s)(?<!\bair\s)"
+    r"\b(?:current|present)\s+\w+"
+    r"|\bstill\s+(?:true|valid|open|active|running|accurate|correct|the case|blocked|stands)\b"
+    r"|\bas\s+it\s+stands\b",
     re.I,
 )
 # Half-life for the recency multiplier, in days. At 180 days a page keeps half
@@ -157,11 +173,16 @@ _RECENCY_MAX_BOOST = 0.30
 # overtakes a much stronger match ranked first. Recency breaks near-ties among
 # comparably-relevant results, so it only reorders within a short head window.
 _RECENCY_WINDOW = 4
+# A candidate must score at least this fraction of the leader's relevance to be
+# eligible for a recency boost. Without it, the window bounds how FAR a row can
+# travel but not how much better the row it displaces was.
+_RECENCY_TIE_RATIO = 0.95
 
 
 def wants_recency(query: str) -> bool:
     """True when the query asks for current state rather than best match."""
-    return bool(_RECENCY_INTENT_RE.search(query or ""))
+    q = query or ""
+    return bool(_RECENCY_INTENT_RE.search(q) or _RECENCY_CONTEXT_RE.search(q))
 
 
 def _recency_multiplier(content_date: str | None, *, today: date | None = None) -> float:
@@ -416,10 +437,29 @@ class CortexRetriever:
         # keeps its order and its position, so recency can never pull a weak
         # match up from deep in the list.
         head, tail = rows[:_RECENCY_WINDOW], rows[_RECENCY_WINDOW:]
+        # Recency may only break a NEAR-TIE. Rank-derived scores are near-uniform
+        # (rank 4 sits ~5% below rank 1 at k=60), so a 30% boost would always
+        # overwhelm that separation and reorder on rank alone. Where the tiers
+        # give a real relevance score, require the candidate to be within a few
+        # percent of the leader before recency is allowed to move it.
+        def _relevance(row: dict) -> float | None:
+            for key in ("rerank_score", "fusion_score", "vector_score"):
+                val = row.get(key)
+                if isinstance(val, (int, float)):
+                    return float(val)
+            return None
+
+        leader = _relevance(head[0]) if head else None
         scored: list[tuple[float, int, dict]] = []
         for position, row in enumerate(head):
             cd = dates.get(str(row.get("rel_path") or ""))
             mult = _recency_multiplier(cd)
+            # Suppress the boost when this candidate is measurably weaker than
+            # the leader: recency breaks ties, it does not overrule relevance.
+            if mult != 1.0 and position > 0 and leader is not None:
+                mine = _relevance(row)
+                if mine is not None and leader > 0 and mine < leader * _RECENCY_TIE_RATIO:
+                    mult = 1.0
             out = dict(row)
             if cd:
                 out["content_date"] = cd

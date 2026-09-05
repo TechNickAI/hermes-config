@@ -491,3 +491,95 @@ def test_editing_a_page_does_not_break_lexical_search(tmp_path: Path) -> None:
         "SELECT rel_path FROM pages_fts WHERE pages_fts MATCH ? LIMIT 5", ("echo",)
     ).fetchall()
     assert [r["rel_path"] for r in hits] == ["daily/2026-03-01.md"], "edited text must be indexed"
+
+
+def test_ambiguous_words_need_temporal_context() -> None:
+    """"current" and "still" are ordinary vocabulary far more often than intent.
+
+    Treating them as standalone signals sent "explain electrical current flow"
+    and "how does the still image pipeline work" down the recency path, where
+    their best results could be reordered by page date.
+    """
+    for q in (
+        "explain electrical current flow",
+        "how does the still image pipeline work",
+        "ocean current patterns",
+        "alternating current wiring",
+    ):
+        assert not rt.wants_recency(q), f"non-temporal query must not trigger recency: {q}"
+
+    for q in (
+        "current status of the migration",
+        "what is the current model",
+        "the current account balance",
+        "is that still true",
+    ):
+        assert rt.wants_recency(q), f"temporal construction must trigger recency: {q}"
+
+
+def test_recency_does_not_override_a_measurably_better_match() -> None:
+    """Inside the window, a weak-but-fresh page must not displace a strong one.
+
+    The window bounds how FAR a row travels, not how much better the row it
+    displaces was. At k=60 rank 4 sits ~5% below rank 1, so a 30% boost would
+    always win on rank alone. Real relevance scores gate the boost.
+    """
+    today = date.today()
+    rows = [
+        {"rel_path": "strong.md", "fusion_score": 1.00},
+        {"rel_path": "weak.md", "fusion_score": 0.40},
+    ]
+
+    class _Store:
+        class _Cursor:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def fetchall(self):
+                return self._rows
+
+        class _Conn:
+            @classmethod
+            def execute(cls, _sql, rels):
+                return _Store._Cursor(
+                    [
+                        {
+                            "rel_path": r,
+                            "content_date": today.isoformat() if r == "weak.md" else None,
+                        }
+                        for r in rels
+                    ]
+                )
+
+        _conn = _Conn()
+
+    out = CortexRetriever(_Store())._apply_recency("current status", rows)
+    assert out[0]["rel_path"] == "strong.md", "a much better match must survive a fresh date"
+
+    # A genuine near-tie IS still reordered — the gate must not make the
+    # feature inert, which is the failure mode it could easily introduce.
+    near = [
+        {"rel_path": "stale.md", "fusion_score": 1.00},
+        {"rel_path": "fresh.md", "fusion_score": 0.99},
+    ]
+
+    class _NearStore:
+        _Cursor = _Store._Cursor
+
+        class _Conn:
+            @classmethod
+            def execute(cls, _sql, rels):
+                return _Store._Cursor(
+                    [
+                        {
+                            "rel_path": r,
+                            "content_date": today.isoformat() if r == "fresh.md" else None,
+                        }
+                        for r in rels
+                    ]
+                )
+
+        _conn = _Conn()
+
+    near_out = CortexRetriever(_NearStore())._apply_recency("current status", near)
+    assert near_out[0]["rel_path"] == "fresh.md", "a near-tie must still be broken by recency"
