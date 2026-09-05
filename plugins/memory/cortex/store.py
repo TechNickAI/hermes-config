@@ -732,11 +732,18 @@ class CortexStore:
             for idx, (category, _n) in enumerate(ordered):
                 line = bare[category]
                 if used + len(line) + 1 + len(_remainder(idx)) + 1 > max_chars:
-                    lines.append(_remainder(idx))
+                    tail = _remainder(idx)
+                    # The remainder itself is subject to the cap. With a very
+                    # small budget nothing legitimate fits, and emitting an
+                    # over-budget line would break the guarantee the caller is
+                    # relying on to control prompt size.
+                    if used + len(tail) <= max_chars:
+                        lines.append(tail)
                     break
                 lines.append(line)
                 used += len(line) + 1
-            return "\n".join(lines)
+            out = "\n".join(lines)
+            return out if len(out) <= max_chars else ""
 
         for depth in range(per_category):
             progressed = False

@@ -168,7 +168,9 @@ def test_provider_includes_map_in_system_prompt(tmp_path: Path) -> None:
     store_path = tmp_path / "cortex"
     store_path.mkdir()
     _seed(store_path, {"ventures": 2})
-    provider = CortexMemoryProvider(config={"store_path": str(store_path), "semantic": False})
+    provider = CortexMemoryProvider(
+        config={"store_path": str(store_path), "semantic": False, "knowledge_map": True}
+    )
     provider.initialize("s", hermes_home=str(tmp_path / "home"))
 
     block = provider.system_prompt_block()
@@ -213,7 +215,12 @@ def test_malformed_char_budget_falls_back_to_default(tmp_path: Path) -> None:
     store_path.mkdir()
     _seed(store_path, {"ventures": 2})
     provider = CortexMemoryProvider(
-        config={"store_path": str(store_path), "semantic": False, "knowledge_map_chars": "not-a-number"}
+        config={
+            "store_path": str(store_path),
+            "semantic": False,
+            "knowledge_map": True,
+            "knowledge_map_chars": "not-a-number",
+        }
     )
     provider.initialize("s", hermes_home=str(tmp_path / "home"))
 
@@ -271,3 +278,39 @@ def test_titles_cannot_inject_prompt_structure(tmp_path: Path) -> None:
         f"every map line must stay a list item; got {body_lines}"
     )
     assert "\n## SYSTEM" not in out, "a title must not open a new prompt section"
+
+
+def test_tiny_budgets_are_still_honoured(tmp_path: Path) -> None:
+    """The cap is absolute, including the remainder line.
+
+    A one-category store with max_chars=1 previously returned a 53-char map:
+    the remainder notice was appended without being budget-checked, so a user
+    trying to minimise prompt overhead got more text than they asked for.
+    """
+    store_path = tmp_path / "cortex"
+    store_path.mkdir()
+    _seed(store_path, {"people": 3})
+    store = CortexStore(store_path=str(store_path))
+
+    for budget in (1, 5, 20, 40):
+        out = store.knowledge_map(max_chars=budget)
+        assert len(out) <= budget, f"budget {budget} produced {len(out)} chars: {out!r}"
+
+
+def test_knowledge_map_is_opt_in(tmp_path: Path) -> None:
+    """An upgrade must not silently start injecting titles into every prompt."""
+    store_path = tmp_path / "cortex"
+    store_path.mkdir()
+    _seed(store_path, {"people": 2})
+
+    provider = CortexMemoryProvider(config={"store_path": str(store_path), "semantic": False})
+    provider.initialize("s", hermes_home=str(tmp_path / "home"))
+    assert "What is in the knowledge base" not in provider.system_prompt_block(), (
+        "map must default to off so an upgrade does not change every prompt"
+    )
+
+    on = CortexMemoryProvider(
+        config={"store_path": str(store_path), "semantic": False, "knowledge_map": True}
+    )
+    on.initialize("s2", hermes_home=str(tmp_path / "home2"))
+    assert "What is in the knowledge base" in on.system_prompt_block()
