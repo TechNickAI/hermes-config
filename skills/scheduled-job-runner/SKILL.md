@@ -105,6 +105,22 @@ the script.
   delivery contract and any trailing control payload such as `{"wakeAgent": false}`.
 - `silent` — never speak on success, whatever the job printed. **This is the fix for a
   noisy job: set it in the spec, do not edit the script.** Failures still report.
+- `on_change` — speak on success ONLY when the message differs from the last one
+  delivered. Most scheduled jobs are neither always-worth-reading nor never: their
+  output matters when it changes and repeats itself the rest of the time.
+
+Suppression is keyed on CONTENT, never on a timer. A time window would hide the changed
+message that arrives inside it, and that is the one worth reading. A liveness heartbeat
+(24h) speaks anyway after a long identical run, so a quiet channel is never mistaken for
+a dead job.
+
+The gate fails OPEN everywhere — corrupt state, unwritable state dir, any exception. A
+broken gate degrades to chatty, never to silent: one bug must not be able to mute the
+fleet.
+
+**A dupe ratio is not permission to suppress.** Read the actual bodies first. A watchdog
+measured at 53% "duplicate" was reporting a real, ongoing problem while exiting 0;
+gating it would have silenced a live-money alarm.
 
 Failures always deliver an incident card regardless of policy.
 
@@ -170,6 +186,56 @@ double-count. jobrun exports its identity to the child:
 Every ledger row also records `deployed_sha` — the short git SHA of the tree the job ran
 from (via `cwd`). Without it, run history and a deploy-drift watchdog can disagree about
 what actually ran.
+
+## Diagnosing a timeout: where did it hang?
+
+A job killed at its ceiling used to record `stderr_bytes: 0` — nothing at all. With no
+evidence, "raise the ceiling" is the only available move, and that is superstition
+rather than diagnosis.
+
+Children now run with `PYTHONFAULTHANDLER=1`, and the escalation ladder is
+`TERM -> ABRT -> KILL`. The abort makes CPython dump every thread's stack to stderr
+(already captured), naming the exact hung frame.
+
+TERM still goes first, deliberately: aborting first would bypass the graceful path for
+any job whose leader handles SIGTERM to reap its child and write its ledger row.
+Measured — abort-first, that handler never runs and no row is written; TERM-first, it
+does. The abort is an escalation for a child that ignored TERM, not the opening move.
+
+`overlap = "skip"` also verifies the whole process GROUP is gone, not just the leader.
+`proc.wait()` only proves the leader exited; a descendant that ignored the signal lives
+on in the same group, and releasing the lock while it still holds the previous tick's
+resources is the stacked-run race that `skip` exists to prevent. Zombies are excluded —
+a reparented, unreaped process still answers `killpg(pgid, 0)` but holds no locks and no
+orders, and counting it as alive would misreport a clean timeout as a `wrapper_error`.
+
+## Tuning the vocabulary without forking the runner
+
+Failure cards pick the line that explains the failure, preferring a failure-shaped line
+in stdout over the last line of stderr. The old `stderr.splitlines()[-1]` rule reported
+whatever happened LAST, which for any job writing an audit trail is usually a SUCCESS —
+producing a DEGRADED banner over a sentence describing something that went right.
+
+Markers are deliberately specific: a bare `FAILED` also matches the healthy tally
+`checked 26, kept 21, failed 1`, which is a STATISTIC, not the error.
+
+Four environment variables take a `|`-separated list APPENDED to the defaults, so a
+fleet with its own log vocabulary configures it instead of carrying a patched copy of
+the file:
+
+| variable                     | effect                                           |
+| ---------------------------- | ------------------------------------------------ |
+| `JOBRUN_FAILURE_MARKERS`     | extra lines that indicate a real failure         |
+| `JOBRUN_SUCCESS_MARKERS`     | extra lines that must never be shown as an error |
+| `JOBRUN_CONDITION_PREFIXES`  | extra recognised condition headlines             |
+| `JOBRUN_COLLAPSING_PREFIXES` | headlines identified by prefix alone             |
+
+The last one matters for dedup. A periodic check whose body necessarily GROWS (a commit
+count, an age, a commit list) minted a brand-new incident every run, bypassing dedup
+entirely — the alarm looked new forever and could never be acknowledged. Collapsing
+prefixes key the incident on the headline so the condition stays one condition, while
+every other recognised headline keeps its full text so two genuinely different findings
+do not hide behind each other.
 
 ## Terminal states — never collapse into exit 1
 

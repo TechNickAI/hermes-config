@@ -39,6 +39,7 @@ Exit codes (documented, stable — 126/127/128+ deliberately avoided):
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -67,6 +68,7 @@ def _install_signal_handlers() -> None:
     AND the lock descriptor closes, so a later invocation can start a second
     live copy of the same job.
     """
+
     def _handler(signum, _frame):
         for proc in list(_ACTIVE_PROC):
             try:
@@ -74,11 +76,16 @@ def _install_signal_handlers() -> None:
             except Exception:
                 pass
         try:
-            append_ledger({
-                "event": "job.finished", "state": "signal",
-                "signal": signal.Signals(signum).name,
-                "ts": _iso(_now()), "note": "runner terminated; child forwarded",
-            }, blocking=False)
+            append_ledger(
+                {
+                    "event": "job.finished",
+                    "state": "signal",
+                    "signal": signal.Signals(signum).name,
+                    "ts": _iso(_now()),
+                    "note": "runner terminated; child forwarded",
+                },
+                blocking=False,
+            )
         except Exception:
             pass
         sys.exit(EXIT_SIGNAL)
@@ -88,6 +95,7 @@ def _install_signal_handlers() -> None:
             signal.signal(s, _handler)
         except (ValueError, OSError):
             pass  # not in main thread / unsupported platform
+
 
 import tomllib  # stdlib since 3.11; fleet standard is 3.13
 
@@ -128,18 +136,21 @@ UV_INSTALL_DIR = Path.home() / ".local" / "bin"
 
 # Secrets are redacted before anything is logged or delivered.
 _SECRET_HINTS = (
-    "token", "secret", "password", "passwd", "api_key", "apikey",
-    "authorization", "bearer", "private_key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "private_key",
 )
 _HINT_ALT = "|".join(_SECRET_HINTS + ("access_key", "client_secret", "session_key"))
 # key=value / key: value  (mask only the VALUE, keep the key visible)
-_SECRET_ASSIGN_RE = re.compile(
-    rf"(?i)\b((?:\w*)(?:{_HINT_ALT})\w*)(\s*[=:]\s*)(?!\s)([^\s,;'\"]+)"
-)
+_SECRET_ASSIGN_RE = re.compile(rf"(?i)\b((?:\w*)(?:{_HINT_ALT})\w*)(\s*[=:]\s*)(?!\s)([^\s,;'\"]+)")
 # "token": "abc"  in JSON
-_SECRET_JSON_RE = re.compile(
-    rf'(?i)("(?:\w*)(?:{_HINT_ALT})\w*"\s*:\s*)"[^"]*"'
-)
+_SECRET_JSON_RE = re.compile(rf'(?i)("(?:\w*)(?:{_HINT_ALT})\w*"\s*:\s*)"[^"]*"')
 _BEARER_RE = re.compile(r"(?i)\b(bearer|token)\s+[A-Za-z0-9._\-]{8,}")
 _URL_CRED_RE = re.compile(r"(?i)\b(\w+://[^/\s:@]+:)[^@\s]+@")
 _PEM_RE = re.compile(
@@ -196,9 +207,9 @@ def redact_argv(argv: list) -> list:
             out.append("[REDACTED]")
             flag_expects_secret = False
             continue
-        flag_expects_secret = bool(
-            text.startswith("-") and _SECRET_FLAG_RE.search(text)
-        ) and "=" not in text
+        flag_expects_secret = (
+            bool(text.startswith("-") and _SECRET_FLAG_RE.search(text)) and "=" not in text
+        )
         out.append(redact(text))
     return out
 
@@ -230,7 +241,11 @@ def notify_failure(spec: "Spec", body: str) -> str:
         argv = [exe, "send", "--quiet", "--to", spec.notify_target]
     try:
         r = subprocess.run(
-            argv, input=body, capture_output=True, text=True, timeout=30,
+            argv,
+            input=body,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         return "sent" if r.returncode == 0 else f"failed_rc{r.returncode}"
     except FileNotFoundError:
@@ -258,7 +273,9 @@ def deployed_sha(cwd: str | None) -> str | None:
         path = os.path.expanduser(str(cwd))
         r = subprocess.run(
             ["git", "-C", path, "rev-parse", "--short=12", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if r.returncode == 0:
             return r.stdout.strip() or None
@@ -271,7 +288,7 @@ def _clamp(text: str, limit: int = MAX_CAPTURE_BYTES) -> str:
     if len(text) <= limit:
         return text
     head = text[: limit // 2]
-    tail = text[-limit // 2:]
+    tail = text[-limit // 2 :]
     return f"{head}\n...[{len(text) - limit} bytes elided]...\n{tail}"
 
 
@@ -334,9 +351,11 @@ def ensure_uv(auto_install: bool = True) -> str:
         env["INSTALLER_NO_MODIFY_PATH"] = "1"  # we resolve uv by absolute path
         try:
             proc = subprocess.run(
-                ["sh", "-c",
-                 "curl -LsSf --max-time 120 https://astral.sh/uv/install.sh | sh"],
-                capture_output=True, text=True, timeout=180, env=env,
+                ["sh", "-c", "curl -LsSf --max-time 120 https://astral.sh/uv/install.sh | sh"],
+                capture_output=True,
+                text=True,
+                timeout=180,
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             raise ConfigError("uv install timed out after 180s") from exc
@@ -352,7 +371,9 @@ def _interpreter_version(exe: str) -> tuple[int, int] | None:
     try:
         out = subprocess.run(
             [exe, "-c", "import sys;print(sys.version_info[0],sys.version_info[1])"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
         if out.returncode == 0:
             a, b = out.stdout.split()[:2]
@@ -382,10 +403,28 @@ class Spec:
     """A declarative job spec. Everything the runner needs, nothing it doesn't."""
 
     KNOWN = {
-        "job_id", "command", "script", "runtime", "cwd", "timeout", "kill_grace",
-        "overlap", "owner", "env", "timezone", "notify_on_success", "retries",
-        "retry_backoff", "args", "python", "auto_install_uv", "output_policy",
-        "heartbeat_url", "critical", "notify_target", "notify_command",
+        "job_id",
+        "command",
+        "script",
+        "runtime",
+        "cwd",
+        "timeout",
+        "kill_grace",
+        "overlap",
+        "owner",
+        "env",
+        "timezone",
+        "notify_on_success",
+        "retries",
+        "retry_backoff",
+        "args",
+        "python",
+        "auto_install_uv",
+        "output_policy",
+        "heartbeat_url",
+        "critical",
+        "notify_target",
+        "notify_command",
         # v2: declared money class. The runner independently DETECTS from the
         # script and refuses to run on a dangerous disagreement (declaring
         # paper on a live script). Optional — omitted means "trust detection".
@@ -424,9 +463,7 @@ class Spec:
         if not self.command and not self.script:
             raise ConfigError(f"{self.job_id}: spec needs either 'script' or 'command'")
         if self.command and self.script:
-            raise ConfigError(
-                f"{self.job_id}: set 'script' OR 'command', not both"
-            )
+            raise ConfigError(f"{self.job_id}: set 'script' OR 'command', not both")
 
         self.runtime = str(data.get("runtime") or "auto")
         self.cwd = data.get("cwd")
@@ -471,10 +508,7 @@ class Spec:
         # against what the script actually does.
         self.money = data.get("money")
         if self.money is not None and self.money not in ("live", "paper", "none"):
-            raise ConfigError(
-                f"{self.job_id}: money must be live|paper|none, "
-                f"got {self.money!r}"
-            )
+            raise ConfigError(f"{self.job_id}: money must be live|paper|none, got {self.money!r}")
         # exit_map: {"1": "noteworthy", "2": "broken"} — the script's own
         # convention, stated once, in the spec. Keys are exit codes (TOML keys
         # are strings), values are ladder outcomes.
@@ -492,16 +526,13 @@ class Spec:
                 ) from None
             if v not in _ladder:
                 raise ConfigError(
-                    f"{self.job_id}: exit_map[{k}] = {v!r} is not one of "
-                    f"{sorted(_ladder)}"
+                    f"{self.job_id}: exit_map[{k}] = {v!r} is not one of {sorted(_ladder)}"
                 )
             if code == 0 and v != "healthy":
                 # Exit 0 means the process succeeded. Letting a spec relabel it
                 # as a failure would put the runner in disagreement with the
                 # operating system about whether the job worked.
-                raise ConfigError(
-                    f"{self.job_id}: exit_map cannot remap exit 0 (got {v!r})"
-                )
+                raise ConfigError(f"{self.job_id}: exit_map cannot remap exit 0 (got {v!r})")
             self.exit_map[code] = v
         # Where a FAILURE goes. Hermes cron drops the alert entirely when a job
         # is deliver=local (_resolve_delivery_targets returns [], and
@@ -512,12 +543,13 @@ class Spec:
         # Overridable so the path can be exercised in tests without sending a
         # real message. Defaults to the hermes CLI's own script-facing sender.
         self.notify_command = str(data.get("notify_command", "") or "")
-        if self.output_policy not in ("passthrough", "silent"):
-            raise ConfigError(
-                f"{self.job_id}: output_policy must be passthrough|silent"
-            )
-        for name, val in (("timeout", self.timeout), ("kill_grace", self.kill_grace),
-                          ("retries", self.retries)):
+        if self.output_policy not in ("passthrough", "silent", "on_change"):
+            raise ConfigError(f"{self.job_id}: output_policy must be passthrough|silent|on_change")
+        for name, val in (
+            ("timeout", self.timeout),
+            ("kill_grace", self.kill_grace),
+            ("retries", self.retries),
+        ):
             if val < 0:
                 raise ConfigError(f"{self.job_id}: {name} must be >= 0")
         # A critical job must state its own timeout. Inheriting the default
@@ -546,14 +578,13 @@ class Spec:
         # exactly like their job id.
         p = Path(name)
         if p.suffix == ".toml" and p.is_file():
-            pass                       # explicit path to a spec file
+            pass  # explicit path to a spec file
         else:
             cand = SPEC_DIR / f"{name}.toml"
             if cand.is_file():
                 p = cand
             elif not p.is_file():
-                raise ConfigError(
-                    f"spec not found: {name} (looked in {SPEC_DIR})")
+                raise ConfigError(f"spec not found: {name} (looked in {SPEC_DIR})")
         if not p.is_file():
             raise ConfigError(f"spec not found: {name} (looked in {SPEC_DIR})")
         try:
@@ -652,7 +683,7 @@ def preflight(spec: Spec, argv: list[str]) -> list[str]:
     # successful mismatched run was never checked at all.
     try:
         _v2_money(spec)
-    except Exception as exc:      # MoneyMismatch and anything it wraps
+    except Exception as exc:  # MoneyMismatch and anything it wraps
         problems.append(str(exc))
     return problems
 
@@ -720,6 +751,14 @@ def build_env(spec: Spec, run_id: str | None = None) -> dict:
     env = os.environ.copy()
     env.update({k: str(v) for k, v in spec.env.items()})
     env.setdefault("HERMES_HOME", str(HERMES_HOME))
+    # A job killed at its ceiling must be able to say WHERE it hung. With this
+    # set, the SIGABRT that `_terminate_group` sends first makes CPython dump
+    # every thread's stack to stderr (already captured) before we escalate to
+    # TERM/KILL. Without it the timeout path records nothing at all — which is
+    # exactly how two live-money auto-sell stalls produced `stderr_bytes: 0`
+    # and left "raise the ceiling" as the only available guess.
+    # setdefault: a job that deliberately configures its own value still wins.
+    env.setdefault("PYTHONFAULTHANDLER", "1")
     if run_id:
         # Exported so a domain-specific wrapper running INSIDE this job can
         # adopt the same id instead of inventing its own. Two ledgers per run
@@ -769,9 +808,7 @@ def write_logs(job_id: str, run_id: str, out: str, err: str) -> str:
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         p = LOG_DIR / f"{job_id}-{run_id[:8]}.log"
-        p.write_text(
-            f"=== stdout ===\n{out}\n\n=== stderr ===\n{err}\n", encoding="utf-8"
-        )
+        p.write_text(f"=== stdout ===\n{out}\n\n=== stderr ===\n{err}\n", encoding="utf-8")
         return str(p)
     except Exception:
         return ""
@@ -864,9 +901,16 @@ def _execute(spec: Spec, argv: list[str], env: dict) -> tuple:
             start_new_session=True,  # own process group: kill children too
         )
     except Exception as exc:
-        return ("config_error" if isinstance(exc, (FileNotFoundError, PermissionError))
-                else "wrapper_error", None, None, "",
-                f"{type(exc).__name__}: {exc}", time.monotonic() - t0)
+        return (
+            "config_error"
+            if isinstance(exc, (FileNotFoundError, PermissionError))
+            else "wrapper_error",
+            None,
+            None,
+            "",
+            f"{type(exc).__name__}: {exc}",
+            time.monotonic() - t0,
+        )
 
     _ACTIVE_PROC.append(proc)
     out_r = _BoundedReader(proc.stdout)
@@ -890,13 +934,25 @@ def _execute(spec: Spec, argv: list[str], env: dict) -> tuple:
         dur = time.monotonic() - t0
         if not killed:
             # Could not prove the workload is dead — never retry into that.
-            return ("wrapper_error", None, None, out,
-                    (err + "\ntimeout: process group could not be reaped").strip(), dur)
+            return (
+                "wrapper_error",
+                None,
+                None,
+                out,
+                (err + "\ntimeout: process group could not be reaped").strip(),
+                dur,
+            )
         return ("timeout", None, None, out, err, dur)
     except Exception as exc:
         _terminate_group(proc, spec.kill_grace)
-        return ("wrapper_error", None, None, out_r.value(),
-                f"{type(exc).__name__}: {exc}", time.monotonic() - t0)
+        return (
+            "wrapper_error",
+            None,
+            None,
+            out_r.value(),
+            f"{type(exc).__name__}: {exc}",
+            time.monotonic() - t0,
+        )
     finally:
         try:
             _ACTIVE_PROC.remove(proc)
@@ -904,11 +960,122 @@ def _execute(spec: Spec, argv: list[str], env: dict) -> tuple:
             pass
 
 
-def _terminate_group(proc, grace: int) -> bool:
-    """TERM then KILL the child's process group. True once the child is reaped."""
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+def _group_is_empty(pgid: int, own_pgid: int, settle_s: float = 0.0) -> bool:
+    """True when no LIVE process remains in `pgid` (zombies do not count).
+
+    `proc.wait()` only proves the LEADER is gone. A descendant that ignores the
+    signal the leader died to survives in the same group, and treating leader
+    exit as success releases the overlap lock while that orphan still holds the
+    previous tick's resources — the stacked exit-manager race `overlap = "skip"`
+    exists to prevent. Signal 0 does not deliver; it only asks "does this group
+    still exist?".
+
+    ZOMBIES ARE NOT A SURVIVING WORKLOAD (review P2, reproduced). A killed
+    descendant that has been reparented but not yet reaped still answers
+    `killpg(pgid, 0)`, so signal 0 alone would report a successfully-killed job
+    as un-reapable — and `_execute` would then misclassify a clean timeout as a
+    non-retryable `wrapper_error`. A zombie holds no locks, no sockets and no
+    orders; it is dead. So confirm against /proc state before believing it.
+
+    `settle_s` polls briefly, because signal delivery is not instantaneous: a
+    check fired immediately after SIGKILL sees processes the kernel has not
+    finished tearing down and would report a false survivor.
+    """
+    if pgid == own_pgid or pgid <= 0:
+        # Never probe (let alone signal) our own group: a jobrun that was not
+        # started in its own session would be asking to kill itself.
+        return True
+    deadline = time.monotonic() + max(0.0, settle_s)
+    while True:
         try:
-            os.killpg(os.getpgid(proc.pid), sig)
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            # It exists and is not ours to inspect. Not proof of death.
+            return False
+        except OSError:
+            return False
+        if not _group_has_live_member(pgid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _group_has_live_member(pgid: int) -> bool:
+    """True if any process in `pgid` is not a zombie.
+
+    Fails SAFE: if /proc cannot be read at all we return True (assume alive),
+    because claiming a live workload is dead is the dangerous direction.
+    """
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return True  # not Linux; cannot refine the signal-0 answer
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+        except (OSError, ValueError):
+            continue
+        # After the (possibly space-containing) comm field: state, ppid, pgrp.
+        try:
+            tail = stat[stat.rindex(")") + 2 :].split()
+            state, pgrp = tail[0], int(tail[2])
+        except (ValueError, IndexError):
+            continue
+        if pgrp != pgid:
+            continue
+        if state != "Z":
+            return True
+    # Every member is a zombie (or the group raced away between the killpg and
+    # this scan). Either way there is no live workload left.
+    return False
+
+
+def _terminate_group(proc, grace: int) -> bool:
+    """TERM (graceful) then ABRT (stack dump) then KILL. True once the GROUP is gone.
+
+    WHY A STACK DUMP AT ALL (2026-09-07, Sentinel repair ac1327ec7637). A job
+    killed at its ceiling used to record NOTHING: both post-#633 auto-sell
+    timeouts (09-06 23:15Z, 09-07 11:05Z) landed with `stderr_bytes: 0`, so the
+    only honest answer to "what was it stuck on?" was a shrug — and a ceiling
+    you cannot diagnose invites raising the ceiling, which is guessing.
+    Children run with PYTHONFAULTHANDLER=1, so SIGABRT makes CPython dump every
+    thread's stack to stderr (already captured) naming the exact hung frame.
+
+    WHY SIGTERM STILL GOES FIRST (review P2, reproduced). Aborting first would
+    bypass the graceful path for every job whose leader HANDLES SIGTERM — including
+    any domain wrapper whose handler reaps its own child and writes a run-ledger
+    row. Measured: with ABRT first that handler never runs
+    (rc -6, no row); with TERM first it runs and the row is written. Destroying
+    the ledger row for a hung money-path tick would defeat the very purpose of
+    this change, so the TERM-before-KILL contract is preserved and the abort is
+    an ESCALATION for a child that did not honour it. A genuinely wedged job
+    (verified) ignores TERM and still yields its stack on the abort.
+
+    WHY THE GROUP AND NOT THE LEADER (review P1, reproduced). The leader exiting
+    is not proof the group is gone: a descendant that ignores the signal the
+    leader died to keeps running, and reporting success there lets the next
+    live-money tick stack on the orphan. The pre-existing TERM-then-KILL ladder
+    had this hole too (verified).
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = -1
+    try:
+        own_pgid = os.getpgrp()
+    except Exception:
+        own_pgid = -2
+
+    # SIGABRT sits between TERM and KILL: it only ever reaches a child that
+    # already declined to exit gracefully, and it buys the diagnosis before the
+    # evidence is destroyed.
+    for sig in (signal.SIGTERM, signal.SIGABRT, signal.SIGKILL):
+        try:
+            os.killpg(pgid if pgid > 0 else os.getpgid(proc.pid), sig)
         except ProcessLookupError:
             break
         except Exception:
@@ -916,12 +1083,21 @@ def _terminate_group(proc, grace: int) -> bool:
                 proc.kill()
             except Exception:
                 pass
+        # The abort wait is only long enough for the interpreter to write the
+        # traceback; it is NOT a second grace period, so an unresponsive child
+        # cannot buy itself extra life by refusing to abort.
+        wait_s = {signal.SIGTERM: grace, signal.SIGABRT: min(2, max(1, grace))}.get(sig, 5)
         try:
-            proc.wait(timeout=grace if sig == signal.SIGTERM else 5)
-            return True
+            proc.wait(timeout=wait_s)
         except Exception:
             continue
-    return proc.poll() is not None
+        # Leader is reaped — but only the empty GROUP ends the escalation.
+        # Reaping first is load-bearing: an unreaped leader lingers as a zombie
+        # IN THIS GROUP, so probing before reaping reports "alive" forever.
+        if _group_is_empty(pgid, own_pgid, settle_s=2.0 if sig is signal.SIGKILL else 0.0):
+            return True
+
+    return proc.poll() is not None and _group_is_empty(pgid, own_pgid, settle_s=2.0)
 
 
 def prune_state() -> None:
@@ -948,8 +1124,7 @@ def prune_state() -> None:
             with open(LEDGER_LOCK, "a+", encoding="utf-8") as lk:
                 fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
                 try:
-                    lines = LEDGER.read_text(
-                        encoding="utf-8", errors="replace").splitlines()
+                    lines = LEDGER.read_text(encoding="utf-8", errors="replace").splitlines()
                     if len(lines) > LEDGER_MAX_LINES:
                         keep = lines[-LEDGER_MAX_LINES:]
                         tmp = LEDGER.with_suffix(".jsonl.tmp")
@@ -995,8 +1170,10 @@ def cmd_list() -> int:
             print(f"{p.stem:<38} {'INVALID':<8} {str(exc)[:60]}")
             continue
         l = last.get(s.job_id, {})
-        print(f"{s.job_id:<38} {s.runtime:<8} {l.get('state','never'):<14} "
-              f"{l.get('finished_at','-'):<21} {s.owner or '-'}")
+        print(
+            f"{s.job_id:<38} {s.runtime:<8} {l.get('state', 'never'):<14} "
+            f"{l.get('finished_at', '-'):<21} {s.owner or '-'}"
+        )
     return EXIT_OK
 
 
@@ -1007,9 +1184,11 @@ def cmd_status(job_id: str) -> int:
         print(f"no runs recorded for {job_id}")
         return EXIT_OK
     for r in rows[-10:]:
-        print(f"{r.get('finished_at','-')}  {r.get('state','-'):<15} "
-              f"exit={r.get('exit_code')} {r.get('duration_ms')}ms "
-              f"attempt={r.get('attempt')}")
+        print(
+            f"{r.get('finished_at', '-')}  {r.get('state', '-'):<15} "
+            f"exit={r.get('exit_code')} {r.get('duration_ms')}ms "
+            f"attempt={r.get('attempt')}"
+        )
     last = rows[-1]
     if last.get("log_path"):
         print(f"\nlast log: {last['log_path']}")
@@ -1025,7 +1204,8 @@ def cmd_failures(hours: int = 24) -> int:
             continue
         try:
             ts = datetime.fromisoformat(
-                str(r.get("finished_at", "")).replace("Z", "+00:00")).timestamp()
+                str(r.get("finished_at", "")).replace("Z", "+00:00")
+            ).timestamp()
         except Exception:
             continue
         if ts >= cutoff:
@@ -1040,8 +1220,10 @@ def cmd_failures(hours: int = 24) -> int:
     print(f"{hdr} ({ncrit} CRITICAL):" if ncrit else f"{hdr}:")
     for r in bad:
         mark = "CRITICAL " if r.get("critical") else ""
-        print(f"  {mark}{r.get('finished_at')}  {r.get('job_id')}  {r.get('state')} "
-              f"exit={r.get('exit_code')}  {r.get('log_path','')}")
+        print(
+            f"  {mark}{r.get('finished_at')}  {r.get('job_id')}  {r.get('state')} "
+            f"exit={r.get('exit_code')}  {r.get('log_path', '')}"
+        )
     return EXIT_OK
 
 
@@ -1050,24 +1232,23 @@ def cmd_bootstrap() -> int:
     print(f"host: {os.uname().nodename}")
     try:
         uv = ensure_uv(auto_install=True)
-        out = subprocess.run([uv, "--version"], capture_output=True, text=True,
-                             timeout=30)
+        out = subprocess.run([uv, "--version"], capture_output=True, text=True, timeout=30)
         print(f"uv: {uv} ({out.stdout.strip()})")
     except Exception as exc:
         print(f"uv: FAILED — {exc}")
         return EXIT_CONFIG
     ver = _interpreter_version(sys.executable)
     ok = bool(ver and ver >= MIN_PYTHON)
-    print(f"python: {sys.executable} {ver[0]}.{ver[1]} "
-          f"({'ok' if ok else 'BELOW ' + str(MIN_PYTHON)})")
+    print(
+        f"python: {sys.executable} {ver[0]}.{ver[1]} ({'ok' if ok else 'BELOW ' + str(MIN_PYTHON)})"
+    )
     for d in (SPEC_DIR, STATE_DIR, LOG_DIR, LOCK_DIR):
         d.mkdir(parents=True, exist_ok=True)
     print(f"state dirs ready under {STATE_DIR}")
     return EXIT_OK if ok else EXIT_CONFIG
 
 
-def _fail_before_start(spec: "Spec", run_id: str, scheduled_at, kind: str,
-                       msg: str) -> int:
+def _fail_before_start(spec: "Spec", run_id: str, scheduled_at, kind: str, msg: str) -> int:
     """A job that cannot START is still a job that is not running.
 
     Config and preflight failures are terminal, and "the script was removed by
@@ -1076,29 +1257,44 @@ def _fail_before_start(spec: "Spec", run_id: str, scheduled_at, kind: str,
     whole point of the fix: otherwise a guard job goes silent in exactly the
     situation the alert exists for.
     """
-    append_ledger({
-        "event": "job.config_error", "job_id": spec.job_id, "run_id": run_id,
-        "ts": _iso(scheduled_at), "state": "config_error", "error": msg,
-        "critical": spec.critical,
-    })
+    append_ledger(
+        {
+            "event": "job.config_error",
+            "job_id": spec.job_id,
+            "run_id": run_id,
+            "ts": _iso(scheduled_at),
+            "state": "config_error",
+            "error": msg,
+            "critical": spec.critical,
+        }
+    )
     heartbeat(spec, "fail", f"{kind}: {msg}", run_id)
-    card = "\n".join([
-        (f"🛑 CRITICAL — {spec.job_id} could not start"
-         if spec.critical else f"⚠️ {spec.job_id} could not start"),
-        f"Host: {os.uname().nodename}  ·  {kind}",
-        f"Error: {msg[:300]}",
-        f"Run: {run_id[:8]}",
-    ])
+    card = "\n".join(
+        [
+            (
+                f"🛑 CRITICAL — {spec.job_id} could not start"
+                if spec.critical
+                else f"⚠️ {spec.job_id} could not start"
+            ),
+            f"Host: {os.uname().nodename}  ·  {kind}",
+            f"Error: {msg[:300]}",
+            f"Run: {run_id[:8]}",
+        ]
+    )
     print(f"{spec.job_id}: {kind} — {msg}")
     status = notify_failure(spec, card)
     if spec.notify_target:
-        append_ledger({
-            "event": "job.notified",
-            "ts": _iso(_now()),
-            "job_id": spec.job_id, "run_id": run_id,
-            "notify_status": status, "notify_target": spec.notify_target,
-            "critical": spec.critical,
-        })
+        append_ledger(
+            {
+                "event": "job.notified",
+                "ts": _iso(_now()),
+                "job_id": spec.job_id,
+                "run_id": run_id,
+                "notify_status": status,
+                "notify_target": spec.notify_target,
+                "critical": spec.critical,
+            }
+        )
         if status != "sent":
             print(f"(notification {status})")
     return EXIT_CONFIG
@@ -1112,21 +1308,30 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         argv = resolve_argv(spec)
     except ConfigError as exc:
         print(f"[{spec.job_id}] CONFIG ERROR: {exc}", file=sys.stderr)
-        return _fail_before_start(spec, run_id, scheduled_at,
-                                  "configuration error", str(exc))
+        return _fail_before_start(spec, run_id, scheduled_at, "configuration error", str(exc))
 
     problems = preflight(spec, argv)
     if problems:
-        return _fail_before_start(spec, run_id, scheduled_at,
-                                  "preflight failed", "; ".join(problems))
+        return _fail_before_start(
+            spec, run_id, scheduled_at, "preflight failed", "; ".join(problems)
+        )
 
     if dry_run:
-        print(json.dumps({
-            "job_id": spec.job_id, "argv": argv, "cwd": spec.cwd,
-            "timeout": spec.timeout, "overlap": spec.overlap,
-            "runtime": spec.runtime, "heartbeat": bool(spec.heartbeat_url),
-            "preflight": "ok",
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "job_id": spec.job_id,
+                    "argv": argv,
+                    "cwd": spec.cwd,
+                    "timeout": spec.timeout,
+                    "overlap": spec.overlap,
+                    "runtime": spec.runtime,
+                    "heartbeat": bool(spec.heartbeat_url),
+                    "preflight": "ok",
+                },
+                indent=2,
+            )
+        )
         return EXIT_OK
 
     env = build_env(spec, run_id=run_id)
@@ -1139,10 +1344,15 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         if not lock.acquired:
             # Overlap skip is an OBSERVABLE OUTCOME, not a silent nothing,
             # and not a failure. Stays silent to the human by design.
-            append_ledger({
-                "event": "job.skipped", "job_id": spec.job_id, "run_id": run_id,
-                "ts": _iso(_now()), "state": "skipped_overlap",
-            })
+            append_ledger(
+                {
+                    "event": "job.skipped",
+                    "job_id": spec.job_id,
+                    "run_id": run_id,
+                    "ts": _iso(_now()),
+                    "state": "skipped_overlap",
+                }
+            )
             return EXIT_OK
 
         heartbeat(spec, "start", "", run_id)
@@ -1176,29 +1386,31 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         else:
             hb = heartbeat(spec, "fail", (err or state)[:2000], run_id)
 
-        append_ledger({
-            "event": "job.finished",
-            "job_id": spec.job_id,
-            "run_id": run_id,
-            "host": os.uname().nodename,
-            "owner": spec.owner,
-            "critical": spec.critical,
-            "deployed_sha": sha,
-            "state": state,
-            "exit_code": rc,
-            "signal": signame,
-            "attempt": attempt,
-            "argv": redact_argv(argv),
-            "runtime": spec.runtime,
-            "scheduled_at": _iso(scheduled_at),
-            "started_at": _iso(started_at),
-            "finished_at": _iso(finished_at),
-            "duration_ms": int(dur * 1000),
-            "stdout_bytes": len(out),
-            "stderr_bytes": len(err),
-            "log_path": log_path,
-            "heartbeat": hb,
-        })
+        append_ledger(
+            {
+                "event": "job.finished",
+                "job_id": spec.job_id,
+                "run_id": run_id,
+                "host": os.uname().nodename,
+                "owner": spec.owner,
+                "critical": spec.critical,
+                "deployed_sha": sha,
+                "state": state,
+                "exit_code": rc,
+                "signal": signame,
+                "attempt": attempt,
+                "argv": redact_argv(argv),
+                "runtime": spec.runtime,
+                "scheduled_at": _iso(scheduled_at),
+                "started_at": _iso(started_at),
+                "finished_at": _iso(finished_at),
+                "duration_ms": int(dur * 1000),
+                "stdout_bytes": len(out),
+                "stderr_bytes": len(err),
+                "log_path": log_path,
+                "heartbeat": hb,
+            }
+        )
         prune_state()
 
         # ---- Human-facing delivery. Silence-on-success is OWNED HERE, once,
@@ -1211,6 +1423,13 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         #   "silent" — never speak on success, no matter what the job printed.
         #        This is the fix for a noisy job: set it here, do not edit the
         #        script.
+        #   "on_change" — speak on success ONLY when the message differs from
+        #        the last one delivered, with a liveness heartbeat so a quiet
+        #        channel is never mistaken for a dead job. This is the middle
+        #        ground `silent` could not express: a job whose output MATTERS
+        #        when it changes but which repeats itself most ticks. Measured
+        #        on this fleet: the top talkers were 80-97% substantively
+        #        identical run to run (one sent the SAME body 34 times in 48h).
         if state == "success":
             # Close any open condition for this job. THE BUG THIS FIXES:
             # record_success() existed but was never called, so `consecutive`
@@ -1221,6 +1440,15 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             _v2_record_success(spec)
             if spec.output_policy == "silent" and not spec.notify_on_success:
                 return EXIT_OK
+            if spec.output_policy == "on_change" and not spec.notify_on_success:
+                speak, why = _speech_gate(spec.job_id, raw_out)
+                if not speak:
+                    # Withheld, not discarded: stderr is captured into the run
+                    # log, so the body remains readable by whoever looks.
+                    sys.stderr.write(f"[jobrun] withheld from owners ({why})\n")
+                    if raw_out:
+                        sys.stderr.write(raw_out)
+                    return EXIT_OK
             if raw_out:
                 # VERBATIM: the original bytes, not the redacted/clamped copy.
                 # A control payload on the last line must survive exactly.
@@ -1252,9 +1480,17 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             "wrapper_error": "runner error",
         }.get(state, state)
         card = _v2_render(
-            outcome=outcome, spec=spec, money=money, head=head,
-            incident=incident, dur=dur, sha=sha, err=err, out=out,
-            log_path=log_path, run_id=run_id,
+            outcome=outcome,
+            spec=spec,
+            money=money,
+            head=head,
+            incident=incident,
+            dur=dur,
+            sha=sha,
+            err=err,
+            out=out,
+            log_path=log_path,
+            run_id=run_id,
         )
 
         # A NOTEWORTHY outcome is not a failure. A script whose convention is
@@ -1275,17 +1511,18 @@ def run(spec: Spec, dry_run: bool = False) -> int:
                 lines.append(f"Owner: {spec.owner}")
             news = "\n".join(lines)
             print(news)
-            notify_status = (notify_failure(spec, news)
-                             if spec.notify_target else "n/a")
-            append_ledger({
-                "event": "job.noteworthy",
-                "ts": _iso(_now()),
-                "job_id": spec.job_id,
-                "run_id": run_id,
-                "exit_code": rc,
-                "reason_code": getattr(outcome, "reason_code", None),
-                "notify_status": notify_status,
-            })
+            notify_status = notify_failure(spec, news) if spec.notify_target else "n/a"
+            append_ledger(
+                {
+                    "event": "job.noteworthy",
+                    "ts": _iso(_now()),
+                    "job_id": spec.job_id,
+                    "run_id": run_id,
+                    "exit_code": rc,
+                    "reason_code": getattr(outcome, "reason_code", None),
+                    "notify_status": notify_status,
+                }
+            )
             return EXIT_OK
 
         # DEDUP ACTUALLY SUPPRESSES HERE. Counting occurrences without gating
@@ -1314,19 +1551,19 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         # Without a direct target, stdout is the scheduler's delivery surface;
         # emitting the card counts as this runner's announcement. With a direct
         # target, only the sender's confirmed `sent` result closes the retry gate.
-        _v2_record_notification(
-            incident, notify_status if spec.notify_target else "sent"
-        )
+        _v2_record_notification(incident, notify_status if spec.notify_target else "sent")
         if spec.notify_target:
-            append_ledger({
-                "event": "job.notified",
-                "ts": _iso(_now()),
-                "job_id": spec.job_id,
-                "run_id": run_id,
-                "notify_status": notify_status,
-                "notify_target": spec.notify_target,
-                "critical": spec.critical,
-            })
+            append_ledger(
+                {
+                    "event": "job.notified",
+                    "ts": _iso(_now()),
+                    "job_id": spec.job_id,
+                    "run_id": run_id,
+                    "notify_status": notify_status,
+                    "notify_target": spec.notify_target,
+                    "critical": spec.critical,
+                }
+            )
             if notify_status != "sent":
                 # Say so on stdout too: if the alert did not go out, the only
                 # remaining reader is whoever inspects this run by hand.
@@ -1346,21 +1583,79 @@ def run(spec: Spec, dry_run: bool = False) -> int:
 # These import LAZILY and degrade to v1 behavior if the modules are missing.
 # A runner that refuses to run because its alerting sidecar is absent would be
 # a worse failure than the noise it was built to fix.
-_V2_SHADOW_DEFAULT = True   # repair dispatch is SHADOW until deliberately armed
+_V2_SHADOW_DEFAULT = True  # repair dispatch is SHADOW until deliberately armed
 
 
 def _v2_mods():
-    """Return (severity, repair) modules, or (None, None) if unavailable."""
+    """Return the (severity, repair) modules.
+
+    Both ship beside this file, so neither can legitimately be missing. This
+    used to catch ImportError and return (None, None), which disabled the
+    preflight money-mismatch guard for EVERY job -- silently, and precisely
+    while the install was broken (Codex P1, PR #1225).
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import jobrun_severity as sev
+
+    import jobrun_repair as rep
+
+    return sev, rep
+
+
+def _speech_gate(job_id: str, text: str, heartbeat_h: float = 24.0) -> tuple[bool, str]:
+    """Should this SUCCESSFUL run's output reach the owners?
+
+    Answers one question: is this message DIFFERENT from the last one we
+    actually delivered for this job? `passthrough` speaks every tick and
+    `silent` speaks never; neither fits a job whose output matters when it
+    changes but which repeats itself most ticks -- which is most scheduled work.
+
+    Keyed on CONTENT, never on a timer. A time window would hide the changed
+    message that arrives inside it, and that is precisely the one worth reading.
+
+    A liveness heartbeat still speaks after `heartbeat_h` of identical output,
+    so a quiet channel is never mistaken for a dead job.
+
+    FAILS OPEN, always. A gate that cannot decide must let the message through:
+    a bug here would otherwise silence the fleet, which is strictly worse than
+    the noise it exists to reduce. Unwritable state dir, corrupt state, any
+    exception -- all degrade to chatty, never to silent.
+
+    Self-contained by design. This started life delegating to a host-specific
+    sentinel module, which meant the policy was accepted by the spec validator
+    but INERT anywhere that module was absent: the gate failed open on every
+    run and `on_change` silently behaved as `passthrough`. A config value that
+    validates and does nothing is worse than one that is rejected.
+    """
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        import jobrun_severity as sev
-        try:
-            import jobrun_repair as rep
-        except ImportError:
-            rep = None
-        return sev, rep
-    except ImportError:
-        return None, None
+        digest = hashlib.sha256((text or "").strip().encode("utf-8", "replace")).hexdigest()
+        d = STATE_DIR / "speech"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', job_id)}.json"
+        prev = {}
+        if f.is_file():
+            try:
+                prev = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                prev = {}  # corrupt state must not silence the job
+        now = _now()
+        same = prev.get("digest") == digest
+        age_h = None
+        if same and prev.get("at"):
+            try:
+                age_h = (now - datetime.fromisoformat(prev["at"])).total_seconds() / 3600.0
+            except Exception:  # noqa: BLE001
+                age_h = None
+        if same and age_h is not None and age_h < heartbeat_h:
+            return False, f"unchanged for {age_h:.1f}h (heartbeat at {heartbeat_h:.0f}h)"
+        tmp = f.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"digest": digest, "at": _iso(now)}), encoding="utf-8")
+        tmp.replace(f)
+        if not same:
+            return True, "content changed"
+        return True, f"liveness heartbeat ({heartbeat_h:.0f}h)"
+    except Exception as e:  # noqa: BLE001
+        return True, f"speech gate unavailable ({e})"
 
 
 def _v2_record_success(spec) -> None:
@@ -1397,8 +1692,7 @@ def _resolved_script_path(spec) -> Path | None:
     p = Path(spec.script)
     if p.is_absolute():
         return p if p.is_file() else None
-    for base in (HERMES_HOME / "scripts", HERMES_HOME,
-                 Path(spec.cwd) if spec.cwd else None):
+    for base in (HERMES_HOME / "scripts", HERMES_HOME, Path(spec.cwd) if spec.cwd else None):
         if base is None:
             continue
         cand = base / spec.script
@@ -1440,6 +1734,7 @@ def _v2_classify(spec, state, rc, raw_out, money="none"):
     """
     sev, _ = _v2_mods()
     if sev is None:
+
         class _Fallback:
             severity = "critical" if spec.critical else "degraded"
             reason_code = state
@@ -1447,12 +1742,16 @@ def _v2_classify(spec, state, rc, raw_out, money="none"):
             clamped_from = None
             metadata_missing = True
             notes: list = []
+
         return _Fallback()
     try:
         return sev.classify(
-            state=state, exit_code=rc, stdout=raw_out or "",
-            money=money, allow_critical=bool(spec.critical),
-            strict_domain_codes=False,   # legacy scripts still use 3-9
+            state=state,
+            exit_code=rc,
+            stdout=raw_out or "",
+            money=money,
+            allow_critical=bool(spec.critical),
+            strict_domain_codes=False,  # legacy scripts still use 3-9
             # Free text from the child is untrusted: run it through the same
             # redaction as stdout/stderr before it can reach a card or a chat.
             sanitize=redact,
@@ -1460,6 +1759,7 @@ def _v2_classify(spec, state, rc, raw_out, money="none"):
         )
     except Exception as exc:
         print(f"(severity classification failed: {exc})", file=sys.stderr)
+
         class _Err:
             severity = "degraded"
             reason_code = state
@@ -1467,6 +1767,7 @@ def _v2_classify(spec, state, rc, raw_out, money="none"):
             clamped_from = None
             metadata_missing = True
             notes: list = []
+
         return _Err()
 
 
@@ -1483,16 +1784,25 @@ def _v2_incident(spec, outcome, error_text, sha, log_path, money="none"):
     try:
         host = os.uname().nodename
         fp = sev.fingerprint(
-            host=host, job_id=spec.job_id, reason_code=outcome.reason_code,
-            error_text=error_text or "", deployed_sha=sha,
+            host=host,
+            job_id=spec.job_id,
+            reason_code=outcome.reason_code,
+            error_text=error_text or "",
+            deployed_sha=sha,
         )
         conn = rep.connect()
         try:
             return rep.handle_failure(
-                conn, fingerprint=fp, job_id=spec.job_id, host=host,
-                reason_code=outcome.reason_code, severity=outcome.severity,
-                money=money, error_text=error_text or "",
-                deployed_sha=sha, script_path=str(spec.script or ""),
+                conn,
+                fingerprint=fp,
+                job_id=spec.job_id,
+                host=host,
+                reason_code=outcome.reason_code,
+                severity=outcome.severity,
+                money=money,
+                error_text=error_text or "",
+                deployed_sha=sha,
+                script_path=str(spec.script or ""),
                 log_path=log_path or "",
                 dry_run=_repair_shadow_mode(),
             )
@@ -1501,6 +1811,102 @@ def _v2_incident(spec, outcome, error_text, sha, log_path, money="none"):
     except Exception as exc:
         print(f"(incident tracking failed: {exc})", file=sys.stderr)
         return None
+
+
+def _marker_env(name: str, default: tuple) -> tuple:
+    """Defaults plus any `|`-separated additions from the environment."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    extra = tuple(s for s in (part.strip() for part in raw.split("|")) if s)
+    return default + tuple(e for e in extra if e not in default)
+
+
+#: Lines that describe something going RIGHT. Never returned as the error when
+#: a failure-shaped line exists anywhere in the output.
+#:
+#: Extensible per host without forking this file: JOBRUN_SUCCESS_MARKERS /
+#: JOBRUN_FAILURE_MARKERS take a `|`-separated list appended to these defaults.
+#: A domain fleet whose jobs log "intent retired: ... -> completed" as routine
+#: success adds its own vocabulary through config rather than a patched runner.
+_SUCCESS_MARKERS = _marker_env(
+    "JOBRUN_SUCCESS_MARKERS",
+    (
+        "-> completed",
+        "completed successfully",
+        "succeeded",
+        "ok:",
+        "no changes",
+        "nothing to do",
+        "up to date",
+    ),
+)
+#: Deliberately SPECIFIC. A bare "FAILED" also matches a healthy tally line like
+#: "checked 26, kept 21, failed 1" -- which is a STATISTIC, not the error.
+#: Reporting that tells the owner a failure happened without saying what it was,
+#: which is the same defect one step smaller. Match the shapes that introduce a
+#: failure SENTENCE.
+_FAILURE_MARKERS = _marker_env(
+    "JOBRUN_FAILURE_MARKERS",
+    (
+        "FAILED (",
+        "FAILED:",
+        "Traceback",
+        "refus",  # "refusing to ... while ..."
+        "could not",
+        "cannot",
+        "unable to",
+        "ERROR",
+        "Exception",
+        "fatal",
+        "denied",
+        "timed out",
+    ),
+)
+
+
+def _failure_detail(out: str, err: str) -> str:
+    """Pick the line that actually explains a failure, for owner-facing text.
+
+    The old rule was `stderr.splitlines()[-1]`. For any job that writes an
+    audit trail to stderr, the LAST line is simply the most recent event --
+    frequently a success -- so the owner was shown a working position under a
+    DEGRADED banner while the real cause stayed hidden.
+
+    Order of preference:
+      1. A failure-looking line in STDOUT (where scripts deliberately print
+         what the owner should see).
+      2. A failure-looking line in STDERR.
+      3. Any non-success STDOUT line.
+      4. The last STDERR line (previous behaviour, as a floor).
+
+    Never returns a line that looks like a success when a failure-looking line
+    is available anywhere.
+    """
+
+    def _lines(s):
+        return [ln.strip() for ln in (s or "").splitlines() if ln.strip()]
+
+    def _is_success(ln):
+        low = ln.lower()
+        return any(m.lower() in low for m in _SUCCESS_MARKERS)
+
+    def _looks_like_failure(ln):
+        low = ln.lower()
+        if _is_success(ln):
+            return False
+        return any(m.lower() in low for m in _FAILURE_MARKERS)
+
+    out_lines, err_lines = _lines(out), _lines(err)
+
+    for pool in (out_lines, err_lines):
+        for ln in pool:
+            if _looks_like_failure(ln):
+                return ln
+    for ln in out_lines:
+        if not _is_success(ln):
+            return ln
+    return err_lines[-1] if err_lines else ""
 
 
 def _repair_shadow_mode() -> bool:
@@ -1540,8 +1946,7 @@ def _v2_record_notification(incident, status: str) -> None:
         print(f"(notification tracking failed: {exc})", file=sys.stderr)
 
 
-def _v2_render(*, outcome, spec, money, head, incident, dur, sha, err, out,
-               log_path, run_id):
+def _v2_render(*, outcome, spec, money, head, incident, dur, sha, err, out, log_path, run_id):
     """Render the incident card from the RUN's severity."""
     sev, _ = _v2_mods()
     occ = (incident or {}).get("occurrence_count", 1)
@@ -1549,10 +1954,17 @@ def _v2_render(*, outcome, spec, money, head, incident, dur, sha, err, out,
     if sev is not None:
         try:
             card = sev.render_card(
-                outcome=outcome, job_id=spec.job_id, host=os.uname().nodename,
-                money=money, occurrence_count=occ,
-                first_seen_at=None, duration_s=dur, deployed_sha=sha,
-                owner=spec.owner, log_path=log_path, run_id=run_id,
+                outcome=outcome,
+                job_id=spec.job_id,
+                host=os.uname().nodename,
+                money=money,
+                occurrence_count=occ,
+                first_seen_at=None,
+                duration_s=dur,
+                deployed_sha=sha,
+                owner=spec.owner,
+                log_path=log_path,
+                run_id=run_id,
                 repair_note=note,
             )
             # Keep the RAW termination detail ("exited 7", "timed out after
@@ -1561,18 +1973,41 @@ def _v2_render(*, outcome, spec, money, head, incident, dur, sha, err, out,
             # debugging signal the v1 card had. Found by the pre-existing
             # contract tests, which is exactly what they are for.
             if head:
-                card = card.replace(
-                    f"— {spec.job_id}", f"— {spec.job_id} ({head})", 1
-                ) if f"— {spec.job_id}" in card else f"{card}\nDetail: {head}"
-            detail = (err.strip() or out.strip())
+                card = (
+                    card.replace(f"— {spec.job_id}", f"— {spec.job_id} ({head})", 1)
+                    if f"— {spec.job_id}" in card
+                    else f"{card}\nDetail: {head}"
+                )
+            # WHICH LINE IS "THE ERROR"?
+            #
+            # This used to be `stderr.splitlines()[-1]` -- the LAST line of
+            # stderr. That is wrong for any job that writes an audit trail to
+            # stderr, because the last thing logged is whatever happened most
+            # recently, not what failed. Observed in production on the Favorite
+            # Grinding protect job, which reported:
+            #
+            #   Error: [ARMED] intent retired: ...-> completed (target_reached)
+            #
+            # under a "DEGRADED" header. That line is a SUCCESS -- a position
+            # reaching its target -- presented to the owner as the failure. The
+            # real cause (a retirement refusing to complete while unconfirmed
+            # resting buys existed) was several lines earlier and never shown.
+            #
+            # Owner-facing text must name the actual failure. Prefer STDOUT,
+            # which is where a jobrun script deliberately prints what the owner
+            # should see; fall back to stderr only when stdout is empty, and
+            # then prefer a line that looks like a failure over the last line.
+            detail = _failure_detail(out, err)
             if detail and not outcome.summary:
-                card += f"\nError: {detail.splitlines()[-1][:300]}"
+                card += f"\nError: {detail[:300]}"
             return card
         except Exception:
             pass
     glyph = "🛑" if getattr(outcome, "severity", "") == "critical" else "⚠️"
-    lines = [f"{glyph} {spec.job_id} {head}",
-             f"Host: {os.uname().nodename}  ·  Duration: {dur:.1f}s"]
+    lines = [
+        f"{glyph} {spec.job_id} {head}",
+        f"Host: {os.uname().nodename}  ·  Duration: {dur:.1f}s",
+    ]
     if sha:
         lines.append(f"Code: {sha}")
     if log_path:
@@ -1620,8 +2055,7 @@ def should_speak(incident, severity: str) -> tuple[bool, str]:
         # occurrence 2 of every condition, which is most of the flood back.
         return True, "repair dispatched"
     return False, (
-        f"duplicate of an open condition "
-        f"(occurrence {incident.get('occurrence_count')})"
+        f"duplicate of an open condition (occurrence {incident.get('occurrence_count')})"
     )
 
 
@@ -1651,6 +2085,16 @@ def selftest() -> int:
     # have no such job — a monitor's first real find was a bug in its own
     # tooling, which is the argument for pointing it at yourself first.
     os.environ["JOBRUN_INCIDENT_DB"] = str(STATE_DIR / "incidents.db")
+    # BELT AND SUSPENDERS. The override above redirects the one path we know
+    # about; redirecting HERMES_HOME closes the CLASS. Any helper that resolves
+    # state under HERMES_HOME -- today jobrun_repair._db_path(), tomorrow
+    # something not yet written -- lands in the temp tree instead of a live
+    # profile. Two independent fixes for the same bug were developed in
+    # parallel on the fleet and on the trading host; keeping both costs two
+    # lines and means a future path does not have to be discovered in
+    # production the way `st-fail` was. Restored on exit with the other globals.
+    _saved_home = os.environ.get("HERMES_HOME")
+    os.environ["HERMES_HOME"] = str(tmp)
     for _d in (STATE_DIR, LOG_DIR, LOCK_DIR):
         _d.mkdir(parents=True, exist_ok=True)
 
@@ -1669,25 +2113,36 @@ def selftest() -> int:
     # silent success (no stdout -> no delivery)
     s2 = tmp / "quiet.py"
     s2.write_text("pass\n")
-    check("silent-success", run(Spec({"job_id": "st-quiet", "script": str(s2),
-                                      "runtime": "python"})), EXIT_OK)
+    check(
+        "silent-success",
+        run(Spec({"job_id": "st-quiet", "script": str(s2), "runtime": "python"})),
+        EXIT_OK,
+    )
 
     # child failure
     s3 = tmp / "boom.py"
     s3.write_text("import sys; sys.stderr.write('kaboom\\n'); sys.exit(7)\n")
-    check("child_failure", run(Spec({"job_id": "st-fail", "script": str(s3),
-                                     "runtime": "python"})), EXIT_CHILD)
+    check(
+        "child_failure",
+        run(Spec({"job_id": "st-fail", "script": str(s3), "runtime": "python"})),
+        EXIT_CHILD,
+    )
 
     # timeout
     s4 = tmp / "slow.py"
     s4.write_text("import time; time.sleep(30)\n")
-    check("timeout", run(Spec({"job_id": "st-timeout", "script": str(s4),
-                               "runtime": "python", "timeout": 2})), EXIT_TIMEOUT)
+    check(
+        "timeout",
+        run(Spec({"job_id": "st-timeout", "script": str(s4), "runtime": "python", "timeout": 2})),
+        EXIT_TIMEOUT,
+    )
 
     # config error: missing script
-    check("config_error", run(Spec({"job_id": "st-missing",
-                                    "script": str(tmp / "nope.py"),
-                                    "runtime": "python"})), EXIT_CONFIG)
+    check(
+        "config_error",
+        run(Spec({"job_id": "st-missing", "script": str(tmp / "nope.py"), "runtime": "python"})),
+        EXIT_CONFIG,
+    )
 
     # bash runtime
     s5 = tmp / "hi.sh"
@@ -1706,8 +2161,14 @@ def selftest() -> int:
     # args pass-through (the operator called out "arg parsing" by name)
     s6 = tmp / "args.py"
     s6.write_text("import sys; print('ARGS:', ' '.join(sys.argv[1:]))\n")
-    spec_a = Spec({"job_id": "st-args", "script": str(s6), "runtime": "python",
-                   "args": ["--mode", "backfill", "--days", "7"]})
+    spec_a = Spec(
+        {
+            "job_id": "st-args",
+            "script": str(s6),
+            "runtime": "python",
+            "args": ["--mode", "backfill", "--days", "7"],
+        }
+    )
     argv_a = resolve_argv(spec_a)
     check("args-in-argv", argv_a[-4:], ["--mode", "backfill", "--days", "7"])
     check("args-run", run(spec_a), EXIT_OK)
@@ -1731,34 +2192,47 @@ def selftest() -> int:
     # uv argv shape: --python floor present, script last before args
     if find_uv():
         s7 = tmp / "pep.py"
-        s7.write_text('# /// script\n# requires-python = ">=3.9"\n# dependencies = []\n# ///\nprint("ok")\n')
-        argv_u = resolve_argv(Spec({"job_id": "st-uv", "script": str(s7),
-                                    "runtime": "uv"}))
-        check("uv-pins-python", "--python" in argv_u and
-              f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}" in argv_u, True)
+        s7.write_text(
+            '# /// script\n# requires-python = ">=3.9"\n# dependencies = []\n# ///\nprint("ok")\n'
+        )
+        argv_u = resolve_argv(Spec({"job_id": "st-uv", "script": str(s7), "runtime": "uv"}))
+        check(
+            "uv-pins-python",
+            "--python" in argv_u and f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}" in argv_u,
+            True,
+        )
 
     # --- fixes from the adversarial review ---
 
     # verbatim stdout: no strip, no truncation, trailing control line intact
     big = tmp / "big.py"
     big.write_text(
-        "print('x' * 5000)\n"
-        "print(chr(123)+chr(34)+'wakeAgent'+chr(34)+': false'+chr(125))\n"
+        "print('x' * 5000)\nprint(chr(123)+chr(34)+'wakeAgent'+chr(34)+': false'+chr(125))\n"
     )
     import io, contextlib
+
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         run(Spec({"job_id": "st-verbatim", "script": str(big), "runtime": "python"}))
     captured = buf.getvalue()
     check("verbatim-not-truncated", len(captured) > 5000, True)
-    check("verbatim-gate-survives",
-          captured.strip().splitlines()[-1] == '{"wakeAgent": false}', True)
+    check(
+        "verbatim-gate-survives", captured.strip().splitlines()[-1] == '{"wakeAgent": false}', True
+    )
 
     # output_policy=silent suppresses a noisy successful job
     buf2 = io.StringIO()
     with contextlib.redirect_stdout(buf2):
-        run(Spec({"job_id": "st-silent", "script": str(s), "runtime": "python",
-                  "output_policy": "silent"}))
+        run(
+            Spec(
+                {
+                    "job_id": "st-silent",
+                    "script": str(s),
+                    "runtime": "python",
+                    "output_policy": "silent",
+                }
+            )
+        )
     check("output-policy-silent", buf2.getvalue(), "")
 
     # redaction: real shapes, and no false-positive mangling
@@ -1766,9 +2240,11 @@ def selftest() -> int:
     check("redact-json", "[REDACTED]" in redact('{"token": "abc123xyz"}'), True)
     check("redact-bearer", "[REDACTED]" in redact("Authorization: Bearer abcd1234efgh"), True)
     check("redact-url", "[REDACTED]" in redact("postgres://user:hunter2@db:5432/x"), True)
-    check("redact-no-false-positive",
-          redact("session started at 10:00 and processed 42 rows"),
-          "session started at 10:00 and processed 42 rows")
+    check(
+        "redact-no-false-positive",
+        redact("session started at 10:00 and processed 42 rows"),
+        "session started at 10:00 and processed 42 rows",
+    )
 
     # unknown spec field is rejected, not silently ignored
     try:
@@ -1788,21 +2264,27 @@ def selftest() -> int:
     flood = tmp / "flood.py"
     flood.write_text("for i in range(200000): print('y'*80)\n")
     st, rc, sig, o, e, d = _execute(
-        Spec({"job_id": "st-flood", "script": str(flood), "runtime": "python",
-              "timeout": 120}),
-        [sys.executable, str(flood)], build_env(Spec({"job_id": "f", "script": str(flood)})))
+        Spec({"job_id": "st-flood", "script": str(flood), "runtime": "python", "timeout": 120}),
+        [sys.executable, str(flood)],
+        build_env(Spec({"job_id": "f", "script": str(flood)})),
+    )
     check("bounded-capture", len(o) < MAX_CAPTURE_BYTES * 3, True)
     check("bounded-capture-succeeded", st, "success")
 
     # ledger actually recorded runs
     n = 0
     if LEDGER.exists():
-        n = sum(1 for line in LEDGER.read_text().splitlines()
-                if '"st-' in line)
+        n = sum(1 for line in LEDGER.read_text().splitlines() if '"st-' in line)
     check("ledger-recorded", n >= 6, True)
 
     shutil.rmtree(tmp, ignore_errors=True)
     STATE_DIR, LOG_DIR, LOCK_DIR, LEDGER, LEDGER_LOCK = _saved_dirs
+    # Restore HERMES_HOME exactly: absent stays absent, so a later caller in
+    # this process resolves the real profile rather than the temp dir.
+    if _saved_home is None:
+        os.environ.pop("HERMES_HOME", None)
+    else:
+        os.environ["HERMES_HOME"] = _saved_home
     failed = [r for r in results if not r[3]]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     return 1 if failed else 0
@@ -1813,12 +2295,19 @@ def main() -> int:
     ap.add_argument("--spec", help="job spec name or path to .toml")
     ap.add_argument("--dry-run", action="store_true", help="validate only")
     ap.add_argument("--selftest", action="store_true", help="exercise terminal states")
-    ap.add_argument("--bootstrap", action="store_true",
-                    help="install uv + verify python floor on this host")
+    ap.add_argument(
+        "--bootstrap", action="store_true", help="install uv + verify python floor on this host"
+    )
     ap.add_argument("--list", action="store_true", help="list jobs on this host")
     ap.add_argument("--status", metavar="JOB_ID", help="recent runs for one job")
-    ap.add_argument("--failures", nargs="?", const=24, type=int, metavar="HOURS",
-                    help="failed runs in the last N hours (default 24)")
+    ap.add_argument(
+        "--failures",
+        nargs="?",
+        const=24,
+        type=int,
+        metavar="HOURS",
+        help="failed runs in the last N hours (default 24)",
+    )
     args = ap.parse_args()
 
     if args.selftest:
@@ -1833,8 +2322,7 @@ def main() -> int:
     if args.failures is not None:
         return cmd_failures(args.failures)
     if not args.spec:
-        ap.error("--spec is required (or use --list/--status/--failures/"
-                 "--bootstrap/--selftest)")
+        ap.error("--spec is required (or use --list/--status/--failures/--bootstrap/--selftest)")
     try:
         spec = Spec.load(args.spec)
     except ConfigError as exc:

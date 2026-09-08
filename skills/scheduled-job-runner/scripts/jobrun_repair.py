@@ -244,9 +244,7 @@ def record_failure(
     a persistently broken one are different animals.
     """
     now = _iso(_now())
-    cur = conn.execute(
-        "SELECT * FROM incidents WHERE fingerprint = ?", (fingerprint,)
-    )
+    cur = conn.execute("SELECT * FROM incidents WHERE fingerprint = ?", (fingerprint,))
     row = cur.fetchone()
     if row is None:
         conn.execute(
@@ -254,8 +252,18 @@ def record_failure(
             "severity, money, phase, occurrence_count, consecutive, "
             "first_seen_at, last_seen_at, last_error, deployed_sha) "
             "VALUES (?,?,?,?,?,?,'observing',1,1,?,?,?,?)",
-            (fingerprint, job_id, host, reason_code, severity, money,
-             now, now, error_text[:2000], deployed_sha),
+            (
+                fingerprint,
+                job_id,
+                host,
+                reason_code,
+                severity,
+                money,
+                now,
+                now,
+                error_text[:2000],
+                deployed_sha,
+            ),
         )
     elif row["phase"] == "resolved":
         # A recovered condition that returns is a NEW outage, even when its
@@ -278,9 +286,7 @@ def record_failure(
             (now, severity, error_text[:2000], deployed_sha, fingerprint),
         )
     conn.commit()
-    return conn.execute(
-        "SELECT * FROM incidents WHERE fingerprint = ?", (fingerprint,)
-    ).fetchone()
+    return conn.execute("SELECT * FROM incidents WHERE fingerprint = ?", (fingerprint,)).fetchone()
 
 
 def record_success(conn: sqlite3.Connection, *, job_id: str) -> list:
@@ -307,8 +313,7 @@ def record_success(conn: sqlite3.Connection, *, job_id: str) -> list:
     ).fetchall()
     # Always reset the streak, even for rows already marked resolved.
     conn.execute(
-        "UPDATE incidents SET consecutive = 0 WHERE job_id = ? "
-        "AND phase != 'quarantined'",
+        "UPDATE incidents SET consecutive = 0 WHERE job_id = ? AND phase != 'quarantined'",
         (job_id,),
     )
     if rows:
@@ -337,15 +342,13 @@ def _concurrent(conn: sqlite3.Connection) -> int:
     """
     cutoff = _iso(_now() - timedelta(minutes=ATTEMPT_MAX_MINUTES))
     return conn.execute(
-        "SELECT COUNT(*) c FROM dispatches WHERE finished_at IS NULL "
-        "AND started_at >= ?", (cutoff,)
+        "SELECT COUNT(*) c FROM dispatches WHERE finished_at IS NULL AND started_at >= ?", (cutoff,)
     ).fetchone()["c"]
 
 
 def _open_prs(conn: sqlite3.Connection) -> int:
     return conn.execute(
-        "SELECT COUNT(*) c FROM incidents WHERE pr_url IS NOT NULL "
-        "AND phase = 'review_pending'"
+        "SELECT COUNT(*) c FROM incidents WHERE pr_url IS NOT NULL AND phase = 'review_pending'"
     ).fetchone()["c"]
 
 
@@ -371,8 +374,12 @@ def decide(
         return Decision(False, "job is quarantined", phase, occ)
     if phase == "review_pending":
         return Decision(
-            False, f"a fix is already awaiting review ({row['pr_url'] or 'PR open'})",
-            phase, occ, row["repair_attempts"])
+            False,
+            f"a fix is already awaiting review ({row['pr_url'] or 'PR open'})",
+            phase,
+            occ,
+            row["repair_attempts"],
+        )
 
     # STALE LEASE RECOVERY. A dispatcher killed mid-flight (host reboot, OOM,
     # SIGKILL) leaves phase='repairing' with a lease that never clears. Without
@@ -384,8 +391,8 @@ def decide(
         lease = _parse(row["lease_until"])
         if lease is None or now >= lease:
             conn.execute(
-                "UPDATE incidents SET phase='escalated', lease_until=NULL "
-                "WHERE fingerprint=?", (row["fingerprint"],),
+                "UPDATE incidents SET phase='escalated', lease_until=NULL WHERE fingerprint=?",
+                (row["fingerprint"],),
             )
             conn.commit()
             phase = "escalated"
@@ -393,7 +400,10 @@ def decide(
             return Decision(
                 False,
                 f"a repair is already in flight (lease until {row['lease_until']})",
-                phase, occ, row["repair_attempts"])
+                phase,
+                occ,
+                row["repair_attempts"],
+            )
 
     # --- Gate 1: is this even a code defect? ------------------------------
     ok, why = repair_eligible(
@@ -411,7 +421,9 @@ def decide(
             False,
             f"unconfirmed ({row['consecutive']}/{CONFIRM_CONSECUTIVE} "
             f"consecutive) — a single failure is not an incident",
-            phase, occ)
+            phase,
+            occ,
+        )
 
     # --- Gate 3: per-condition attempt budget ----------------------------
     if row["repair_attempts"] >= MAX_ATTEMPTS_PER_FINGERPRINT:
@@ -420,14 +432,22 @@ def decide(
             f"repair budget exhausted for this condition "
             f"({row['repair_attempts']}/{MAX_ATTEMPTS_PER_FINGERPRINT}) — "
             f"needs a human",
-            "escalated", occ, row["repair_attempts"])
+            "escalated",
+            occ,
+            row["repair_attempts"],
+        )
 
     # --- Gate 4: backoff --------------------------------------------------
     nxt = _parse(row["next_attempt_at"])
     if nxt and now < nxt:
         return Decision(
-            False, f"backing off until {row['next_attempt_at']}",
-            phase, occ, row["repair_attempts"], row["next_attempt_at"])
+            False,
+            f"backing off until {row['next_attempt_at']}",
+            phase,
+            occ,
+            row["repair_attempts"],
+            row["next_attempt_at"],
+        )
 
     # --- Gate 5: per-JOB budget ------------------------------------------
     since = _iso(now - timedelta(days=JOB_WINDOW_DAYS))
@@ -440,27 +460,37 @@ def decide(
             False,
             f"job-level budget exhausted ({used}/{MAX_ATTEMPTS_PER_JOB} in "
             f"{JOB_WINDOW_DAYS}d) — this job needs redesign, not another patch",
-            "escalated", occ, row["repair_attempts"])
+            "escalated",
+            occ,
+            row["repair_attempts"],
+        )
 
     # --- Gate 6: fleet budgets. Queue, never borrow forward. -------------
     if _concurrent(conn) >= MAX_CONCURRENT:
-        return Decision(False, "fleet concurrency limit reached, queued",
-                        phase, occ, row["repair_attempts"])
+        return Decision(
+            False, "fleet concurrency limit reached, queued", phase, occ, row["repair_attempts"]
+        )
     if _count_since(conn, 1) >= MAX_STARTS_PER_HOUR:
-        return Decision(False, "fleet hourly repair budget reached, queued",
-                        phase, occ, row["repair_attempts"])
+        return Decision(
+            False, "fleet hourly repair budget reached, queued", phase, occ, row["repair_attempts"]
+        )
     if _count_since(conn, 24) >= MAX_STARTS_PER_DAY:
-        return Decision(False, "fleet daily repair budget reached, queued",
-                        phase, occ, row["repair_attempts"])
+        return Decision(
+            False, "fleet daily repair budget reached, queued", phase, occ, row["repair_attempts"]
+        )
     if _open_prs(conn) >= MAX_OPEN_PRS:
         return Decision(
             False,
             f"{MAX_OPEN_PRS} auto-repair PRs already await review — "
             f"clearing the queue matters more than opening another",
-            phase, occ, row["repair_attempts"])
+            phase,
+            occ,
+            row["repair_attempts"],
+        )
 
-    return Decision(True, "confirmed code defect within budget", "repairing",
-                    occ, row["repair_attempts"] + 1)
+    return Decision(
+        True, "confirmed code defect within budget", "repairing", occ, row["repair_attempts"] + 1
+    )
 
 
 REPAIR_PROMPT = """\
@@ -517,14 +547,17 @@ what you could not verify.
 """
 
 
-def build_prompt(row: sqlite3.Row, *, spec_path="", script_path="",
-                 log_path="", error_text="") -> str:
+def build_prompt(
+    row: sqlite3.Row, *, spec_path="", script_path="", log_path="", error_text=""
+) -> str:
     return REPAIR_PROMPT.format(
-        job_id=row["job_id"], host=row["host"],
+        job_id=row["job_id"],
+        host=row["host"],
         reason_code=row["reason_code"] or "unknown",
         occurrence_count=row["occurrence_count"],
         first_seen_at=row["first_seen_at"],
-        severity=row["severity"], money=row["money"] or "none",
+        severity=row["severity"],
+        money=row["money"] or "none",
         deployed_sha=row["deployed_sha"] or "unknown",
         spec_path=spec_path or "(unknown)",
         script_path=script_path or "(unknown)",
@@ -555,8 +588,7 @@ def _classify_agent_report(out: str) -> str:
         if line.upper().startswith("REPAIR-OUTCOME:"):
             declared = line.split(":", 1)[1].strip().split()[0].lower()
             break
-    if declared in ("patched", "spec-defect", "environmental",
-                    "not-reproducible", "declined"):
+    if declared in ("patched", "spec-defect", "environmental", "not-reproducible", "declined"):
         return "patched" if declared == "patched" else declared
     # No declaration. The agent ran and told us nothing parseable, so we must
     # not assume it fixed anything.
@@ -574,7 +606,10 @@ def dispatch(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
     *,
-    spec_path="", script_path="", log_path="", error_text="",
+    spec_path="",
+    script_path="",
+    log_path="",
+    error_text="",
     profile: str | None = None,
     dry_run: bool = False,
 ) -> tuple[str, str]:
@@ -600,20 +635,23 @@ def dispatch(
     conn.execute(
         "UPDATE incidents SET phase='repairing', repair_attempts=?, "
         "last_attempt_at=?, next_attempt_at=?, lease_until=? WHERE fingerprint=?",
-        (attempts, now,
-         _iso(_now() + backoff_delay(attempts)),
-         _iso(_now() + timedelta(minutes=ATTEMPT_MAX_MINUTES)),
-         row["fingerprint"]),
+        (
+            attempts,
+            now,
+            _iso(_now() + backoff_delay(attempts)),
+            _iso(_now() + timedelta(minutes=ATTEMPT_MAX_MINUTES)),
+            row["fingerprint"],
+        ),
     )
     conn.commit()
 
-    prompt = build_prompt(row, spec_path=spec_path, script_path=script_path,
-                          log_path=log_path, error_text=error_text)
+    prompt = build_prompt(
+        row, spec_path=spec_path, script_path=script_path, log_path=log_path, error_text=error_text
+    )
 
     if dry_run:
         conn.execute(
-            "UPDATE dispatches SET finished_at=?, outcome='dry_run', detail=? "
-            "WHERE id=?",
+            "UPDATE dispatches SET finished_at=?, outcome='dry_run', detail=? WHERE id=?",
             (_iso(_now()), f"would run {len(prompt)} char prompt", disp_id),
         )
         # SETTLE THE PHASE even in shadow mode. Found by the wall-clock soak
@@ -623,8 +661,8 @@ def dispatch(
         # A stuck phase is precisely the "getting stuck" failure the operator asked
         # about, and it appeared in the SHADOW path, the one we ship first.
         conn.execute(
-            "UPDATE incidents SET phase='escalated', lease_until=NULL "
-            "WHERE fingerprint=?", (row["fingerprint"],),
+            "UPDATE incidents SET phase='escalated', lease_until=NULL WHERE fingerprint=?",
+            (row["fingerprint"],),
         )
         conn.commit()
         return "dry_run", prompt
@@ -639,7 +677,9 @@ def dispatch(
 
     try:
         proc = subprocess.run(
-            argv, capture_output=True, text=True,
+            argv,
+            capture_output=True,
+            text=True,
             timeout=ATTEMPT_MAX_MINUTES * 60,
         )
         out = (proc.stdout or "")[-4000:]
@@ -669,8 +709,7 @@ def dispatch(
     # condition that still needs a human.
     conn.execute(
         "UPDATE incidents SET phase=?, lease_until=NULL WHERE fingerprint=?",
-        ("review_pending" if outcome == "patched" else "escalated",
-         row["fingerprint"]),
+        ("review_pending" if outcome == "patched" else "escalated", row["fingerprint"]),
     )
     conn.commit()
     return outcome, detail
@@ -748,9 +787,7 @@ def record_notification(
         # Recurring dead-man reminders are cadence-controlled by notified_at,
         # not consumed as a one-time escalation milestone.
         milestone = (
-            escalation
-            if escalation in _ESCALATION_RANK and escalation is not None
-            else None
+            escalation if escalation in _ESCALATION_RANK and escalation is not None else None
         )
         conn.execute(
             "UPDATE incidents SET notify_status=?, notified_at=?, "
@@ -764,9 +801,7 @@ def record_notification(
             (status, fingerprint),
         )
     conn.commit()
-    return conn.execute(
-        "SELECT * FROM incidents WHERE fingerprint=?", (fingerprint,)
-    ).fetchone()
+    return conn.execute("SELECT * FROM incidents WHERE fingerprint=?", (fingerprint,)).fetchone()
 
 
 def _pause_scheduled_job(job_id: str, reason: str) -> tuple[bool, str]:
@@ -789,7 +824,9 @@ def _pause_scheduled_job(job_id: str, reason: str) -> tuple[bool, str]:
     try:
         proc = subprocess.run(
             [cli, "cronjob", "pause", job_id, "--reason", reason],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         if proc.returncode == 0:
             return True, "paused via hermes cronjob pause"
@@ -837,8 +874,8 @@ def quarantine(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, str]:
         )
 
     conn.execute(
-        "UPDATE incidents SET phase='quarantined', quarantined_at=? "
-        "WHERE fingerprint=?", (_iso(_now()), row["fingerprint"]),
+        "UPDATE incidents SET phase='quarantined', quarantined_at=? WHERE fingerprint=?",
+        (_iso(_now()), row["fingerprint"]),
     )
     conn.commit()
     return True, (
@@ -852,10 +889,18 @@ def quarantine(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, str]:
 def handle_failure(
     conn: sqlite3.Connection,
     *,
-    fingerprint: str, job_id: str, host: str, reason_code: str,
-    severity: str, money: str, error_text: str = "",
-    deployed_sha: str | None = None, spec_path: str = "",
-    script_path: str = "", log_path: str = "", profile: str | None = None,
+    fingerprint: str,
+    job_id: str,
+    host: str,
+    reason_code: str,
+    severity: str,
+    money: str,
+    error_text: str = "",
+    deployed_sha: str | None = None,
+    spec_path: str = "",
+    script_path: str = "",
+    log_path: str = "",
+    profile: str | None = None,
     dry_run: bool = True,
 ) -> dict:
     """
@@ -868,9 +913,15 @@ def handle_failure(
     before it is expensive.
     """
     row = record_failure(
-        conn, fingerprint=fingerprint, job_id=job_id, host=host,
-        reason_code=reason_code, severity=severity, money=money,
-        error_text=error_text, deployed_sha=deployed_sha,
+        conn,
+        fingerprint=fingerprint,
+        job_id=job_id,
+        host=host,
+        reason_code=reason_code,
+        severity=severity,
+        money=money,
+        error_text=error_text,
+        deployed_sha=deployed_sha,
     )
     decision = decide(conn, row, error_text=error_text)
     result = {
@@ -889,8 +940,13 @@ def handle_failure(
     }
     if decision.dispatch:
         outcome, detail = dispatch(
-            conn, row, spec_path=spec_path, script_path=script_path,
-            log_path=log_path, error_text=error_text, profile=profile,
+            conn,
+            row,
+            spec_path=spec_path,
+            script_path=script_path,
+            log_path=log_path,
+            error_text=error_text,
+            profile=profile,
             dry_run=dry_run,
         )
         result["dispatched"] = True
@@ -898,9 +954,7 @@ def handle_failure(
         result["detail"] = detail[:400]
 
     if result["escalation"] == "quarantine":
-        row = conn.execute(
-            "SELECT * FROM incidents WHERE fingerprint=?", (fingerprint,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM incidents WHERE fingerprint=?", (fingerprint,)).fetchone()
         did, msg = quarantine(conn, row)
         result["quarantine"] = {"applied": did, "message": msg}
     return result
@@ -918,8 +972,7 @@ def acknowledge(conn: sqlite3.Connection, fingerprint: str) -> bool:
 
 def open_incidents(conn: sqlite3.Connection) -> list:
     return conn.execute(
-        "SELECT * FROM incidents WHERE phase NOT IN ('resolved') "
-        "ORDER BY first_seen_at"
+        "SELECT * FROM incidents WHERE phase NOT IN ('resolved') ORDER BY first_seen_at"
     ).fetchall()
 
 
@@ -957,8 +1010,10 @@ def main() -> int:
         print(f"\n{len(rows)} open incident(s):")
         for r in rows:
             ack = " ACK" if r["acknowledged_at"] else ""
-            print(f"  [{r['phase']:14s}] {r['job_id']:44s} x{r['occurrence_count']:<4d} "
-                  f"attempts={r['repair_attempts']}{ack}")
+            print(
+                f"  [{r['phase']:14s}] {r['job_id']:44s} x{r['occurrence_count']:<4d} "
+                f"attempts={r['repair_attempts']}{ack}"
+            )
             print(f"       {r['fingerprint']}  {r['reason_code']}  since {r['first_seen_at']}")
         return 0
 
