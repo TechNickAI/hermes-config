@@ -318,3 +318,85 @@ def test_the_runner_carries_no_single_host_paths():
             line for line in text.splitlines() if not line.lstrip().startswith("#")
         )
         assert "/srv/" not in code, f"{name} carries a host-specific absolute path"
+
+
+# --------------------------------------------------------------------------
+# 7. a monitor that exits 0 while reporting an emergency must still page
+#    (recovered from a divergent host copy during the same reconciliation)
+# --------------------------------------------------------------------------
+
+
+def _run(home, spec_body, script_body, env=None):
+    """Execute jobrun end-to-end as a real subprocess and capture its output."""
+    import subprocess
+
+    (home / "jobs.d" / "m.toml").write_text(spec_body, encoding="utf-8")
+    (home / "scripts" / "m.py").write_text(script_body, encoding="utf-8")
+    e = dict(os.environ, HERMES_HOME=str(home))
+    e.update(env or {})
+    return subprocess.run(
+        [sys.executable, str(SCRIPTS / "jobrun.py"), "--spec", "m"],
+        capture_output=True,
+        text=True,
+        env=e,
+        timeout=120,
+    )
+
+
+def test_a_successful_run_reporting_a_critical_condition_still_pages(tmp_path):
+    """CRITICAL was unreachable for the normal shape of a monitor.
+
+    A monitor RAN FINE; what it FOUND is the emergency. Returning EXIT_OK
+    without classifying meant a correct critical sentinel on a real money-path
+    breach rendered as an ordinary passthrough alert, indistinguishable from a
+    routine notice.
+    """
+    for sub in ("jobs.d", "scripts", "jobstate"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    spec = 'job_id = "m"\nscript = "m.py"\nmoney = "live"\ncritical = true\ntimeout = 60\n'
+    script = (
+        "import json\n"
+        "print('gross leverage 4.1x over the 3.0x cap')\n"
+        "print('@@JOBRUN_RESULT@@ ' + json.dumps("
+        "{'schema':'jobrun.result/v1','outcome':'critical','summary':'leverage breach'}))\n"
+    )
+    r = _run(tmp_path, spec, script)
+    assert r.returncode == 0, "the job itself succeeded and must not be marked failed"
+    combined = r.stdout + r.stderr
+    assert "CRITICAL" in combined, f"critical condition did not page:\n{combined}"
+    assert "exited 0" not in combined, "'exited 0' beside a red stop sign contradicts itself"
+
+
+def test_an_ordinary_successful_run_is_not_escalated(tmp_path):
+    """The guard above must not turn every healthy job into a page.
+
+    Only an explicit sentinel may escalate. If routine output could trip this,
+    the fix would be worse than the bug it closes.
+    """
+    for sub in ("jobs.d", "scripts", "jobstate"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    spec = 'job_id = "m"\nscript = "m.py"\nmoney = "live"\ncritical = true\ntimeout = 60\n'
+    r = _run(tmp_path, spec, "print('checked 12 positions, all within limits')\n")
+    assert r.returncode == 0
+    assert "CRITICAL" not in (r.stdout + r.stderr)
+    assert "all within limits" in r.stdout, "normal output must still pass through verbatim"
+
+
+def test_the_machine_sentinel_never_reaches_a_human(tmp_path):
+    """`@@JOBRUN_RESULT@@ {...}` is addressed to the RUNNER, not the owner.
+
+    It was appearing at the top of owner-facing messages. Stripped centrally so
+    every future emitter inherits the fix instead of each wrapper repeating it.
+    """
+    for sub in ("jobs.d", "scripts", "jobstate"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    spec = 'job_id = "m"\nscript = "m.py"\ntimeout = 60\n'
+    script = (
+        "import json\n"
+        "print('12 markets scanned, 2 flagged')\n"
+        "print('@@JOBRUN_RESULT@@ ' + json.dumps({'schema':'jobrun.result/v1','outcome':'healthy'}))\n"
+    )
+    r = _run(tmp_path, spec, script)
+    assert r.returncode == 0
+    assert "@@JOBRUN_RESULT@@" not in r.stdout, "machine line leaked into owner output"
+    assert "12 markets scanned" in r.stdout, "the real message must survive"

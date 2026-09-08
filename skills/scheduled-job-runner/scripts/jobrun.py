@@ -1438,6 +1438,46 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             # a repair agent for a job that is fundamentally fine. The
             # scheduled run IS the half-open probe; this is where it closes.
             _v2_record_success(spec)
+
+            # CLASSIFY THE SUCCESS PATH TOO. Returning EXIT_OK here without
+            # calling _v2_classify made CRITICAL unreachable for any job that
+            # reports a condition and exits 0 -- which is the NORMAL shape for a
+            # monitor: it ran fine, and what it FOUND is the emergency. Observed
+            # live: a correct critical sentinel on a real money-path breach
+            # rendered as an ordinary passthrough alert, indistinguishable from
+            # a routine notice.
+            #
+            # Safe by construction: classify() returns healthy/speaks=False for
+            # a successful run with no sentinel (verified for both empty output
+            # and ordinary alert text), so a job that says nothing special is
+            # unaffected. Only an explicit sentinel can escalate, and the clamps
+            # still apply: allow_critical=False or money!=live -> degraded.
+            money = _v2_money(spec)
+            outcome = _v2_classify(spec, state, rc, raw_out, money)
+            if getattr(outcome, "severity", "healthy") == "critical":
+                incident = _v2_incident(spec, outcome, err or out, sha, log_path, money)
+                card = _v2_render(
+                    outcome=outcome,
+                    spec=spec,
+                    money=money,
+                    # NOT "exited 0": the job did not fail, it REPORTED. The head
+                    # describes what happened, and "exited 0" next to a red stop
+                    # sign is the kind of contradiction that teaches a reader to
+                    # distrust the card.
+                    head="reported a critical condition",
+                    incident=incident,
+                    dur=dur,
+                    sha=sha,
+                    err=err,
+                    out=out,
+                    log_path=log_path,
+                    run_id=run_id,
+                )
+                print(card)
+                notify_status = notify_failure(spec, card) if spec.notify_target else "sent"
+                _v2_record_notification(incident, notify_status)
+                return EXIT_OK
+
             if spec.output_policy == "silent" and not spec.notify_on_success:
                 return EXIT_OK
             if spec.output_policy == "on_change" and not spec.notify_on_success:
@@ -1452,9 +1492,23 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             if raw_out:
                 # VERBATIM: the original bytes, not the redacted/clamped copy.
                 # A control payload on the last line must survive exactly.
-                sys.stdout.write(raw_out)
-                if not raw_out.endswith("\n"):
-                    sys.stdout.write("\n")
+                #
+                # EXCEPT the sentinel itself: it is a MACHINE line addressed to
+                # this runner, already consumed by _v2_classify above, and
+                # writing it through put "@@JOBRUN_RESULT@@ {...}" at the top of
+                # an owner-facing message. Stripped here rather than in each
+                # wrapper, so every future emitter gets this for free. The
+                # prefix is read from the severity module rather than repeated
+                # here: two copies of a wire marker is how they drift apart.
+                _sev_mod, _ = _v2_mods()
+                _sentinel = getattr(_sev_mod, "SENTINEL_PREFIX", "@@JOBRUN_RESULT@@")
+                clean = "\n".join(
+                    ln for ln in raw_out.splitlines() if not ln.lstrip().startswith(_sentinel)
+                )
+                if clean.strip():
+                    sys.stdout.write(clean)
+                    if not clean.endswith("\n"):
+                        sys.stdout.write("\n")
             return EXIT_OK
 
         # ---- v2: classify the RUN, not the job. ----------------------------
