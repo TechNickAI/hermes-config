@@ -494,3 +494,32 @@ def test_the_public_file_carries_no_dated_incident_forensics():
         text = (SCRIPTS / name).read_text(encoding="utf-8")
         assert "PR #" not in text, f"{name} names an internal pull request"
         assert not re.search(r"\b\d{2}-\d{2} \d{2}:\d{2}Z", text), f"{name} has incident stamps"
+
+
+def test_drift_does_not_shield_the_watchdogs_own_defect_from_repair():
+    """`operational_drift` carries a "not your code" exemption. It must not spread.
+
+    The class exists to say "production is behind, that is a rollout condition,
+    not proof the check's source is broken", and `repair_eligible` refuses
+    repair on that basis. When a run carried a drift headline AND a real
+    traceback from the check itself, first-match classification filed the whole
+    event as drift -- so the watchdog's own new defect inherited the exemption
+    and was explained away as an operational condition.
+    """
+    drift = "🔴 DEPLOY DRIFT: 14 commits behind"
+    assert S.failure_class("child_failure", drift) == "operational_drift"
+
+    mixed = drift + "\nTraceback (most recent call last):\nValueError: the check broke"
+    assert S.failure_class("child_failure", mixed) == "code_defect"
+    eligible, _ = S.repair_eligible(reason_code="child_failure", error_text=mixed, money="none")
+    assert eligible is True, "a real defect beside drift must stay repairable"
+
+    still_drift, _ = S.repair_eligible(
+        reason_code="child_failure", error_text=drift, money="none"
+    )
+    assert still_drift is False, "pure drift must still be exempt"
+
+
+def test_a_recognised_non_drift_signature_beside_drift_wins():
+    mixed = "🔴 DEPLOY DRIFT: 9 behind\n401 unauthorized"
+    assert S.failure_class("child_failure", mixed) == "auth"

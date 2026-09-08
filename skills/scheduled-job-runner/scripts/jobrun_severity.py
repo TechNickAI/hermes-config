@@ -712,6 +712,15 @@ NON_REPAIRABLE = {
 
 _CLASSIFY_PATTERNS = [
     (
+        # An unhandled exception from the CHECK ITSELF. Listed so that a run
+        # carrying both a drift headline and a traceback is classified on the
+        # traceback: without a pattern to match, such a run fell through to
+        # `operational_drift` and inherited its "not your code" exemption, and
+        # the watchdog's own new defect was filed as a rollout condition.
+        "code_defect",
+        re.compile(r"^\s*Traceback \(most recent call last\):", re.M),
+    ),
+    (
         "operational_drift",
         re.compile(
             r"^🔴 (?:DEPLOY DRIFT|JOBRUN MIRROR DRIFT):",
@@ -754,13 +763,29 @@ _CLASSIFY_PATTERNS = [
 
 
 def failure_class(reason_code: str, error_text: str = "") -> str:
-    """Classify a failure into a repairable/non-repairable bucket."""
+    """Classify a failure into a repairable/non-repairable bucket.
+
+    DRIFT NEVER SHIELDS A REAL DEFECT (upstream review P1). `operational_drift`
+    exists to say "production is behind, that is a rollout condition, not proof
+    the watchdog's source is broken" -- and it suppresses repair on that basis.
+    But a run can carry a drift headline AND a genuine traceback from the check
+    itself. Matching the drift pattern first would classify that whole event as
+    drift, so the watchdog's own new defect inherits drift's
+    not-your-code exemption and is filed as an operational rollout condition.
+    The monitor breaks and the classifier explains it away.
+
+    So drift only wins when it is the ONLY thing in the text: any other
+    recognised failure signature present alongside it takes precedence.
+    """
     if reason_code in NON_REPAIRABLE:
         return reason_code
-    for name, pat in _CLASSIFY_PATTERNS:
-        if pat.search(error_text or ""):
-            return name
-    return "code_defect"
+    matches = [name for name, pat in _CLASSIFY_PATTERNS if pat.search(error_text or "")]
+    if not matches:
+        return "code_defect"
+    non_drift = [m for m in matches if m != "operational_drift"]
+    if non_drift:
+        return non_drift[0]
+    return matches[0]
 
 
 def repair_eligible(
