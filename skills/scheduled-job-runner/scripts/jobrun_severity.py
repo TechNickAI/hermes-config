@@ -629,8 +629,30 @@ def normalize_error(text: str, limit: int = 400) -> str:
     # Hashing the drifting body minted a fresh incident and bypassed dedup every
     # time the list changed. Keep those conditions stable, while preserving any
     # independent failure headline emitted by another check in the same run.
+    #
+    # BUT NEVER AT THE COST OF AN UNRELATED FAILURE (upstream review P1).
+    # Returning the headline alone discarded every unrecognised line, so a run
+    # carrying "🔴 DEPLOY DRIFT: ..." AND a fresh traceback fingerprinted
+    # IDENTICALLY to ordinary drift -- the watchdog developing its own defect
+    # was silently deduped against the condition it was built to report. That
+    # is a monitor going blind while still appearing to work, which is worse
+    # than the noise this collapsing exists to remove. So the drift identity is
+    # a PREFIX, and any residual failure-bearing text is normalised and
+    # appended.
     condition = _drift_condition_identity(stripped)
     if condition is not None:
+        residual = "\n".join(
+            ln
+            for ln in stripped.splitlines()
+            if ln.strip() and not any(ln.strip().startswith(p) for p in _CONDITION_LINES)
+        )
+        if residual.strip():
+            tail = residual.strip()[-limit:]
+            for pat, repl in _STACK_NOISE:
+                tail = pat.sub(repl, tail)
+            tail = " ".join(tail.split())
+            if tail:
+                return f"{condition} + {tail}"
         return condition
     s = stripped[-limit:]
     for pat, repl in _STACK_NOISE:

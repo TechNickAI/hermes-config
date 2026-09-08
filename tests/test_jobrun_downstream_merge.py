@@ -15,6 +15,7 @@ silence, and silence is what a weak test also looks like.
 
 import hashlib
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -400,3 +401,96 @@ def test_the_machine_sentinel_never_reaches_a_human(tmp_path):
     assert r.returncode == 0
     assert "@@JOBRUN_RESULT@@" not in r.stdout, "machine line leaked into owner output"
     assert "12 markets scanned" in r.stdout, "the real message must survive"
+
+
+# --------------------------------------------------------------------------
+# 8. upstream review findings on this very PR
+# --------------------------------------------------------------------------
+
+
+def test_a_watchdogs_own_defect_is_not_deduped_against_the_drift_it_reports():
+    """Collapsing the headline must not swallow an unrelated failure.
+
+    Returning the headline alone discarded every unrecognised line, so a run
+    carrying a drift headline AND a fresh traceback fingerprinted IDENTICALLY
+    to ordinary drift. The watchdog developing its own bug was silently deduped
+    against the condition it exists to report -- a monitor going blind while
+    still appearing to work, which is worse than the noise the collapsing
+    removes.
+    """
+    drift = S.normalize_error("🔴 DEPLOY DRIFT: 14 commits behind, 3h old")
+    mixed = S.normalize_error(
+        "🔴 DEPLOY DRIFT: 14 commits behind, 3h old\n"
+        "Traceback (most recent call last):\n"
+        "ValueError: the watchdog itself broke"
+    )
+    assert mixed != drift, "an unrelated failure must not fingerprint as routine drift"
+    assert "ValueError" in mixed, "the real failure must survive into the identity"
+    assert mixed.startswith("🔴 DEPLOY DRIFT:"), "the stable condition is still the prefix"
+
+
+def test_two_different_defects_alongside_the_same_drift_stay_distinct():
+    a = S.normalize_error("🔴 DEPLOY DRIFT: 14 behind\nValueError: alpha exploded")
+    b = S.normalize_error("🔴 DEPLOY DRIFT: 14 behind\nKeyError: beta missing")
+    assert a != b
+
+
+def test_pure_drift_still_collapses_as_the_count_grows():
+    """The original fix must survive the correction to it."""
+    a = S.normalize_error("🔴 DEPLOY DRIFT: 14 commits behind, 3h old, sha aaa")
+    b = S.normalize_error("🔴 DEPLOY DRIFT: 96 commits behind, 30h old, sha bbb")
+    assert a == b
+
+
+def test_concurrent_runs_cannot_both_decide_the_message_changed(home):
+    """overlap="allow" + on_change: two finishers racing the same state file.
+
+    Unlocked, both read the previous digest before either writes, so both
+    decide "changed" and both speak -- exactly the duplicate the gate exists to
+    prevent. They also shared one `.json.tmp`, so one replace() could fail on a
+    file the other had already moved.
+
+    PROCESSES PLUS A BARRIER, not threads. Two weaker versions of this test
+    passed even with the lock REMOVED and therefore proved nothing: threads
+    serialized under the GIL on a fast path, and bare processes start ~10ms
+    apart, so the first finished before the second began. The barrier releases
+    every worker into the gate at the same instant, which is the only way the
+    unlocked read-decide-write window is actually open. Verified by deleting
+    the flock and watching this go RED.
+    """
+    import multiprocessing as mp
+
+    N = 8
+
+    def child(state_dir, barrier, q):
+        import importlib
+
+        sys.path.insert(0, str(SCRIPTS))
+        m = importlib.import_module("jobrun")
+        m.STATE_DIR = state_dir
+        barrier.wait(timeout=30)  # everyone enters the gate together
+        q.put(m._speech_gate("racer", "identical body"))
+
+    ctx = mp.get_context("fork")
+    q = ctx.Queue()
+    barrier = ctx.Barrier(N)
+    procs = [ctx.Process(target=child, args=(J.STATE_DIR, barrier, q)) for _ in range(N)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(timeout=60)
+
+    results = [q.get(timeout=30) for _ in range(N)]
+    spoke = [r for r in results if r[0]]
+    assert len(spoke) == 1, f"exactly one concurrent run may speak, got {len(spoke)}: {results}"
+
+
+def test_the_public_file_carries_no_dated_incident_forensics():
+    """This repo is public. Internal dates, PR numbers and SHAs do not belong.
+
+    The reasoning is what generalises; the incident log is what leaks.
+    """
+    for name in ("jobrun.py", "jobrun_severity.py", "jobrun_repair.py"):
+        text = (SCRIPTS / name).read_text(encoding="utf-8")
+        assert "PR #" not in text, f"{name} names an internal pull request"
+        assert not re.search(r"\b\d{2}-\d{2} \d{2}:\d{2}Z", text), f"{name} has incident stamps"

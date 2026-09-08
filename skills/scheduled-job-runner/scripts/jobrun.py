@@ -1037,13 +1037,13 @@ def _group_has_live_member(pgid: int) -> bool:
 def _terminate_group(proc, grace: int) -> bool:
     """TERM (graceful) then ABRT (stack dump) then KILL. True once the GROUP is gone.
 
-    WHY A STACK DUMP AT ALL (2026-09-07, Sentinel repair ac1327ec7637). A job
-    killed at its ceiling used to record NOTHING: both post-#633 auto-sell
-    timeouts (09-06 23:15Z, 09-07 11:05Z) landed with `stderr_bytes: 0`, so the
-    only honest answer to "what was it stuck on?" was a shrug — and a ceiling
-    you cannot diagnose invites raising the ceiling, which is guessing.
-    Children run with PYTHONFAULTHANDLER=1, so SIGABRT makes CPython dump every
-    thread's stack to stderr (already captured) naming the exact hung frame.
+    WHY A STACK DUMP AT ALL. A job killed at its ceiling used to record
+    NOTHING: two separate timeouts of the same recurring money-path job landed
+    with `stderr_bytes: 0`, so the only honest answer to "what was it stuck on?"
+    was a shrug — and a ceiling you cannot diagnose invites raising the ceiling,
+    which is guessing. Children run with PYTHONFAULTHANDLER=1, so SIGABRT makes
+    CPython dump every thread's stack to stderr (already captured) naming the
+    exact hung frame.
 
     WHY SIGTERM STILL GOES FIRST (review P2, reproduced). Aborting first would
     bypass the graceful path for every job whose leader HANDLES SIGTERM — including
@@ -1646,7 +1646,7 @@ def _v2_mods():
     Both ship beside this file, so neither can legitimately be missing. This
     used to catch ImportError and return (None, None), which disabled the
     preflight money-mismatch guard for EVERY job -- silently, and precisely
-    while the install was broken (Codex P1, PR #1225).
+    while the install was broken (caught in review).
     """
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import jobrun_severity as sev
@@ -1685,26 +1685,42 @@ def _speech_gate(job_id: str, text: str, heartbeat_h: float = 24.0) -> tuple[boo
         digest = hashlib.sha256((text or "").strip().encode("utf-8", "replace")).hexdigest()
         d = STATE_DIR / "speech"
         d.mkdir(parents=True, exist_ok=True)
-        f = d / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', job_id)}.json"
-        prev = {}
-        if f.is_file():
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", job_id)
+        f = d / f"{safe}.json"
+        # SERIALIZE THE WHOLE READ-DECIDE-WRITE (upstream review P2).
+        # With overlap = "allow", two runs of the same job finish concurrently.
+        # Unlocked, both read the previous digest before either writes, so both
+        # decide "changed" and both speak -- the exact duplicate this gate
+        # exists to prevent. They also shared one `.json.tmp`, so one
+        # replace() could fail on a file the other had already moved.
+        # Per-job lock file, and a per-process temp name.
+        lock = d / f"{safe}.lock"
+        with open(lock, "a+", encoding="utf-8") as lk:
+            fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
             try:
-                prev = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                prev = {}  # corrupt state must not silence the job
-        now = _now()
-        same = prev.get("digest") == digest
-        age_h = None
-        if same and prev.get("at"):
-            try:
-                age_h = (now - datetime.fromisoformat(prev["at"])).total_seconds() / 3600.0
-            except Exception:  # noqa: BLE001
+                prev = {}
+                if f.is_file():
+                    try:
+                        prev = json.loads(f.read_text(encoding="utf-8"))
+                    except Exception:  # noqa: BLE001
+                        prev = {}  # corrupt state must not silence the job
+                now = _now()
+                same = prev.get("digest") == digest
                 age_h = None
-        if same and age_h is not None and age_h < heartbeat_h:
-            return False, f"unchanged for {age_h:.1f}h (heartbeat at {heartbeat_h:.0f}h)"
-        tmp = f.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"digest": digest, "at": _iso(now)}), encoding="utf-8")
-        tmp.replace(f)
+                if same and prev.get("at"):
+                    try:
+                        age_h = (
+                            now - datetime.fromisoformat(prev["at"])
+                        ).total_seconds() / 3600.0
+                    except Exception:  # noqa: BLE001
+                        age_h = None
+                if same and age_h is not None and age_h < heartbeat_h:
+                    return False, f"unchanged for {age_h:.1f}h (heartbeat at {heartbeat_h:.0f}h)"
+                tmp = d / f"{safe}.{os.getpid()}.tmp"
+                tmp.write_text(json.dumps({"digest": digest, "at": _iso(now)}), encoding="utf-8")
+                tmp.replace(f)
+            finally:
+                fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
         if not same:
             return True, "content changed"
         return True, f"liveness heartbeat ({heartbeat_h:.0f}h)"
