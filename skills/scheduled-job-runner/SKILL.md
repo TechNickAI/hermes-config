@@ -346,6 +346,32 @@ for (j,s),n in c.most_common(): print(f'{n:4d}  {j}  {s}')"
 
 This is the status API. **Never grep raw stdout for status.**
 
+## Reconciling divergent copies of this runner
+
+This file gets copied to many hosts, and hosts fix things under production pressure.
+Three separate lineages have now diverged, and in every case NEITHER side was a
+superset: each held real, tested work the other lacked. A blind overwrite in either
+direction destroys some of it.
+
+1. **Find the merge base before judging the diff.** Hash every historical version in
+   both histories and look for a shared SHA. A common ancestor makes this a three-way
+   merge instead of a guess.
+2. **Neutralise formatting first.** Run the same formatter over base and both sides,
+   then diff. A downstream `ruff format` pass once made a no-op look like a 718-line
+   rewrite; the semantic check is `ast.dump(parse(a)) == ast.dump(parse(b))`.
+   Normalising collapsed 91 conflicts to one real one.
+3. **Classify each commit as generic or host-specific.** Read the messages, not just the
+   hunks. Anything binding to an absolute path, a host log vocabulary, or a domain money
+   path stays downstream.
+4. **A ported feature must not depend on the host it came from.** A gate that imports a
+   module existing on only one host fails open everywhere else, so the spec field
+   validates and does nothing. That is worse than rejecting it. Make it self-contained,
+   and expose an env var for the host-specific part.
+5. **Do not "fix" another agent's box.** A mirror-in-git plus a byte-comparison test is
+   not a hack: when the scheduler resolves launchers from a directory the deploy cannot
+   write, mirroring is the only way to review the code that actually runs. Send a PR to
+   their repo; a `cp` onto their host is reverted by design and rightly so.
+
 ## Verification checklist
 
 - [ ] `jobrun.py --selftest` passes
