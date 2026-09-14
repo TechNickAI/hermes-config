@@ -1,7 +1,7 @@
 ---
 name: multi-review
 description: "Use when reviewing any meaningful artifact or decision."
-version: 1.7.0
+version: 1.7.1
 license: MIT
 compatibility: >
   Portable review method. Native multi-model orchestration examples are Hermes-specific;
