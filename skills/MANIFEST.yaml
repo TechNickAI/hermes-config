@@ -266,7 +266,7 @@ skills:
   - multi-source
   path: skills/mob-check
 - name: multi-review
-  version: 1.7.0
+  version: 1.7.1
   scope: solo
   summary: Use when reviewing any meaningful artifact or decision.
   use_when: reviewing any meaningful artifact or decision.

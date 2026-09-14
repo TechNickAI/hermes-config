@@ -94,6 +94,14 @@ REVIEWER_POOL_OWNER=""
 _REVIEWER_PRIOR_EXIT_TRAP=""
 _REVIEWER_LIVE_PIDS=""
 
+# This is a sourced library, not an executable. Fail visibly when a caller tries
+# `bash reviewer_home.sh ...`; older behavior printed nothing and encouraged an
+# unseeded scratch fallback that Hermes reported as HTTP 401 with exit code 0.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  echo "reviewer_home: source this file, call reviewer_pool_init, then call reviewer_run; do not execute it" >&2
+  exit 64
+fi
+
 # Credential artifacts a reviewer needs. auth.json carries OAuth tokens for
 # providers that do not use a plain API key (xAI/Grok, Codex): omitting it made
 # a real grok seat fail with "No xAI OAuth credentials stored" while the other
