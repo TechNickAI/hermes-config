@@ -266,10 +266,10 @@ skills:
   - multi-source
   path: skills/mob-check
 - name: multi-review
-  version: 1.2.0
+  version: 1.7.0
   scope: solo
-  summary: Use when reviewing almost any meaningful artifact, decision, action, plan, code change, prompt, skill, research summary, outbound message, or public-facing content.
-  use_when: reviewing almost any meaningful artifact, decision, action, plan, code change, prompt, skill, research summary, outbound message, or public-facing content. Runs a small panel of diverse review lenses across model families when available, synthesizes findings into fix/ask/defer/wontfix decisions, and…
+  summary: Use when reviewing any meaningful artifact or decision.
+  use_when: reviewing any meaningful artifact or decision.
   requires: []
   works_out_of_the_box: true
   tags:
