@@ -9,6 +9,12 @@ hooks:
   - sync_turn
   - on_session_end
   - on_pre_compress
+# Declared, never auto-installed by Hermes. PyYAML is a hard requirement: the
+# frontmatter serializer on the memory write path imports it unguarded. numpy is
+# deliberately NOT declared; embeddings.py probes it as an optional accelerator
+# and falls back to an exact pure-Python scan when it is absent.
+python_dependencies:
+  - "pyyaml>=6.0,<7"
 config:
   # Semantic tier (page-level embeddings). Fails safe to lexical-only FTS5 if
   # the embedding endpoint is unreachable at init.
