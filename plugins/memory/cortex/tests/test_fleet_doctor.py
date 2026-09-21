@@ -334,6 +334,33 @@ def test_persistent_transient_reports_the_retry_result(mod, monkeypatch):
     assert result["detail"] == "second-detail"
 
 
+def test_fleet_deadline_returns_partial_results_without_waiting(mod, monkeypatch):
+    """One hung profile must not erase completed checks at the outer timeout."""
+    targets = [make_target(mod, "fast"), make_target(mod, "hung")]
+    released = mod.time.monotonic()
+
+    def fake_check(target, query, timeout, retry_delay):
+        if target.label == "hung":
+            mod.time.sleep(1)
+        return {"label": target.label, "state": "healthy"}
+
+    monkeypatch.setattr(mod, "check", fake_check)
+
+    results = mod.run_checks(targets, "memory", 10, 0, 0.05, 2)
+    elapsed = mod.time.monotonic() - released
+
+    assert elapsed < 0.5
+    assert results == [
+        {"label": "fast", "state": "healthy"},
+        {
+            "label": "hung",
+            "state": "unreachable",
+            "retryable": False,
+            "detail": "fleet deadline exceeded after 0.05s",
+        },
+    ]
+
+
 # ------------------------------------------------------------- classification
 
 

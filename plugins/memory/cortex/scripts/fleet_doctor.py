@@ -35,9 +35,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-DEFAULT_TIMEOUT = 2400
+DEFAULT_TIMEOUT = 1500
 DEFAULT_RETRY_DELAY = 20
 DEFAULT_QUERY = "memory"
+DEFAULT_FLEET_DEADLINE = 3300
 
 # States worth a second look. A durable fault (corruption, missing embeddings)
 # is a fact and is reported immediately; only these can be a passing blip.
@@ -251,6 +252,60 @@ def format_report(results: list[dict[str, Any]], *, audit_repairs: bool = True) 
     return "\n".join(lines)
 
 
+def run_checks(
+    targets: list[Target],
+    query: str,
+    timeout: int,
+    retry_delay: int,
+    fleet_deadline: int,
+    max_workers: int,
+) -> list[dict[str, Any]]:
+    """Check the fleet concurrently, but return before the scheduler kills us.
+
+    A worker can consume roughly ``2 * timeout + retry_delay`` because soft
+    outcomes are retried. Defaults keep that worst case below the fleet deadline,
+    and the fleet deadline below the cron wrapper's hard timeout. Without the
+    outer bound, executor shutdown can erase every completed result. Classify
+    unfinished targets as inconclusive instead.
+    """
+    pool = cf.ThreadPoolExecutor(max_workers=max_workers)
+    futures = {
+        pool.submit(check, target, query, timeout, retry_delay): target
+        for target in targets
+    }
+    results: list[dict[str, Any]] = []
+    try:
+        done, pending = cf.wait(futures, timeout=fleet_deadline)
+        for future in done:
+            target = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:  # noqa: BLE001 - one worker must not sink the sweep
+                results.append({
+                    "label": target.label,
+                    "state": "indeterminate",
+                    "retryable": False,
+                    "detail": f"worker failed: {str(exc)[:160]}",
+                })
+        for future in pending:
+            target = futures[future]
+            future.cancel()
+            results.append({
+                "label": target.label,
+                "state": "unreachable",
+                "retryable": False,
+                "detail": f"fleet deadline exceeded after {fleet_deadline}s",
+            })
+    finally:
+        # Do not wait for timed-out workers: the process must return its partial
+        # report before the outer jobrun timeout. subprocess timeouts will reap
+        # their children independently.
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    order = {target.label: i for i, target in enumerate(targets)}
+    return sorted(results, key=lambda result: order[result["label"]])
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Cortex nightly doctor fleet-wide.")
     parser.add_argument("--targets", required=True,
@@ -259,6 +314,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="retrieval canary query (default: %(default)s)")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--retry-delay", type=int, default=DEFAULT_RETRY_DELAY)
+    parser.add_argument("--fleet-deadline", type=int, default=DEFAULT_FLEET_DEADLINE,
+                        help="maximum seconds for the whole sweep (default: %(default)s)")
     parser.add_argument("--max-workers", type=int, default=6)
     args = parser.parse_args(argv)
 
@@ -270,10 +327,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"🔴 Cortex fleet doctor could not load targets: {exc}")
         return 0
 
-    with cf.ThreadPoolExecutor(max_workers=args.max_workers) as pool:
-        results = list(pool.map(
-            lambda t: check(t, args.query, args.timeout, args.retry_delay), targets
-        ))
+    results = run_checks(
+        targets,
+        args.query,
+        args.timeout,
+        args.retry_delay,
+        args.fleet_deadline,
+        args.max_workers,
+    )
 
     report = format_report(results)
     if report:
