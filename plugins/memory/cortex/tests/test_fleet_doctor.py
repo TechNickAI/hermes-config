@@ -491,3 +491,52 @@ def _stub_run(mod, monkeypatch, payload=None, raw=None):
         stderr = ""
 
     monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: Done())
+
+
+def test_process_exits_promptly_while_a_worker_is_still_blocked(tmp_path):
+    """The sweep must EXIT at the deadline, not merely stop waiting at it.
+
+    `pool.shutdown(wait=False)` returns immediately, but ThreadPoolExecutor
+    workers are non-daemon threads, so a normal interpreter exit joins them --
+    and a worker parked in `subprocess.run` keeps the process alive until its
+    child returns. A single hung store then holds the whole run past the
+    scheduler's hard timeout and it is killed as a failure despite having
+    produced a complete report.
+
+    Run in a REAL subprocess: an in-process test cannot observe interpreter
+    shutdown, which is exactly where the hang lives.
+    """
+    import subprocess
+    import sys
+    import time
+
+    targets = tmp_path / "targets.json"
+    targets.write_text(json.dumps([{
+        "label": "slow", "python": sys.executable, "doctor": "unused",
+        "home": str(tmp_path), "host": None,
+    }]))
+
+    # Probe sleeps far past the deadline; the report must not wait for it.
+    sitecustomize = tmp_path / "sitecustomize.py"
+    sitecustomize.write_text(
+        "import subprocess, time\n"
+        "_real = subprocess.run\n"
+        "def slow(cmd, **kw):\n"
+        "    time.sleep(30)\n"
+        "    return _real(['true'], capture_output=True, text=True)\n"
+        "subprocess.run = slow\n"
+    )
+
+    start = time.monotonic()
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--targets", str(targets),
+         "--fleet-deadline", "2", "--timeout", "30", "--retry-delay", "0"],
+        capture_output=True, text=True, timeout=25,
+        env={"PYTHONPATH": str(tmp_path), "PATH": "/usr/bin:/bin"},
+    )
+    elapsed = time.monotonic() - start
+
+    # Deadline 2s; allow generous startup slack but fail well before the 30s child.
+    assert elapsed < 15, f"process lived {elapsed:.1f}s past its 2s deadline"
+    assert proc.returncode == 0
+    assert "slow" in proc.stdout

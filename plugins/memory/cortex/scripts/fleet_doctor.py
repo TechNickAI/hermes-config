@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -343,4 +344,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    # Exit without joining worker threads.
+    #
+    # The fleet deadline bounds how long we WAIT for results, but it cannot
+    # bound how long the process LIVES. `pool.shutdown(wait=False)` returns
+    # immediately, yet a ThreadPoolExecutor's workers are non-daemon threads,
+    # so the interpreter's own shutdown joins them anyway -- and a worker
+    # blocked in `subprocess.run` stays blocked until its child returns.
+    # A single store that hangs past the deadline therefore holds the whole
+    # sweep open past the scheduler's hard timeout, and the run is killed and
+    # reported as failed even though the report above is complete and correct.
+    #
+    # Flush explicitly, because os._exit skips the buffer flush that a normal
+    # exit would perform.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
