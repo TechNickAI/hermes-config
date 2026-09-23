@@ -1,0 +1,35 @@
+# Static analysis policy for GitHub Actions workflows.
+#
+# Why this exists: the defect class this gate targets is template injection,
+# where attacker-controllable text (an issue title, a PR body) is expanded
+# directly into a `run:` block. In snowflakedb/snowflake-connector-net a merged
+# PR (#1218, 2026-06-18) replaced an `env:` plus `jq --arg` parsing boundary
+# with direct string interpolation. The guard's purpose was not obvious from
+# the diff, AI review passed it, and it was exploited five days later.
+#
+# This repo has the same exposure shape: workflows trigger on attacker-supplied
+# issue and comment bodies, the jobs hold write permissions and a long-lived
+# token, and agents edit these workflow files here as a matter of routine.
+# There is no template-injection defect today. This is a regression guard.
+#
+# unpinned-uses is relaxed to ref-pin deliberately. Ten actions in this repo
+# are referenced by tag rather than by SHA. Pinning them is a separate and
+# larger decision. Leaving the default blanket policy would make this gate
+# fail on day one over findings unrelated to injection, and a check that fails
+# immediately gets deleted rather than fixed.
+#
+# Scope, stated plainly so nobody reads more assurance into a green run than
+# is there: the hook runs with --min-severity=high, and high is the top of
+# zizmor's scale, so only top-severity findings can block a commit. Every
+# template-injection finding from an attacker-controllable source rates high,
+# which is why the gate holds for the defect class it targets. Six medium
+# findings (five artipacked, one excessive-permissions) exist today and are
+# deliberately not blocking. They are real and worth their own pass. Folding
+# them in here would widen this change past the injection question and stall
+# it behind unrelated work. A green hook means "no high-severity workflow
+# finding", not "this repo's workflows are fully audited".
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": ref-pin
