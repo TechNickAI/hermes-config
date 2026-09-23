@@ -257,6 +257,46 @@ ports 443, 8443, and 10000.
 > **tailnet-only** port (e.g. `:8443`) by adding a `Web` entry _without_ a matching
 > `AllowFunnel` entry.
 
+### Credential-path probes on the public funnel
+
+A funnel'd port is scanned continuously. Current scanning campaigns impersonate known AI
+bot user-agents and target the credential and configuration paths that AI coding tools
+write to disk: `/.claude/settings.json`, `/.hermes/.env`, `/.aws/credentials`,
+`/.config/anthropic/credentials/default.json`, `/.npmrc`, `/terraform.tfstate`,
+`/credentials.json`, and similar. Because the traffic spoofs its identity and ignores
+`robots.txt`, neither user-agent allowlisting nor `robots.txt` is a control.
+
+Two properties of the router made this worth a mechanical backstop rather than
+discipline alone:
+
+- Caddy's `file_server` serves dotfiles by default. There is no implicit dot-prefix
+  deny.
+- The catch-all `handle` uses `try_files {path} /index.html`, so an unmatched path falls
+  through to the SPA index instead of 404ing.
+
+The Caddyfile therefore carries two matchers, `@dotfile_probe` and `@secrets_probe`,
+that return `404` for dotfile paths and for well-known secrets filenames. They sit after
+every app `handle` so they cannot shadow an app prefix, and `/.well-known/*` is carved
+out so ACME and other standard discovery paths still work. They return `404` rather than
+`403` so a probe cannot use the status code to tell "exists but blocked" from "does not
+exist".
+
+Both use `path_regexp` rather than `path` globs. A glob has to name each directory depth
+(`/.*`, `/*/.*`, and so on), so a dotfile deeper than the deepest listed glob is served
+in the clear. The regexes are depth independent and case insensitive, so `/a/b/c/.env`
+and `/Dockerfile` are both refused.
+
+This is defense in depth. Keeping credentials out of `router/public` is still the actual
+control. If you add an app whose paths legitimately begin with a dot, exempt it with
+another `not path` line in that matcher.
+
+Verify after a reload:
+
+```
+curl -s -o /dev/null -w '%{http_code}\n' https://<host>/.env          # expect 404
+curl -s -o /dev/null -w '%{http_code}\n' https://<host>/health        # expect 200
+```
+
 ## Troubleshooting
 
 **`tailscale serve status` shows the wrong routes, or apps return blank pages, or the

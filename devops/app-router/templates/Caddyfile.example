@@ -60,6 +60,50 @@
         reverse_proxy 127.0.0.1:3002
     }
 
+    # ── Fail closed on credential and config probes. ──────────────────────
+    # This router is the one deliberately public surface (see
+    # scripts/tailscale-serve.json: a funnel'd port is fully public), and
+    # public hosts are scanned continuously for the credential paths that
+    # AI coding tools write to disk. Scanners impersonate known AI bot
+    # user-agents and do not honor robots.txt, so neither is a control.
+    #
+    # Caddy's file_server has no implicit dot-prefix deny, and the
+    # catch-all below uses try_files, so an unmatched path falls through
+    # to the SPA index instead of 404ing. Nothing legitimate under this
+    # router is a dotfile or a secrets blob, so refuse the whole class.
+    #
+    # These use path_regexp, not path globs, on purpose: a glob has to
+    # name each directory depth (/.* /*/.* and so on) and anything deeper
+    # than the deepest listed glob is served. The regexes are depth
+    # independent. Keep both blocks after every app handle above so they
+    # cannot shadow an app prefix, and return 404 rather than 403 so a
+    # probe cannot tell "exists but blocked" from "does not exist".
+
+    # Any path segment beginning with a dot, at any depth. /.well-known
+    # is exempt because ACME and other discovery standards live there.
+    @dotfile_probe {
+        not path /.well-known/*
+        path_regexp (^|/)\.
+    }
+    handle @dotfile_probe {
+        respond 404
+    }
+
+    # Well-known secrets filenames at any depth, case insensitive.
+    # The trailing /? is load bearing. Caddy's file_server answers a
+    # directory-style request for an existing file with a 308 redirect to
+    # the slash-less form, and answers a nonexistent one with the SPA
+    # index. Without /? the matcher misses /credentials.json/ and that
+    # 308-versus-200 split becomes an existence oracle: a probe learns
+    # the file is there without ever reading it. Matching the slash form
+    # here 404s both cases identically.
+    @secrets_probe {
+        path_regexp (?i)(^|/)([^/]*\.(env|tfstate|pem|key)(\.[^/]*)?|credentials\.json|secrets\.(json|ya?ml)|key\.json|service[-_]account\.json|serviceaccountkey\.json|firebase-(adminsdk|service-account)\.json|rclone\.conf|dockerfile|docker-compose\.ya?ml)/?$
+    }
+    handle @secrets_probe {
+        respond 404
+    }
+
     # ── Catch-all app index. Anything not matched above lands here.
     #    Rooted at router/public so the rendered Caddyfile, restore
     #    scripts, and logs stay out of the public web root. ─────────────
