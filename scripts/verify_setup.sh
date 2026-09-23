@@ -139,6 +139,97 @@ if [ -d "$HERMES_HOME/plugins/cortex" ] || [ -d "$HERMES_HOME/plugins/memory/cor
   fi
 fi
 
+# ------------------------------------------------ observability plugin egress
+# An enabled agent-observability plugin is the inverse of the cortex case above:
+# not a copy that silently does nothing, but a config line that silently does a
+# lot. The agento11y plugin ships whole conversations (prompts, responses, the
+# system prompt, tool arguments and tool results) to a Grafana Cloud stack, with
+# no PII redaction, unless AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only is set.
+# It is also invisible to `hermes plugins list`, which does not see pip-installed
+# plugins, so config.yaml is the only place this shows up locally.
+if [ -f "$HERMES_HOME/config.yaml" ]; then
+  o11y_enabled=""
+  o11y_parsed=""
+  o11y_degraded=""
+  # Parse the YAML when possible: a bare grep for the plugin name also matches a
+  # commented-out line or a disabled list, and warning about a plugin that is not
+  # actually on is how a check like this trains people to ignore it.
+  if command -v python3 >/dev/null 2>&1; then
+    o11y_result=$(python3 - "$HERMES_HOME/config.yaml" <<'PYEOF'
+import sys
+
+try:
+    import yaml
+except ImportError:
+    print("unparsed")  # no PyYAML: let the caller fall back to grep
+    sys.exit(0)
+try:
+    with open(sys.argv[1]) as handle:
+        data = yaml.safe_load(handle) or {}
+except Exception:
+    print("unparsed")  # unreadable or invalid YAML: grep is better than nothing
+    sys.exit(0)
+plugins = data.get("plugins") if isinstance(data, dict) else None
+enabled = plugins.get("enabled") if isinstance(plugins, dict) else None
+if isinstance(enabled, list) and any(str(n).strip() == "agento11y" for n in enabled):
+    print("enabled")
+else:
+    print("absent")
+PYEOF
+)
+    case "$o11y_result" in
+      enabled) o11y_enabled="yes"; o11y_parsed="yes" ;;
+      absent)  o11y_parsed="yes" ;;
+    esac
+  fi
+  # Grep fallback whenever the structured parse did not happen (no python3, no
+  # PyYAML, unreadable file). A plain grep cannot tell an enabled entry from a
+  # disabled one, a comment, or an unrelated list, and it misses flow style
+  # (enabled: [agento11y]). So it does not pretend to decide: if the name appears
+  # at all, report that verification was degraded and let the reader check. A
+  # missing dependency must not silently turn a content-egress check into no
+  # check, and it must not claim a certainty this path does not have.
+  if [ -z "$o11y_parsed" ] \
+    && grep -qE "(^|[^[:alnum:]_-])agento11y([^[:alnum:]_-]|$)" "$HERMES_HOME/config.yaml"; then
+    o11y_degraded="yes"
+  fi
+
+  if [ -n "$o11y_enabled" ]; then
+    # Resolve the mode the way Hermes will at runtime. Hermes loads
+    # $HERMES_HOME/.env with override on, so a value there beats an exported
+    # shell variable with no warning. Checking only the shell would report safe
+    # on a box that is about to export everything.
+    capture_mode="${AGENTO11Y_CONTENT_CAPTURE_MODE:-}"
+    if [ -f "$HERMES_HOME/.env" ]; then
+      # python-dotenv tolerates spaces around the '=', so this must too, or a
+      # correctly-configured box gets warned at.
+      env_line=$(grep -E '^[[:space:]]*(export[[:space:]]+)?AGENTO11Y_CONTENT_CAPTURE_MODE[[:space:]]*=' \
+        "$HERMES_HOME/.env" 2>/dev/null | tail -1)
+      if [ -n "$env_line" ]; then
+        env_mode="${env_line#*=}"
+        env_mode="${env_mode#"${env_mode%%[![:space:]]*}"}"
+        env_mode="${env_mode%%[[:space:]]*}"
+        env_mode="${env_mode%\"}"; env_mode="${env_mode#\"}"
+        env_mode="${env_mode%\'}"; env_mode="${env_mode#\'}"
+        capture_mode="$env_mode"
+      fi
+    fi
+
+    if [ "$capture_mode" = "metadata_only" ]; then
+      ok "agento11y enabled in metadata_only mode (no conversation content leaves the machine)"
+    else
+      warn "agento11y is enabled and exporting full conversation content off this machine"
+      note "that includes prompts, responses, the system prompt, and tool args/results, unredacted"
+      note "to keep content local: set AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only"
+    fi
+  elif [ -n "$o11y_degraded" ]; then
+    warn "config.yaml mentions agento11y but this check could not read it properly"
+    note "install PyYAML (python3 -m pip install pyyaml) to verify the plugin's capture mode"
+    note "if the plugin is enabled, full conversation content leaves the machine unless"
+    note "AGENTO11Y_CONTENT_CAPTURE_MODE=metadata_only is set"
+  fi
+fi
+
 # ------------------------------------------------------------------------ result
 echo
 if [ "$fails" -gt 0 ]; then
