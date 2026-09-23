@@ -134,6 +134,169 @@ def test_verify_setup_reports_a_missing_install() -> None:
     assert "FAIL" in result.stdout
 
 
+def run_verify_setup(hermes_home: pathlib.Path) -> subprocess.CompletedProcess:
+    """Run the smoke test against a synthetic HERMES_HOME.
+
+    PATH is pinned to system directories so the result does not depend on whether
+    the developer running the suite happens to have a hermes CLI installed. The
+    assertions below therefore look at named findings rather than the exit status,
+    which is set by unrelated checks such as the CLI probe.
+    """
+    return subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_setup.sh")],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "HERMES_HOME": str(hermes_home), "HOME": str(hermes_home)},
+    )
+
+
+def write_skill(path: pathlib.Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "SKILL.md").write_text("---\nname: x\ndescription: x\n---\n")
+
+
+def test_verify_setup_accepts_category_skill_directories(tmp_path: pathlib.Path) -> None:
+    """A category holding nested skills is a supported layout, not a broken copy.
+
+    Hermes resolves skills by walking the tree (agent/skill_utils.py
+    iter_skill_index_files), so a depth-1 directory without its own SKILL.md is
+    only broken if nothing is behind it. Flagging categories buried real failures
+    under dozens of false ones.
+    """
+    skills = tmp_path / "skills"
+    write_skill(skills / "flat-skill")
+    write_skill(skills / "github" / "nested-skill")
+    (skills / "github" / "DESCRIPTION.md").write_text("GitHub skills.\n")
+
+    result = run_verify_setup(tmp_path)
+
+    assert "github has no SKILL.md" not in result.stdout
+    assert "flat-skill has no SKILL.md" not in result.stdout
+    assert "skills directory present (2 installed)" in result.stdout
+
+
+def test_verify_setup_counts_skills_nested_more_than_one_level_deep(tmp_path: pathlib.Path) -> None:
+    """Categories can hold sub-categories, so the search must not assume depth 2.
+
+    mlops/inference/llama-cpp/SKILL.md is a real layout on the fleet. A depth-2
+    search undercounts it, and a category holding only deeper skills would be
+    reported as an incomplete copy.
+    """
+    skills = tmp_path / "skills"
+    write_skill(skills / "mlops" / "inference" / "llama-cpp")
+    write_skill(skills / "mlops" / "research" / "dspy")
+    (skills / "mlops" / "DESCRIPTION.md").write_text("MLOps skills.\n")
+
+    result = run_verify_setup(tmp_path)
+
+    assert "mlops has no SKILL.md" not in result.stdout
+    assert "skills directory present (2 installed)" in result.stdout
+
+
+def test_verify_setup_does_not_count_support_directory_markdown(tmp_path: pathlib.Path) -> None:
+    """references/ and friends hold progressive-disclosure data, not skill roots.
+
+    Hermes prunes them (SKILL_SUPPORT_DIRS), so an archived SKILL.md under
+    references/ must not inflate the count or make an empty directory look whole.
+    """
+    skills = tmp_path / "skills"
+    write_skill(skills / "category" / "real-skill")
+    (skills / "category" / "DESCRIPTION.md").write_text("A category.\n")
+    write_skill(skills / "category" / "real-skill" / "references" / "archived-copy")
+    (skills / "broken" / "references").mkdir(parents=True)
+    (skills / "broken" / "references" / "SKILL.md").write_text("archived, not a skill\n")
+
+    result = run_verify_setup(tmp_path)
+
+    assert "skills directory present (1 installed)" in result.stdout
+    assert "broken has no SKILL.md" in result.stdout
+
+
+def test_verify_setup_still_fails_an_empty_skill_directory(tmp_path: pathlib.Path) -> None:
+    """The original contract holds: neither its own SKILL.md nor any nested one is broken."""
+    skills = tmp_path / "skills"
+    write_skill(skills / "good-skill")
+    (skills / "truncated-copy").mkdir(parents=True)
+    (skills / "truncated-copy" / "README.md").write_text("half a skill\n")
+
+    result = run_verify_setup(tmp_path)
+
+    assert "truncated-copy has no SKILL.md" in result.stdout
+    assert "good-skill has no SKILL.md" not in result.stdout
+
+
+def test_verify_setup_fails_an_empty_category(tmp_path: pathlib.Path) -> None:
+    """DESCRIPTION.md with nothing behind it resolves to no skills, so it still fails.
+
+    The marker file being intact does not help the user: the directory loads
+    nothing, which is the same outcome as an incomplete copy. Only the message
+    changes, because pointing at a missing SKILL.md would be wrong for a category.
+    """
+    skills = tmp_path / "skills"
+    (skills / "placeholder").mkdir(parents=True)
+    (skills / "placeholder" / "DESCRIPTION.md").write_text("Coming soon.\n")
+
+    result = run_verify_setup(tmp_path)
+
+    assert "FAIL" in result.stdout
+    assert "placeholder is an empty category" in result.stdout
+    assert "placeholder has no SKILL.md" not in result.stdout
+
+
+def test_verify_setup_ignores_hermes_metadata_directories(tmp_path: pathlib.Path) -> None:
+    """.hub and .curator_backups are Hermes internals, which Hermes itself prunes."""
+    skills = tmp_path / "skills"
+    write_skill(skills / "real-skill")
+    (skills / ".hub").mkdir(parents=True)
+    (skills / ".curator_backups" / "2026-01-01").mkdir(parents=True)
+
+    result = run_verify_setup(tmp_path)
+
+    assert ".hub" not in result.stdout
+    assert ".curator_backups" not in result.stdout
+
+
+def test_verify_setup_accepts_cortex_selected_only_by_a_profile(tmp_path: pathlib.Path) -> None:
+    """A fleet may leave the root provider unset while every profile selects cortex."""
+    (tmp_path / "plugins" / "cortex").mkdir(parents=True)
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: ''\n")
+    profile = tmp_path / "profiles" / "argus"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("memory:\n  provider: cortex\n")
+
+    result = run_verify_setup(tmp_path)
+
+    assert "the plugin is inert" not in result.stdout
+    assert "cortex selected by profile(s): argus" in result.stdout
+
+
+def test_verify_setup_still_fails_when_nothing_selects_cortex(tmp_path: pathlib.Path) -> None:
+    """The original contract holds: a copied plugin nobody points at is still inert."""
+    (tmp_path / "plugins" / "cortex").mkdir(parents=True)
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: ''\n")
+    profile = tmp_path / "profiles" / "other"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("memory:\n  provider: sqlite\n")
+
+    result = run_verify_setup(tmp_path)
+
+    assert "the plugin is inert" in result.stdout
+
+
+def test_verify_setup_accepts_quoted_cortex_in_a_profile(tmp_path: pathlib.Path) -> None:
+    """provider: "cortex" and 'cortex' are valid YAML and must not read as unset."""
+    (tmp_path / "plugins" / "cortex").mkdir(parents=True)
+    for name, value in (("single", "'cortex'"), ("double", '"cortex"')):
+        profile = tmp_path / "profiles" / name
+        profile.mkdir(parents=True)
+        (profile / "config.yaml").write_text(f"memory:\n  provider: {value}\n")
+
+    result = run_verify_setup(tmp_path)
+
+    assert "the plugin is inert" not in result.stdout
+    assert "cortex selected by profile(s): double, single" in result.stdout
+
+
 def test_readme_does_not_claim_universal_zero_setup() -> None:
     """Over half the skills need a credential or service; the README must not imply otherwise."""
     readme = (ROOT / "README.md").read_text()
