@@ -46,6 +46,8 @@ def _spec(home, **kw):
     for k, v in kw.items():
         if isinstance(v, str):
             body.append(f'{k} = "{v}"')
+        elif isinstance(v, bool):
+            body.append(f"{k} = {str(v).lower()}")
         elif isinstance(v, dict):
             inner = ", ".join(f'{ik} = "{iv}"' for ik, iv in v.items())
             body.append(f"{k} = {{{inner}}}")
@@ -613,3 +615,88 @@ def test_execute_capture_preserves_crlf(home):
     result = J._execute(spec, [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'framed\\r\\n\\r\\n')"], dict(os.environ))
     assert result[0] == "success"
     assert result[3] == "framed\r\n\r\n"
+
+
+@pytest.fixture
+def isolated_runner(home, monkeypatch):
+    for name, relative in (
+        ("LOG_DIR", "logs"), ("LOCK_DIR", "locks"),
+        ("LEDGER", "runs.jsonl"), ("LEDGER_LOCK", "runs.jsonl.lock"),
+    ):
+        monkeypatch.setattr(J, name, home / "jobstate" / relative)
+    monkeypatch.setenv("JOBRUN_INCIDENT_DB", str(home / "jobstate" / "incidents.db"))
+    monkeypatch.setenv("JOBRUN_REPAIR_SHADOW", "1")
+    return home
+
+
+def test_changing_report_metrics_keep_one_incident(isolated_runner, monkeypatch, capsys):
+    import json
+    import jobrun_repair as R
+
+    spec = _spec(isolated_runner, money="live", critical=True, timeout=60, notify_target="test")
+    notifications = []
+    monkeypatch.setattr(J, "notify_failure", lambda spec, card: notifications.append(card) or "sent")
+    for count, summary in ((1, "guard unhealthy"), (2, "guard unhealthy"), (3, "different condition")):
+        payload = {"schema": "jobrun.result/v1", "outcome": "critical",
+                   "reason_code": "guard_unhealthy", "summary": summary,
+                   "metrics": {"count": count}}
+        (isolated_runner / "scripts" / "t.py").write_text(
+            "print(" + repr("@@JOBRUN_RESULT@@ " + json.dumps(payload)) + ")\n"
+        )
+        assert J.run(spec) == 0
+        captured = capsys.readouterr()
+        if count == 2:
+            assert captured.out == "", captured.out
+        else:
+            assert "CRITICAL" in captured.out
+    assert len(notifications) == 2
+    conn = R.connect()
+    try:
+        assert sorted(row[0] for row in conn.execute("SELECT occurrence_count FROM incidents")) == [1, 2]
+    finally:
+        conn.close()
+
+
+def test_withheld_credentials_never_reach_stderr(isolated_runner, capsys):
+    spec = _spec(isolated_runner, output_policy="on_change")
+    secret = "api_key=" + "x" * 40
+    assert secret not in J.redact(secret)
+    (isolated_runner / "scripts" / "t.py").write_text("print(" + repr(secret) + ")\n")
+    assert J.run(spec) == 0
+    capsys.readouterr()
+    assert J.run(spec) == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "withheld" in captured.err
+    assert secret not in captured.err
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_money_class_stays_at_preflight_after_script_changes(isolated_runner, capsys, exit_code):
+    spec = _spec(isolated_runner, money="none")
+    script = isolated_runner / "scripts" / "t.py"
+    # Construct the deployment marker at runtime, so preflight sees no live marker.
+    script.write_text(
+        "from pathlib import Path\n"
+        "Path(__file__).write_text('# ' + 'APCA_API' + '_BASE_URL=https://' + 'api.' + 'alpaca.markets\\n')\n"
+        "print('completed original code')\n"
+        f"raise SystemExit({exit_code})\n"
+    )
+    assert J._v2_money(spec) == "none"
+    result = J.run(spec)
+    captured = capsys.readouterr()
+    assert result == (0 if exit_code == 0 else J.EXIT_CHILD)
+    assert ("completed original code" if exit_code == 0 else "DEGRADED") in captured.out
+
+
+@pytest.mark.parametrize("changed", [" message\n", "message\n\n", "message\r\n"])
+def test_on_change_delivers_exact_visible_framing(isolated_runner, capsys, changed):
+    spec = _spec(isolated_runner, output_policy="on_change")
+    script = isolated_runner / "scripts" / "t.py"
+    for body, expected in (("message\n", "message\n"), (changed, changed), (changed, "")):
+        script.write_text("import sys\nsys.stdout.write(" + repr(body) + ")\n")
+        assert J.run(spec) == 0
+        assert capsys.readouterr().out == expected
+    # The changed payload must have reached the owner before the repeat was withheld.
+    state = __import__("json").loads((isolated_runner / "jobstate" / "speech" / "t.json").read_text())
+    assert state["digest"] == hashlib.sha256(changed.encode()).hexdigest()

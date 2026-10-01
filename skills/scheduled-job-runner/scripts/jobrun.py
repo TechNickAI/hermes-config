@@ -660,9 +660,10 @@ def resolve_argv(spec: Spec) -> list[str]:
     raise ConfigError(f"{spec.job_id}: unknown runtime {runtime!r}")
 
 
-def preflight(spec: Spec, argv: list[str]) -> list[str]:
-    """Startup self-checks. A config error must be distinct from a job failure."""
+def preflight(spec: Spec, argv: list[str]) -> tuple[list[str], str]:
+    """Return startup problems and the money class authorized before launch."""
     problems = []
+    money = "none"
     exe = argv[0]
     if not (os.path.isabs(exe) and os.access(exe, os.X_OK)) and not shutil.which(exe):
         problems.append(f"executable not found or not executable: {exe}")
@@ -681,10 +682,10 @@ def preflight(spec: Spec, argv: list[str]) -> list[str]:
     # the job has already traded. Checking it only on the failure path meant a
     # successful mismatched run was never checked at all.
     try:
-        _v2_money(spec)
+        money = _v2_money(spec)
     except Exception as exc:  # MoneyMismatch and anything it wraps
         problems.append(str(exc))
-    return problems
+    return problems, money
 
 
 class Lock:
@@ -1309,7 +1310,7 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         print(f"[{spec.job_id}] CONFIG ERROR: {exc}", file=sys.stderr)
         return _fail_before_start(spec, run_id, scheduled_at, "configuration error", str(exc))
 
-    problems = preflight(spec, argv)
+    problems, money = preflight(spec, argv)
     if problems:
         return _fail_before_start(
             spec, run_id, scheduled_at, "preflight failed", "; ".join(problems)
@@ -1447,10 +1448,13 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             # and ordinary alert text), so a job that says nothing special is
             # unaffected. Only an explicit sentinel can escalate, and the clamps
             # still apply: allow_critical=False or money!=live -> degraded.
-            money = _v2_money(spec)
             outcome = _v2_classify(spec, state, rc, raw_out, money)
             if getattr(outcome, "speaks", False):
-                incident = _v2_incident(spec, outcome, err or out, sha, log_path, money)
+                # A successful monitor reports a parsed condition, not an
+                # execution error. Metrics are evidence, never its identity.
+                incident = _v2_incident(
+                    spec, outcome, outcome.summary or outcome.reason_code, sha, log_path, money
+                )
                 speak, why = should_speak(incident, outcome.severity)
                 if not speak:
                     print(f"(suppressed: {why})", file=sys.stderr)
@@ -1491,11 +1495,9 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             if spec.output_policy == "on_change" and not spec.notify_on_success:
                 speak, why = _speech_gate(spec.job_id, visible_out)
                 if not speak:
-                    # Withheld, not discarded: stderr is captured into the run
-                    # log, so the body remains readable by whoever looks.
+                    # The redacted body is already in log_path. Never duplicate
+                    # raw child output into the scheduler's stderr capture.
                     sys.stderr.write(f"[jobrun] withheld from owners ({why})\n")
-                    if raw_out:
-                        sys.stderr.write(raw_out)
                     return EXIT_OK
             if visible_out:
                 sys.stdout.write(visible_out)
@@ -1507,9 +1509,7 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         # guarding looked identical. Severity now comes from the reconciled
         # outcome; `critical = true` raises the CEILING a job may reach rather
         # than the floor of every card it emits.
-        # Preflight already reconciled money and refused to run on a dangerous
-        # mismatch, so this cannot raise here.
-        money = _v2_money(spec)
+        # Reuse the class preflight authorized, even if a deploy landed mid-run.
         outcome = _v2_classify(spec, state, rc, raw_out, money)
 
         # Dedup by CONDITION. A repeated identical alert is an unacknowledged
@@ -1654,6 +1654,9 @@ def _speech_gate(job_id: str, text: str, heartbeat_h: float = 24.0) -> tuple[boo
     `silent` speaks never; neither fits a job whose output matters when it
     changes but which repeats itself most ticks -- which is most scheduled work.
 
+    Hash the exact owner-visible text after removing machine sentinel lines,
+    preserving whitespace and line endings just as delivery does.
+
     Keyed on CONTENT, never on a timer. A time window would hide the changed
     message that arrives inside it, and that is precisely the one worth reading.
 
@@ -1672,7 +1675,7 @@ def _speech_gate(job_id: str, text: str, heartbeat_h: float = 24.0) -> tuple[boo
     validates and does nothing is worse than one that is rejected.
     """
     try:
-        digest = hashlib.sha256((text or "").strip().encode("utf-8", "replace")).hexdigest()
+        digest = hashlib.sha256((text or "").encode("utf-8", "replace")).hexdigest()
         d = STATE_DIR / "speech"
         d.mkdir(parents=True, exist_ok=True)
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", job_id)

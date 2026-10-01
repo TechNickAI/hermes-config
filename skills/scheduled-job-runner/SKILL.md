@@ -118,9 +118,9 @@ The gate fails OPEN everywhere — corrupt state, unwritable state dir, any exce
 broken gate degrades to chatty, never to silent: one bug must not be able to mute the
 fleet.
 
-**A dupe ratio is not permission to suppress.** Read the actual bodies first. A watchdog
-measured at 53% "duplicate" was reporting a real, ongoing problem while exiting 0;
-gating it would have silenced a live-money alarm.
+**Repetition is not permission to suppress.** Read the actual bodies first. A monitor
+can report a real, ongoing problem while exiting 0. Classify the reported condition
+before applying healthy-output gating, or an important alarm could be silenced.
 
 Failures always deliver an incident card regardless of policy.
 
