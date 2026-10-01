@@ -348,10 +348,9 @@ This is the status API. **Never grep raw stdout for status.**
 
 ## Reconciling divergent copies of this runner
 
-This file gets copied to many hosts, and hosts fix things under production pressure.
-Three separate lineages have now diverged, and in every case NEITHER side was a
-superset: each held real, tested work the other lacked. A blind overwrite in either
-direction destroys some of it.
+Independently maintained copies can accumulate different fixes without either being a
+superset. Reconcile them against a common ancestor and preserve tested behaviour; a
+blind overwrite in either direction can discard useful work.
 
 1. **Find the merge base before judging the diff.** Hash every historical version in
    both histories and look for a shared SHA. A common ancestor makes this a three-way

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-Regression tests for the six changes merged back from a downstream fork.
+Regression tests for portable runner behaviour.
 
-Two independent lineages of `jobrun.py` diverged from a common ancestor: the
-reference copy in this repo and a downstream copy with independent fixes. Neither was a superset of the other, so a blind overwrite
-in either direction would have destroyed tested work -- which is exactly what
-these tests exist to prevent from being quietly undone later.
+Independently maintained copies can contain complementary fixes. These tests
+protect their behavioural contracts when reconciling changes against a common
+ancestor, so a blind overwrite cannot quietly discard tested functionality.
 
 Each test names the defect it locks down and asserts the BEHAVIOUR, not the
 presence of a symbol. Several of these were shipped bugs whose symptom was
