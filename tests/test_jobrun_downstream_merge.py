@@ -3,8 +3,7 @@
 Regression tests for the six changes merged back from a downstream fork.
 
 Two independent lineages of `jobrun.py` diverged from a common ancestor: the
-fleet copy in this repo, and a trading host's copy that grew real fixes under
-production pressure. Neither was a superset of the other, so a blind overwrite
+reference copy in this repo and a downstream copy with independent fixes. Neither was a superset of the other, so a blind overwrite
 in either direction would have destroyed tested work -- which is exactly what
 these tests exist to prevent from being quietly undone later.
 
@@ -296,8 +295,7 @@ def test_selftest_redirects_both_the_incident_db_and_hermes_home():
 
     The explicit override redirects the one path we knew about. Redirecting
     HERMES_HOME closes the CLASS, so a helper not yet written cannot resolve
-    state into a live profile. `st-fail` and `st-timeout` were found sitting in
-    a production incident table because only part of this was in place.
+    state into a real profile. Deliberately failing fixtures must stay isolated.
     """
     src = (SCRIPTS / "jobrun.py").read_text(encoding="utf-8")
     body = src[src.index("def selftest(") :]
@@ -524,3 +522,47 @@ def test_drift_does_not_shield_the_watchdogs_own_defect_from_repair():
 def test_a_recognised_non_drift_signature_beside_drift_wins():
     mixed = "🔴 DEPLOY DRIFT: 9 behind\n401 unauthorized"
     assert S.failure_class("child_failure", mixed) == "auth"
+
+
+@pytest.mark.parametrize("reported", ["degraded", "critical"])
+def test_successful_speaking_sentinel_bypasses_silent_policy(tmp_path, reported):
+    for sub in ("jobs.d", "scripts", "jobstate"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    spec = 'job_id = "m"\nscript = "m.py"\nmoney = "none"\noutput_policy = "silent"\n'
+    script = "print('@@JOBRUN_RESULT@@ ' + " + repr(
+        __import__("json").dumps({"schema": "jobrun.result/v1", "outcome": reported,
+                                 "summary": "monitor unhealthy"})
+    ) + ")\n"
+    r = _run(tmp_path, spec, script)
+    assert r.returncode == 0
+    assert "DEGRADED" in r.stdout
+    assert "monitor unhealthy" in r.stdout
+
+
+def test_successful_critical_reports_are_deduplicated(tmp_path):
+    for sub in ("jobs.d", "scripts", "jobstate"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    spec = 'job_id = "m"\nscript = "m.py"\nmoney = "live"\ncritical = true\ntimeout = 60\n'
+    script = "print('@@JOBRUN_RESULT@@ {\"schema\":\"jobrun.result/v1\",\"outcome\":\"critical\",\"summary\":\"guard unhealthy\"}')\n"
+    first = _run(tmp_path, spec, script)
+    second = _run(tmp_path, spec, script)
+    assert "CRITICAL" in first.stdout
+    assert second.stdout == "", second.stdout
+    assert "suppressed" in second.stderr
+
+
+@pytest.mark.parametrize("detail,expected", [
+    ("HTTPError: 401 Unauthorized", "auth"),
+    ("HTTPError: 429 Too many requests", "quota"),
+    ("ConnectionError: connection refused", "network"),
+    ("ValueError: missing credential", "missing_secret"),
+])
+def test_environmental_tracebacks_never_dispatch_code_repair(detail, expected):
+    text = "Traceback (most recent call last):\n" + detail
+    assert S.failure_class("child_failure", text) == expected
+    assert not S.repair_eligible(reason_code="child_failure", error_text=text)[0]
+
+
+def test_runner_comments_have_no_named_production_example():
+    text = (SCRIPTS / "jobrun.py").read_text()
+    assert "Observed in production on" not in text

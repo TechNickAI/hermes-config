@@ -1423,9 +1423,7 @@ def run(spec: Spec, dry_run: bool = False) -> int:
         #        the last one delivered, with a liveness heartbeat so a quiet
         #        channel is never mistaken for a dead job. This is the middle
         #        ground `silent` could not express: a job whose output MATTERS
-        #        when it changes but which repeats itself most ticks. Measured
-        #        on this fleet: the top talkers were 80-97% substantively
-        #        identical run to run (one sent the SAME body 34 times in 48h).
+        #        when it changes but which repeats itself most ticks.
         if state == "success":
             # Close any open condition for this job. THE BUG THIS FIXES:
             # record_success() existed but was never called, so `consecutive`
@@ -1433,15 +1431,13 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             # healthy runs would satisfy the two-consecutive gate and dispatch
             # a repair agent for a job that is fundamentally fine. The
             # scheduled run IS the half-open probe; this is where it closes.
-            _v2_record_success(spec)
+            # Recovery is recorded only after classification proves healthy.
 
             # CLASSIFY THE SUCCESS PATH TOO. Returning EXIT_OK here without
             # calling _v2_classify made CRITICAL unreachable for any job that
             # reports a condition and exits 0 -- which is the NORMAL shape for a
-            # monitor: it ran fine, and what it FOUND is the emergency. Observed
-            # live: a correct critical sentinel on a real money-path breach
-            # rendered as an ordinary passthrough alert, indistinguishable from
-            # a routine notice.
+            # monitor: execution succeeded, but the reported condition is
+            # unhealthy. Treating it as passthrough hides the severity.
             #
             # Safe by construction: classify() returns healthy/speaks=False for
             # a successful run with no sentinel (verified for both empty output
@@ -1450,8 +1446,12 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             # still apply: allow_critical=False or money!=live -> degraded.
             money = _v2_money(spec)
             outcome = _v2_classify(spec, state, rc, raw_out, money)
-            if getattr(outcome, "severity", "healthy") == "critical":
+            if getattr(outcome, "speaks", False):
                 incident = _v2_incident(spec, outcome, err or out, sha, log_path, money)
+                speak, why = should_speak(incident, outcome.severity)
+                if not speak:
+                    print(f"(suppressed: {why})", file=sys.stderr)
+                    return EXIT_OK
                 card = _v2_render(
                     outcome=outcome,
                     spec=spec,
@@ -1460,7 +1460,7 @@ def run(spec: Spec, dry_run: bool = False) -> int:
                     # describes what happened, and "exited 0" next to a red stop
                     # sign is the kind of contradiction that teaches a reader to
                     # distrust the card.
-                    head="reported a critical condition",
+                    head=f"reported a {outcome.severity} condition",
                     incident=incident,
                     dur=dur,
                     sha=sha,
@@ -1474,6 +1474,7 @@ def run(spec: Spec, dry_run: bool = False) -> int:
                 _v2_record_notification(incident, notify_status)
                 return EXIT_OK
 
+            _v2_record_success(spec)
             if spec.output_policy == "silent" and not spec.notify_on_success:
                 return EXIT_OK
             if spec.output_policy == "on_change" and not spec.notify_on_success:
@@ -2049,15 +2050,9 @@ def _v2_render(*, outcome, spec, money, head, incident, dur, sha, err, out, log_
             # This used to be `stderr.splitlines()[-1]` -- the LAST line of
             # stderr. That is wrong for any job that writes an audit trail to
             # stderr, because the last thing logged is whatever happened most
-            # recently, not what failed. Observed in production on the Favorite
-            # Grinding protect job, which reported:
-            #
-            #   Error: [ARMED] intent retired: ...-> completed (target_reached)
-            #
-            # under a "DEGRADED" header. That line is a SUCCESS -- a position
-            # reaching its target -- presented to the owner as the failure. The
-            # real cause (a retirement refusing to complete while unconfirmed
-            # resting buys existed) was several lines earlier and never shown.
+            # recently, not what failed. For example, a failed operation can
+            # be followed by a successful cleanup entry. Reporting that cleanup
+            # as the error hides the earlier failure and contradicts the card.
             #
             # Owner-facing text must name the actual failure. Prefer STDOUT,
             # which is where a jobrun script deliberately prints what the owner
@@ -2143,22 +2138,14 @@ def selftest() -> int:
     # Redirect the lock too, or self-test appends serialize against the real
     # profile's lock file and the isolation is only partial.
     LEDGER_LOCK = STATE_DIR / "runs.jsonl.lock"
-    # AND the incident database. The v2 integration records every failure as an
-    # incident, so without this the self-test's deliberately-failing fixtures
-    # (st-fail, st-timeout) are written into the PRODUCTION incidents db and
-    # show up forever as open conditions on a healthy profile. Caught by the
-    # fleet watch reporting st-fail as an open incident on two profiles that
-    # have no such job — a monitor's first real find was a bug in its own
-    # tooling, which is the argument for pointing it at yourself first.
+    # Isolate the incident database as well: deliberately failing fixtures
+    # must not create open conditions in a real profile.
     os.environ["JOBRUN_INCIDENT_DB"] = str(STATE_DIR / "incidents.db")
     # BELT AND SUSPENDERS. The override above redirects the one path we know
     # about; redirecting HERMES_HOME closes the CLASS. Any helper that resolves
     # state under HERMES_HOME -- today jobrun_repair._db_path(), tomorrow
     # something not yet written -- lands in the temp tree instead of a live
-    # profile. Two independent fixes for the same bug were developed in
-    # parallel on the fleet and on the trading host; keeping both costs two
-    # lines and means a future path does not have to be discovered in
-    # production the way `st-fail` was. Restored on exit with the other globals.
+    # profile. Restore the environment on exit along with the other globals.
     _saved_home = os.environ.get("HERMES_HOME")
     os.environ["HERMES_HOME"] = str(tmp)
     for _d in (STATE_DIR, LOG_DIR, LOCK_DIR):

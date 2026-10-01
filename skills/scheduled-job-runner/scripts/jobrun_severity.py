@@ -782,6 +782,10 @@ def failure_class(reason_code: str, error_text: str = "") -> str:
     matches = [name for name, pat in _CLASSIFY_PATTERNS if pat.search(error_text or "")]
     if not matches:
         return "code_defect"
+    # Specific environmental causes outrank the generic traceback signature.
+    environmental = [m for m in matches if m in NON_REPAIRABLE]
+    if environmental:
+        return environmental[0]
     non_drift = [m for m in matches if m != "operational_drift"]
     if non_drift:
         return non_drift[0]

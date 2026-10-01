@@ -30,8 +30,10 @@ import concurrent.futures as cf
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -121,6 +123,80 @@ def load_targets(path: Path) -> list[Target]:
     return [Target.from_dict(item) for item in raw]
 
 
+class ProbeSupervisor:
+    """Own local probe process groups until workers finish or the sweep stops."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.stopped = threading.Event()
+        self.active: set[subprocess.Popen] = set()
+
+    def launch(self, cmd):
+        # Launch and registration share the stop lock: no child can be created
+        # after cleanup snapshots the active groups.
+        with self.lock:
+            if self.stopped.is_set():
+                raise RuntimeError("fleet deadline exceeded")
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, start_new_session=True)
+            self.active.add(proc)
+            return proc
+
+    @staticmethod
+    def signal_group(proc, sig):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # macOS can return EPERM for an already-reaped process group.
+            # Do not hide a permission failure against a living child.
+            if proc.poll() is None:
+                raise
+
+    def stop(self):
+        with self.lock:
+            self.stopped.set()
+            active = list(self.active)
+        for proc in active:
+            self.signal_group(proc, signal.SIGTERM)
+        # One shared grace interval, not one per host. Kill groups even when
+        # their leader exited: descendants may ignore TERM and retain pipes.
+        if active:
+            time.sleep(0.2)
+        for proc in active:
+            self.signal_group(proc, signal.SIGKILL)
+        for proc in active:
+            proc.wait(timeout=2)
+
+
+_PROBE_CONTEXT = threading.local()
+
+
+def _run_probe(cmd, timeout):
+    supervisor = getattr(_PROBE_CONTEXT, "supervisor", None) or ProbeSupervisor()
+    proc = supervisor.launch(cmd)
+    try:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            supervisor.signal_group(proc, signal.SIGKILL)
+            proc.communicate()
+            raise
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    finally:
+        with supervisor.lock:
+            supervisor.active.discard(proc)
+
+
+def _supervised_check(supervisor, target, query, timeout, retry_delay):
+    _PROBE_CONTEXT.supervisor = supervisor
+    try:
+        return check(target, query, timeout, retry_delay)
+    finally:
+        del _PROBE_CONTEXT.supervisor
+
+
 def probe(target: Target, query: str, timeout: int) -> dict[str, Any]:
     """Run the doctor for one profile and classify the outcome."""
     argv = [
@@ -137,7 +213,7 @@ def probe(target: Target, query: str, timeout: int) -> dict[str, Any]:
     ]
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = _run_probe(cmd, timeout)
     except subprocess.TimeoutExpired:
         return {"label": target.label, "state": "unreachable", "retryable": True,
                 "detail": f"timed out after {timeout}s"}
@@ -206,12 +282,17 @@ def _explain(data: dict[str, Any]) -> dict[str, Any]:
 def check(target: Target, query: str, timeout: int, retry_delay: int) -> dict[str, Any]:
     """Probe once; retry soft failures so a blip does not wake anyone at 4am.
 
-    Observed live: one run reported lexical-only retrieval and the next eight
-    were clean. Corruption and setup errors are durable and never retried.
+    Transient retrieval failures may recover on retry. Corruption and setup
+    errors are durable and never retried.
     """
     result = probe(target, query, timeout)
     if result["state"] in SOFT_STATES and result.get("retryable"):
-        time.sleep(retry_delay)
+        supervisor = getattr(_PROBE_CONTEXT, "supervisor", None)
+        if supervisor is not None:
+            if supervisor.stopped.wait(retry_delay):
+                return result
+        else:
+            time.sleep(retry_delay)
         return probe(target, query, timeout)
     return result
 
@@ -269,9 +350,10 @@ def run_checks(
     outer bound, executor shutdown can erase every completed result. Classify
     unfinished targets as inconclusive instead.
     """
+    supervisor = ProbeSupervisor()
     pool = cf.ThreadPoolExecutor(max_workers=max_workers)
     futures = {
-        pool.submit(check, target, query, timeout, retry_delay): target
+        pool.submit(_supervised_check, supervisor, target, query, timeout, retry_delay): target
         for target in targets
     }
     results: list[dict[str, Any]] = []
@@ -298,9 +380,9 @@ def run_checks(
                 "detail": f"fleet deadline exceeded after {fleet_deadline}s",
             })
     finally:
-        # Do not wait for timed-out workers: the process must return its partial
-        # report before the outer jobrun timeout. subprocess timeouts will reap
-        # their children independently.
+        # Reap the actual probe groups before abandoning worker threads.
+        # Cancelling a future alone cannot stop an already running subprocess.
+        supervisor.stop()
         pool.shutdown(wait=False, cancel_futures=True)
 
     order = {target.label: i for i, target in enumerate(targets)}
@@ -351,7 +433,7 @@ if __name__ == "__main__":
     # bound how long the process LIVES. `pool.shutdown(wait=False)` returns
     # immediately, yet a ThreadPoolExecutor's workers are non-daemon threads,
     # so the interpreter's own shutdown joins them anyway -- and a worker
-    # blocked in `subprocess.run` stays blocked until its child returns.
+    # blocked in a probe launch stays blocked until its child returns.
     # A single store that hangs past the deadline therefore holds the whole
     # sweep open past the scheduler's hard timeout, and the run is killed and
     # reported as failed even though the report above is complete and correct.
