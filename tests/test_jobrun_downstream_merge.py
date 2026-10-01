@@ -566,3 +566,50 @@ def test_environmental_tracebacks_never_dispatch_code_repair(detail, expected):
 def test_runner_comments_have_no_named_production_example():
     text = (SCRIPTS / "jobrun.py").read_text()
     assert "Observed in production on" not in text
+
+
+@pytest.mark.parametrize("extra", ["abc123 first commit", "abc123 first commit\ndef456 next commit"])
+def test_multiline_drift_details_do_not_change_identity(extra):
+    plain = "🔴 DEPLOY DRIFT: 2 commits behind"
+    assert S.normalize_error(plain + "\n" + extra) == S.normalize_error(plain)
+    mixed = plain + "\n" + extra + "\nTraceback (most recent call last):\nValueError: broken check"
+    other = plain + "\n" + extra + "\nTraceback (most recent call last):\nKeyError: other defect"
+    assert S.normalize_error(mixed) != S.normalize_error(plain)
+    assert S.normalize_error(mixed) != S.normalize_error(other)
+
+
+def test_indented_drift_is_not_repairable():
+    text = "  🔴 DEPLOY DRIFT: 2 commits behind"
+    assert S.failure_class("child_failure", text) == "operational_drift"
+    assert not S.repair_eligible(reason_code="child_failure", error_text=text)[0]
+
+
+def test_on_change_ignores_machine_sentinel_metrics(home, monkeypatch, capsys):
+    spec = _spec(home, output_policy="on_change")
+    samples = iter([
+        '@@JOBRUN_RESULT@@ {"schema":"jobrun.result/v1","outcome":"healthy","metrics":{"count":1}}\nunchanged message\n',
+        '@@JOBRUN_RESULT@@ {"schema":"jobrun.result/v1","outcome":"healthy","metrics":{"count":2}}\nunchanged message\n',
+    ])
+    monkeypatch.setattr(J, "_execute", lambda *a: ("success", 0, None, next(samples), "", 0.1))
+    monkeypatch.setattr(J, "_v2_record_success", lambda *a: None)
+    assert J.run(spec) == 0
+    assert capsys.readouterr().out == "unchanged message\n"
+    assert J.run(spec) == 0
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("prefix", ["", '@@JOBRUN_RESULT@@ {"schema":"jobrun.result/v1","outcome":"healthy"}\r\n'])
+def test_passthrough_keeps_original_line_endings(home, monkeypatch, capsys, prefix):
+    spec = _spec(home)
+    body = "framed\r\ncontrol\r\n\r\n"
+    monkeypatch.setattr(J, "_execute", lambda *a: ("success", 0, None, prefix + body, "", 0.1))
+    monkeypatch.setattr(J, "_v2_record_success", lambda *a: None)
+    assert J.run(spec) == 0
+    assert capsys.readouterr().out == body
+
+
+def test_execute_capture_preserves_crlf(home):
+    spec = _spec(home)
+    result = J._execute(spec, [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'framed\\r\\n\\r\\n')"], dict(os.environ))
+    assert result[0] == "success"
+    assert result[3] == "framed\r\n\r\n"

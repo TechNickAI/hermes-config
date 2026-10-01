@@ -641,11 +641,28 @@ def normalize_error(text: str, limit: int = 400) -> str:
     # appended.
     condition = _drift_condition_identity(stripped)
     if condition is not None:
-        residual = "\n".join(
-            ln
-            for ln in stripped.splitlines()
-            if ln.strip() and not any(ln.strip().startswith(p) for p in _CONDITION_LINES)
-        )
+        # Detail lines (commit lists, counts, ages) are not failures. Keep
+        # explicit error signatures and traceback context, not arbitrary text.
+        residual_lines = []
+        in_traceback = False
+        for ln in stripped.splitlines():
+            clean = ln.strip()
+            if any(clean.startswith(p) for p in _CONDITION_LINES):
+                in_traceback = False
+                continue
+            if re.match(r"^(?:[-*]\s*)?[0-9a-f]{6,40}\s", clean, re.I):
+                continue  # commit-list entry, even if its subject says "error"
+            if clean.startswith("Traceback (most recent call last):"):
+                in_traceback = True
+            failure = re.search(
+                r"\b(?:[\w.]+(?:Error|Exception)|error|exception|failed|fatal|"
+                r"cannot|unable|refused|denied|unavailable|timed out)\b", clean, re.I
+            )
+            environmental = any(pat.search(clean) for name, pat in _CLASSIFY_PATTERNS
+                                if name in NON_REPAIRABLE)
+            if clean and (in_traceback or failure or environmental):
+                residual_lines.append(ln)
+        residual = "\n".join(residual_lines)
         if residual.strip():
             tail = residual.strip()[-limit:]
             for pat, repl in _STACK_NOISE:
@@ -723,7 +740,7 @@ _CLASSIFY_PATTERNS = [
     (
         "operational_drift",
         re.compile(
-            r"^🔴 (?:DEPLOY DRIFT|JOBRUN MIRROR DRIFT):",
+            r"^\s*🔴 (?:DEPLOY DRIFT|JOBRUN MIRROR DRIFT):",
             re.I | re.M,
         ),
     ),

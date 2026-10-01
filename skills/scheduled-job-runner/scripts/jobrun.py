@@ -910,6 +910,9 @@ def _execute(spec: Spec, argv: list[str], env: dict) -> tuple:
             time.monotonic() - t0,
         )
 
+    # Keep original line endings: text mode otherwise translates CRLF to LF.
+    proc.stdout.reconfigure(newline="")
+    proc.stderr.reconfigure(newline="")
     _ACTIVE_PROC.append(proc)
     out_r = _BoundedReader(proc.stdout)
     err_r = _BoundedReader(proc.stderr)
@@ -1475,10 +1478,18 @@ def run(spec: Spec, dry_run: bool = False) -> int:
                 return EXIT_OK
 
             _v2_record_success(spec)
+            # Machine metadata is consumed above; only visible bytes belong
+            # in the output digest or passthrough stream. Keep line endings.
+            _sev_mod, _ = _v2_mods()
+            _sentinel = getattr(_sev_mod, "SENTINEL_PREFIX", "@@JOBRUN_RESULT@@")
+            visible_out = "".join(
+                ln for ln in raw_out.splitlines(keepends=True)
+                if not ln.lstrip().startswith(_sentinel)
+            )
             if spec.output_policy == "silent" and not spec.notify_on_success:
                 return EXIT_OK
             if spec.output_policy == "on_change" and not spec.notify_on_success:
-                speak, why = _speech_gate(spec.job_id, raw_out)
+                speak, why = _speech_gate(spec.job_id, visible_out)
                 if not speak:
                     # Withheld, not discarded: stderr is captured into the run
                     # log, so the body remains readable by whoever looks.
@@ -1486,26 +1497,8 @@ def run(spec: Spec, dry_run: bool = False) -> int:
                     if raw_out:
                         sys.stderr.write(raw_out)
                     return EXIT_OK
-            if raw_out:
-                # VERBATIM: the original bytes, not the redacted/clamped copy.
-                # A control payload on the last line must survive exactly.
-                #
-                # EXCEPT the sentinel itself: it is a MACHINE line addressed to
-                # this runner, already consumed by _v2_classify above, and
-                # writing it through put "@@JOBRUN_RESULT@@ {...}" at the top of
-                # an owner-facing message. Stripped here rather than in each
-                # wrapper, so every future emitter gets this for free. The
-                # prefix is read from the severity module rather than repeated
-                # here: two copies of a wire marker is how they drift apart.
-                _sev_mod, _ = _v2_mods()
-                _sentinel = getattr(_sev_mod, "SENTINEL_PREFIX", "@@JOBRUN_RESULT@@")
-                clean = "\n".join(
-                    ln for ln in raw_out.splitlines() if not ln.lstrip().startswith(_sentinel)
-                )
-                if clean.strip():
-                    sys.stdout.write(clean)
-                    if not clean.endswith("\n"):
-                        sys.stdout.write("\n")
+            if visible_out:
+                sys.stdout.write(visible_out)
             return EXIT_OK
 
         # ---- v2: classify the RUN, not the job. ----------------------------
