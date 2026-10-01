@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """jobrun — the fleet's one scheduled-job execution adapter.
 
-Design basis: projects/job-runner-design.md (measured audit + ecosystem research,
-2026-08-21). This is an EXECUTION ADAPTER, not a scheduler. Hermes cron stays the
-scheduler. jobrun owns the seven things every job re-implements badly today:
+This is an EXECUTION ADAPTER, not a scheduler. Hermes cron stays the scheduler.
+jobrun owns the seven concerns commonly re-implemented by scheduled jobs:
 
   1. interpreter/dependency resolution   (kills the .sh-wrapper hack)
   2. silence-on-success                  (kills hand-rolled `if RC -ne 0` blocks)
-  3. overlap prevention                  (flock; today only 3 of 201 scripts have it)
+  3. overlap prevention                  (flock; prevents stacked runs)
   4. hard timeout + signal handling      (timeout distinguishable from failure)
   5. structured run ledger               (exit code, duration, outcome — cron's has none)
   6. bounded log capture                 (quiet-on-success != discard evidence)
@@ -751,12 +750,11 @@ def build_env(spec: Spec, run_id: str | None = None) -> dict:
     env = os.environ.copy()
     env.update({k: str(v) for k, v in spec.env.items()})
     env.setdefault("HERMES_HOME", str(HERMES_HOME))
-    # A job killed at its ceiling must be able to say WHERE it hung. With this
-    # set, the SIGABRT that `_terminate_group` sends first makes CPython dump
-    # every thread's stack to stderr (already captured) before we escalate to
-    # TERM/KILL. Without it the timeout path records nothing at all — which is
-    # exactly how two live-money auto-sell stalls produced `stderr_bytes: 0`
-    # and left "raise the ceiling" as the only available guess.
+    # A job killed at its ceiling must be able to say WHERE it hung. This
+    # enables a thread-stack dump during the TERM -> ABRT -> KILL escalation,
+    # preserving diagnostic evidence before the process group is destroyed.
+    # An empty timeout log invites guessing at a larger ceiling instead of
+    # identifying the blocked frame.
     # setdefault: a job that deliberately configures its own value still wins.
     env.setdefault("PYTHONFAULTHANDLER", "1")
     if run_id:
@@ -1037,13 +1035,11 @@ def _group_has_live_member(pgid: int) -> bool:
 def _terminate_group(proc, grace: int) -> bool:
     """TERM (graceful) then ABRT (stack dump) then KILL. True once the GROUP is gone.
 
-    WHY A STACK DUMP AT ALL. A job killed at its ceiling used to record
-    NOTHING: two separate timeouts of the same recurring money-path job landed
-    with `stderr_bytes: 0`, so the only honest answer to "what was it stuck on?"
-    was a shrug — and a ceiling you cannot diagnose invites raising the ceiling,
-    which is guessing. Children run with PYTHONFAULTHANDLER=1, so SIGABRT makes
-    CPython dump every thread's stack to stderr (already captured) naming the
-    exact hung frame.
+    WHY A STACK DUMP AT ALL. A timeout can otherwise leave an empty stderr
+    log and no evidence of the blocked frame. A ceiling that cannot be diagnosed
+    invites increasing it by guesswork. Children run with PYTHONFAULTHANDLER=1,
+    so SIGABRT makes CPython dump every thread's stack to captured stderr,
+    identifying the hung frame.
 
     WHY SIGTERM STILL GOES FIRST (review P2, reproduced). Aborting first would
     bypass the graceful path for every job whose leader HANDLES SIGTERM — including

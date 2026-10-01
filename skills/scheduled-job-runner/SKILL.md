@@ -357,9 +357,9 @@ direction destroys some of it.
    both histories and look for a shared SHA. A common ancestor makes this a three-way
    merge instead of a guess.
 2. **Neutralise formatting first.** Run the same formatter over base and both sides,
-   then diff. A downstream `ruff format` pass once made a no-op look like a 718-line
-   rewrite; the semantic check is `ast.dump(parse(a)) == ast.dump(parse(b))`.
-   Normalising collapsed 91 conflicts to one real one.
+   then diff. Formatting-only changes can look like a large rewrite; the semantic check
+   is `ast.dump(parse(a)) == ast.dump(parse(b))`. Normalising formatting separates
+   genuine conflicts from presentation differences.
 3. **Classify each commit as generic or host-specific.** Read the messages, not just the
    hunks. Anything binding to an absolute path, a host log vocabulary, or a domain money
    path stays downstream.

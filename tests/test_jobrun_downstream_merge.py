@@ -235,10 +235,9 @@ def test_condition_prefixes_extend_from_the_environment(monkeypatch):
 
 
 def test_children_run_with_faulthandler_so_a_timeout_leaves_a_stack(home):
-    """Two live stalls produced `stderr_bytes: 0`.
+    """A timeout with no captured stack cannot identify the blocked frame.
 
-    With nothing captured, "raise the ceiling" was the only available guess --
-    which is not diagnosis, it is superstition.
+    Increasing the ceiling without evidence is not a diagnosis.
     """
     assert J.build_env(_spec(home)).get("PYTHONFAULTHANDLER") == "1"
 
@@ -494,6 +493,8 @@ def test_the_public_file_carries_no_dated_incident_forensics():
         text = (SCRIPTS / name).read_text(encoding="utf-8")
         assert "PR #" not in text, f"{name} names an internal pull request"
         assert not re.search(r"\b\d{2}-\d{2} \d{2}:\d{2}Z", text), f"{name} has incident stamps"
+        assert not re.search(r"\b20\d{2}-\d{2}-\d{2}\b", text), f"{name} has a private date"
+        assert "auto-sell" not in text, f"{name} names a production workload"
 
 
 def test_drift_does_not_shield_the_watchdogs_own_defect_from_repair():
