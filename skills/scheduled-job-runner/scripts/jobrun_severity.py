@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -188,9 +189,7 @@ def detect_money(script_text: str, base_dir=None, _depth: int = 0) -> str:
         for cand in (base / rel, base / "scripts" / _P(rel).name):
             try:
                 if cand.is_file():
-                    sub = detect_money(
-                        cand.read_text(errors="replace"), base_dir, _depth + 1
-                    )
+                    sub = detect_money(cand.read_text(errors="replace"), base_dir, _depth + 1)
                     if sub != MONEY_NONE:
                         return sub
             except OSError:
@@ -219,9 +218,7 @@ def reconcile_money(declared: str | None, detected: str) -> str:
     if declared is None:
         return detected
     if declared not in MONEY_VALUES:
-        raise MoneyMismatch(
-            f"money must be one of {MONEY_VALUES}, got {declared!r}"
-        )
+        raise MoneyMismatch(f"money must be one of {MONEY_VALUES}, got {declared!r}")
     if declared == detected:
         return declared
     if declared == MONEY_LIVE:
@@ -302,7 +299,7 @@ def parse_sentinel(stdout: str, sanitize=None) -> Sentinel | None:
         s = str(v)[:limit]
         return sanitize(s) if sanitize else s
 
-    payload = found[len(SENTINEL_PREFIX):].strip()
+    payload = found[len(SENTINEL_PREFIX) :].strip()
     try:
         data = json.loads(payload)
     except (ValueError, TypeError):
@@ -321,8 +318,7 @@ def parse_sentinel(stdout: str, sanitize=None) -> Sentinel | None:
         # Metrics are meant to be numbers. Anything else is free text from an
         # untrusted process and gets the same treatment as the summary.
         metrics = {
-            str(k)[:64]: (v if isinstance(v, (int, float, bool))
-                          else _clean(v, 120))
+            str(k)[:64]: (v if isinstance(v, (int, float, bool)) else _clean(v, 120))
             for k, v in list(metrics.items())[:20]
         }
     else:
@@ -411,9 +407,7 @@ def classify(
             # timed out is at least as bad as the timeout suggests.
             sev = sent.outcome
         if sent and sent.outcome and rank(sent.outcome) < rank(sev):
-            notes.append(
-                f"sentinel claimed {sent.outcome!r}; overridden by {state}"
-            )
+            notes.append(f"sentinel claimed {sent.outcome!r}; overridden by {state}")
         out = Outcome(
             severity=sev,
             reason_code=state,
@@ -444,8 +438,7 @@ def classify(
     if mapped is not None:
         floor = mapped
         reason = f"exit_{code}_mapped_{mapped}"
-        notes.append(
-            f"exit {code} mapped to {mapped} by the job's declared convention")
+        notes.append(f"exit {code} mapped to {mapped} by the job's declared convention")
     elif strict_domain_codes and code in FORBIDDEN_DOMAIN_CODES:
         raise SpecSeverityError(
             f"child exited {code}, which is RESERVED. Codes 3-9 must never "
@@ -552,6 +545,73 @@ _STACK_NOISE = [
 ]
 
 
+#: Conditions whose owner-facing MEANING is stable while their body necessarily
+#: grows. A deploy-drift check says "production is behind" every tick, but the
+#: text carries a commit count, an age and a growing commit list, so hashing the
+#: body minted a brand-new incident every time the list changed and dedup was
+#: bypassed entirely -- the failure looked new forever and could never be
+#: acknowledged.
+#:
+#: Two tiers, and the distinction matters. A prefix in COLLAPSING is identified
+#: by its headline ALONE, because its detail is pure churn. Everything else in
+#: RECOGNIZED keeps its full headline text, so two genuinely different findings
+#: (a dirty checkout here, a bad launcher there) stay separate incidents rather
+#: than collapsing into one bucket and hiding each other.
+#:
+#: Extensible per host WITHOUT forking this file: set
+#: JOBRUN_CONDITION_PREFIXES / JOBRUN_COLLAPSING_PREFIXES to a `|`-separated
+#: list. A domain fleet with its own headline vocabulary adds to it via config
+#: rather than by carrying a patched copy of the runner.
+def _prefix_env(name: str, default: tuple) -> tuple:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    extra = tuple(s for s in (part.strip() for part in raw.split("|")) if s)
+    return default + tuple(e for e in extra if e not in default)
+
+
+_CONDITION_PREFIXES = _prefix_env(
+    "JOBRUN_COLLAPSING_PREFIXES",
+    (
+        "🔴 DEPLOY DRIFT:",
+        "🔴 JOBRUN MIRROR DRIFT:",
+    ),
+)
+_CONDITION_LINES = _prefix_env(
+    "JOBRUN_CONDITION_PREFIXES",
+    (
+        *_CONDITION_PREFIXES,
+        "🔴 PRODUCTION CHECKOUT DIRTY:",
+        "🔴 CRON WORKDIR DRIFT:",
+        "🔴 CRON FORWARDER DRIFT:",
+        "🔴 ENTRYPOINT DRIFT:",
+        "🔴 JOB PROMPT",
+        "🔴 SENTINEL MIRROR DRIFT:",
+        "🔴 LAUNCHER ",
+        "🔴 DRIFT CHECK FAILED ",
+    ),
+)
+
+
+def _drift_condition_identity(text: str) -> str | None:
+    """Stable identity for each independently actionable drift finding in a run."""
+    lines = []
+    for line in text.splitlines():
+        clean = line.strip()
+        for prefix in _CONDITION_LINES:
+            if clean.startswith(prefix):
+                # Keep the exact headline for non-collapsing findings so distinct
+                # dirty checkouts/launchers do not collapse into one bucket.
+                lines.append(prefix if prefix in _CONDITION_PREFIXES else clean)
+                break
+    if not lines:
+        return None
+    # A drift check runs every sub-check and can emit several findings at once.
+    # Preserve each headline in the identity while discarding only the moving
+    # count/age/SHA/commit-list details.
+    return " | ".join(dict.fromkeys(lines))
+
+
 def normalize_error(text: str, limit: int = 400) -> str:
     """
     Strip run-varying noise so the same bug fingerprints identically.
@@ -562,7 +622,56 @@ def normalize_error(text: str, limit: int = 400) -> str:
     """
     if not text:
         return ""
-    s = text.strip()[-limit:]
+    stripped = text.strip()
+    # These are periodic state checks. Their details necessarily grow as new
+    # commits land (count, age, SHA, commit list), but the owner-facing
+    # condition remains "production is behind" or "the reviewed mirror differs".
+    # Hashing the drifting body minted a fresh incident and bypassed dedup every
+    # time the list changed. Keep those conditions stable, while preserving any
+    # independent failure headline emitted by another check in the same run.
+    #
+    # BUT NEVER AT THE COST OF AN UNRELATED FAILURE (upstream review P1).
+    # Returning the headline alone discarded every unrecognised line, so a run
+    # carrying "🔴 DEPLOY DRIFT: ..." AND a fresh traceback fingerprinted
+    # IDENTICALLY to ordinary drift -- the watchdog developing its own defect
+    # was silently deduped against the condition it was built to report. That
+    # is a monitor going blind while still appearing to work, which is worse
+    # than the noise this collapsing exists to remove. So the drift identity is
+    # a PREFIX, and any residual failure-bearing text is normalised and
+    # appended.
+    condition = _drift_condition_identity(stripped)
+    if condition is not None:
+        # Detail lines (commit lists, counts, ages) are not failures. Keep
+        # explicit error signatures and traceback context, not arbitrary text.
+        residual_lines = []
+        in_traceback = False
+        for ln in stripped.splitlines():
+            clean = ln.strip()
+            if any(clean.startswith(p) for p in _CONDITION_LINES):
+                in_traceback = False
+                continue
+            if re.match(r"^(?:[-*]\s*)?[0-9a-f]{6,40}\s", clean, re.I):
+                continue  # commit-list entry, even if its subject says "error"
+            if clean.startswith("Traceback (most recent call last):"):
+                in_traceback = True
+            failure = re.search(
+                r"\b(?:[\w.]+(?:Error|Exception)|error|exception|failed|fatal|"
+                r"cannot|unable|refused|denied|unavailable|timed out)\b", clean, re.I
+            )
+            environmental = any(pat.search(clean) for name, pat in _CLASSIFY_PATTERNS
+                                if name in NON_REPAIRABLE)
+            if clean and (in_traceback or failure or environmental):
+                residual_lines.append(ln)
+        residual = "\n".join(residual_lines)
+        if residual.strip():
+            tail = residual.strip()[-limit:]
+            for pat, repl in _STACK_NOISE:
+                tail = pat.sub(repl, tail)
+            tail = " ".join(tail.split())
+            if tail:
+                return f"{condition} + {tail}"
+        return condition
+    s = stripped[-limit:]
     for pat, repl in _STACK_NOISE:
         s = pat.sub(repl, s)
     return " ".join(s.split())
@@ -583,13 +692,15 @@ def fingerprint(
     a NEW incident with a fresh repair budget. Without the SHA a fixed bug looks
     like the same exhausted incident forever and never gets another attempt.
     """
-    basis = "|".join([
-        host,
-        job_id,
-        reason_code,
-        normalize_error(error_text, limit=200),
-        deployed_sha or "nosha",
-    ])
+    basis = "|".join(
+        [
+            host,
+            job_id,
+            reason_code,
+            normalize_error(error_text, limit=200),
+            deployed_sha or "nosha",
+        ]
+    )
     return hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:16]
 
 
@@ -606,11 +717,10 @@ def fingerprint(
 # SAY rather than send a model at.
 NON_REPAIRABLE = {
     "timeout": "job exceeded its own timeout — usually a spec or capacity "
-               "problem, not a code defect. Check timeout vs schedule interval.",
+    "problem, not a code defect. Check timeout vs schedule interval.",
     "signal": "killed by a signal — host pressure or an operator, not a bug.",
     "skipped_overlap": "previous run still running — a cadence problem.",
-    "auth": "authentication or permission failure — needs a credential, "
-            "not a patch.",
+    "auth": "authentication or permission failure — needs a credential, not a patch.",
     "quota": "quota or rate limit — needs backoff or a plan change.",
     "network": "upstream or dependency outage — not our code.",
     "missing_secret": "a secret is absent from the environment.",
@@ -618,29 +728,85 @@ NON_REPAIRABLE = {
 }
 
 _CLASSIFY_PATTERNS = [
-    ("auth", re.compile(
-        r"\b(401|403|unauthorized|forbidden|invalid[_ ]api[_ ]key|"
-        r"authentication fail|permission denied)\b", re.I)),
-    ("quota", re.compile(
-        r"\b(429|rate.?limit|quota exceeded|too many requests|"
-        r"insufficient[_ ]quota)\b", re.I)),
-    ("network", re.compile(
-        r"\b(connection (refused|reset|timed out)|dns|temporary failure in "
-        r"name resolution|ssl|econnreset|unreachable|502|503|504)\b", re.I)),
-    ("missing_secret", re.compile(
-        r"\b(missing .{0,20}(credential|secret|token|key)|"
-        r"environment variable .{0,30} not set)\b", re.I)),
+    (
+        # An unhandled exception from the CHECK ITSELF. Listed so that a run
+        # carrying both a drift headline and a traceback is classified on the
+        # traceback: without a pattern to match, such a run fell through to
+        # `operational_drift` and inherited its "not your code" exemption, and
+        # the watchdog's own new defect was filed as a rollout condition.
+        "code_defect",
+        re.compile(r"^\s*Traceback \(most recent call last\):", re.M),
+    ),
+    (
+        "operational_drift",
+        re.compile(
+            r"^\s*🔴 (?:DEPLOY DRIFT|JOBRUN MIRROR DRIFT):",
+            re.I | re.M,
+        ),
+    ),
+    (
+        "auth",
+        re.compile(
+            r"\b(401|403|unauthorized|forbidden|invalid[_ ]api[_ ]key|"
+            r"authentication fail|permission denied)\b",
+            re.I,
+        ),
+    ),
+    (
+        "quota",
+        re.compile(
+            r"\b(429|rate.?limit|quota exceeded|too many requests|"
+            r"insufficient[_ ]quota)\b",
+            re.I,
+        ),
+    ),
+    (
+        "network",
+        re.compile(
+            r"\b(connection (refused|reset|timed out)|dns|temporary failure in "
+            r"name resolution|ssl|econnreset|unreachable|502|503|504)\b",
+            re.I,
+        ),
+    ),
+    (
+        "missing_secret",
+        re.compile(
+            r"\b(missing .{0,20}(credential|secret|token|key)|"
+            r"environment variable .{0,30} not set)\b",
+            re.I,
+        ),
+    ),
 ]
 
 
 def failure_class(reason_code: str, error_text: str = "") -> str:
-    """Classify a failure into a repairable/non-repairable bucket."""
+    """Classify a failure into a repairable/non-repairable bucket.
+
+    DRIFT NEVER SHIELDS A REAL DEFECT (upstream review P1). `operational_drift`
+    exists to say "production is behind, that is a rollout condition, not proof
+    the watchdog's source is broken" -- and it suppresses repair on that basis.
+    But a run can carry a drift headline AND a genuine traceback from the check
+    itself. Matching the drift pattern first would classify that whole event as
+    drift, so the watchdog's own new defect inherits drift's
+    not-your-code exemption and is filed as an operational rollout condition.
+    The monitor breaks and the classifier explains it away.
+
+    So drift only wins when it is the ONLY thing in the text: any other
+    recognised failure signature present alongside it takes precedence.
+    """
     if reason_code in NON_REPAIRABLE:
         return reason_code
-    for name, pat in _CLASSIFY_PATTERNS:
-        if pat.search(error_text or ""):
-            return name
-    return "code_defect"
+    matches = [name for name, pat in _CLASSIFY_PATTERNS if pat.search(error_text or "")]
+    if not matches:
+        return "code_defect"
+    # Specific environmental causes outrank the generic traceback signature.
+    environmental = [m for m in matches if m in NON_REPAIRABLE]
+    if environmental:
+        return environmental[0]
+    non_drift = [m for m in matches if m != "operational_drift"]
+    if non_drift:
+        return non_drift[0]
+    return matches[0]
 
 
 def repair_eligible(
@@ -667,6 +833,11 @@ def repair_eligible(
             "dispatched automatically."
         )
     cls = failure_class(reason_code, error_text)
+    if cls == "operational_drift":
+        return False, (
+            "deploy/mirror drift is an operational rollout condition, not "
+            "proof that the watchdog's source is defective."
+        )
     if cls in NON_REPAIRABLE:
         return False, NON_REPAIRABLE[cls]
     return True, "reproducible code defect"

@@ -124,7 +124,7 @@ def test_remote_arguments_survive_spaces_and_tilde(mod, monkeypatch):
         stdout = json.dumps({"ok": True, "repairs": []})
         stderr = ""
 
-    monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: (seen.update(cmd=cmd), Done())[1])
+    monkeypatch.setattr(mod, "_run_probe", lambda cmd, timeout: (seen.update(cmd=cmd), Done())[1])
     target = mod.Target.from_dict({
         "label": "r", "host": "box",
         "python": "~/venv/bin/python", "doctor": "~/d.py", "home": "~/.hermes/my agent",
@@ -334,6 +334,33 @@ def test_persistent_transient_reports_the_retry_result(mod, monkeypatch):
     assert result["detail"] == "second-detail"
 
 
+def test_fleet_deadline_returns_partial_results_without_waiting(mod, monkeypatch):
+    """One hung profile must not erase completed checks at the outer timeout."""
+    targets = [make_target(mod, "fast"), make_target(mod, "hung")]
+    released = mod.time.monotonic()
+
+    def fake_check(target, query, timeout, retry_delay):
+        if target.label == "hung":
+            mod.time.sleep(1)
+        return {"label": target.label, "state": "healthy"}
+
+    monkeypatch.setattr(mod, "check", fake_check)
+
+    results = mod.run_checks(targets, "memory", 10, 0, 0.05, 2)
+    elapsed = mod.time.monotonic() - released
+
+    assert elapsed < 0.5
+    assert results == [
+        {"label": "fast", "state": "healthy"},
+        {
+            "label": "hung",
+            "state": "unreachable",
+            "retryable": False,
+            "detail": "fleet deadline exceeded after 0.05s",
+        },
+    ]
+
+
 # ------------------------------------------------------------- classification
 
 
@@ -432,11 +459,11 @@ def test_remote_target_runs_over_ssh(mod, monkeypatch):
         stdout = json.dumps({"ok": True, "repairs": []})
         stderr = ""
 
-    def fake_run(cmd, **kwargs):
+    def fake_run(cmd, timeout):
         seen["cmd"] = cmd
         return Done()
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "_run_probe", fake_run)
     target = mod.Target(label="r", python="/py", doctor="/d.py", home="/h", host="box")
 
     mod.probe(target, "memory", 10)
@@ -446,10 +473,10 @@ def test_remote_target_runs_over_ssh(mod, monkeypatch):
 
 
 def test_timeout_is_unreachable_and_retryable(mod, monkeypatch):
-    def fake_run(cmd, **kwargs):
+    def fake_run(cmd, timeout):
         raise mod.subprocess.TimeoutExpired(cmd, 10)
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "_run_probe", fake_run)
 
     result = mod.probe(make_target(mod), "memory", 10)
 
@@ -463,4 +490,105 @@ def _stub_run(mod, monkeypatch, payload=None, raw=None):
         stdout = raw if raw is not None else json.dumps(payload)
         stderr = ""
 
-    monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: Done())
+    monkeypatch.setattr(mod, "_run_probe", lambda cmd, timeout: Done())
+
+
+def test_process_exits_promptly_while_a_worker_is_still_blocked(tmp_path):
+    """The sweep must EXIT at the deadline, not merely stop waiting at it.
+
+    `pool.shutdown(wait=False)` returns immediately, but ThreadPoolExecutor
+    workers are non-daemon threads, so a normal interpreter exit joins them --
+    and a worker parked in `subprocess.run` keeps the process alive until its
+    child returns. A single hung store then holds the whole run past the
+    scheduler's hard timeout and it is killed as a failure despite having
+    produced a complete report.
+
+    Run in a REAL subprocess: an in-process test cannot observe interpreter
+    shutdown, which is exactly where the hang lives.
+    """
+    import subprocess
+    import sys
+    import time
+
+    targets = tmp_path / "targets.json"
+    targets.write_text(json.dumps([{
+        "label": "slow", "python": sys.executable, "doctor": "unused",
+        "home": str(tmp_path), "host": None,
+    }]))
+
+    # Probe sleeps far past the deadline; the report must not wait for it.
+    sitecustomize = tmp_path / "sitecustomize.py"
+    sitecustomize.write_text(
+        "import subprocess, time\n"
+        "_real = subprocess.Popen\n"
+        "class Slow(_real):\n"
+        "    def communicate(self, **kw):\n"
+        "        time.sleep(30)\n"
+        "        return super().communicate(**kw)\n"
+        "subprocess.Popen = Slow\n"
+    )
+
+    start = time.monotonic()
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--targets", str(targets),
+         "--fleet-deadline", "2", "--timeout", "30", "--retry-delay", "0"],
+        capture_output=True, text=True, timeout=25,
+        env={"PYTHONPATH": str(tmp_path), "PATH": "/usr/bin:/bin"},
+    )
+    elapsed = time.monotonic() - start
+
+    # Deadline 2s; allow generous startup slack but fail well before the 30s child.
+    assert elapsed < 15, f"process lived {elapsed:.1f}s past its 2s deadline"
+    assert proc.returncode == 0
+    assert "slow" in proc.stdout
+
+
+
+def test_deadline_terminates_real_probe_process_group(tmp_path):
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    pid_file = tmp_path / "probe.pid"
+    doctor = tmp_path / "hung.py"
+    doctor.write_text(
+        "import os, signal, subprocess, sys, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()) + ' ' + str(child.pid))\n"
+        "time.sleep(30)\n"
+    )
+    targets = write_targets(tmp_path, [{"label": "slow", "python": sys.executable,
+        "doctor": str(doctor), "home": str(tmp_path)}])
+    started = time.monotonic()
+    with (tmp_path / "report").open("w+") as report:
+        proc = subprocess.Popen([sys.executable, str(SCRIPT), "--targets", str(targets),
+            "--fleet-deadline", "2", "--timeout", "30", "--retry-delay", "0"],
+            stdout=report, stderr=report)
+        pids = []
+        try:
+            assert proc.wait(timeout=12) == 0
+            assert time.monotonic() - started < 10
+            pids = [int(x) for x in pid_file.read_text().split()]
+            report.seek(0)
+            assert "fleet deadline exceeded" in report.read()
+            for pid in pids:
+                # Linux may briefly retain a dead orphan as a zombie.
+                stat = Path(f"/proc/{pid}/stat")
+                if stat.exists() and stat.read_text().split()[2] == "Z":
+                    continue
+                with pytest.raises(ProcessLookupError):
+                    os.kill(pid, 0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if not pids and pid_file.exists():
+                pids = [int(x) for x in pid_file.read_text().split()]
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass

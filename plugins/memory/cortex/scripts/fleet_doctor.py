@@ -28,16 +28,20 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
+import os
 import shlex
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
-DEFAULT_TIMEOUT = 2400
+DEFAULT_TIMEOUT = 1500
 DEFAULT_RETRY_DELAY = 20
 DEFAULT_QUERY = "memory"
+DEFAULT_FLEET_DEADLINE = 3300
 
 # States worth a second look. A durable fault (corruption, missing embeddings)
 # is a fact and is reported immediately; only these can be a passing blip.
@@ -119,6 +123,80 @@ def load_targets(path: Path) -> list[Target]:
     return [Target.from_dict(item) for item in raw]
 
 
+class ProbeSupervisor:
+    """Own local probe process groups until workers finish or the sweep stops."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.stopped = threading.Event()
+        self.active: set[subprocess.Popen] = set()
+
+    def launch(self, cmd):
+        # Launch and registration share the stop lock: no child can be created
+        # after cleanup snapshots the active groups.
+        with self.lock:
+            if self.stopped.is_set():
+                raise RuntimeError("fleet deadline exceeded")
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, start_new_session=True)
+            self.active.add(proc)
+            return proc
+
+    @staticmethod
+    def signal_group(proc, sig):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # macOS can return EPERM for an already-reaped process group.
+            # Do not hide a permission failure against a living child.
+            if proc.poll() is None:
+                raise
+
+    def stop(self):
+        with self.lock:
+            self.stopped.set()
+            active = list(self.active)
+        for proc in active:
+            self.signal_group(proc, signal.SIGTERM)
+        # One shared grace interval, not one per host. Kill groups even when
+        # their leader exited: descendants may ignore TERM and retain pipes.
+        if active:
+            time.sleep(0.2)
+        for proc in active:
+            self.signal_group(proc, signal.SIGKILL)
+        for proc in active:
+            proc.wait(timeout=2)
+
+
+_PROBE_CONTEXT = threading.local()
+
+
+def _run_probe(cmd, timeout):
+    supervisor = getattr(_PROBE_CONTEXT, "supervisor", None) or ProbeSupervisor()
+    proc = supervisor.launch(cmd)
+    try:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            supervisor.signal_group(proc, signal.SIGKILL)
+            proc.communicate()
+            raise
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    finally:
+        with supervisor.lock:
+            supervisor.active.discard(proc)
+
+
+def _supervised_check(supervisor, target, query, timeout, retry_delay):
+    _PROBE_CONTEXT.supervisor = supervisor
+    try:
+        return check(target, query, timeout, retry_delay)
+    finally:
+        del _PROBE_CONTEXT.supervisor
+
+
 def probe(target: Target, query: str, timeout: int) -> dict[str, Any]:
     """Run the doctor for one profile and classify the outcome."""
     argv = [
@@ -135,7 +213,7 @@ def probe(target: Target, query: str, timeout: int) -> dict[str, Any]:
     ]
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = _run_probe(cmd, timeout)
     except subprocess.TimeoutExpired:
         return {"label": target.label, "state": "unreachable", "retryable": True,
                 "detail": f"timed out after {timeout}s"}
@@ -204,12 +282,17 @@ def _explain(data: dict[str, Any]) -> dict[str, Any]:
 def check(target: Target, query: str, timeout: int, retry_delay: int) -> dict[str, Any]:
     """Probe once; retry soft failures so a blip does not wake anyone at 4am.
 
-    Observed live: one run reported lexical-only retrieval and the next eight
-    were clean. Corruption and setup errors are durable and never retried.
+    Transient retrieval failures may recover on retry. Corruption and setup
+    errors are durable and never retried.
     """
     result = probe(target, query, timeout)
     if result["state"] in SOFT_STATES and result.get("retryable"):
-        time.sleep(retry_delay)
+        supervisor = getattr(_PROBE_CONTEXT, "supervisor", None)
+        if supervisor is not None:
+            if supervisor.stopped.wait(retry_delay):
+                return result
+        else:
+            time.sleep(retry_delay)
         return probe(target, query, timeout)
     return result
 
@@ -251,6 +334,61 @@ def format_report(results: list[dict[str, Any]], *, audit_repairs: bool = True) 
     return "\n".join(lines)
 
 
+def run_checks(
+    targets: list[Target],
+    query: str,
+    timeout: int,
+    retry_delay: int,
+    fleet_deadline: int,
+    max_workers: int,
+) -> list[dict[str, Any]]:
+    """Check the fleet concurrently, but return before the scheduler kills us.
+
+    A worker can consume roughly ``2 * timeout + retry_delay`` because soft
+    outcomes are retried. Defaults keep that worst case below the fleet deadline,
+    and the fleet deadline below the cron wrapper's hard timeout. Without the
+    outer bound, executor shutdown can erase every completed result. Classify
+    unfinished targets as inconclusive instead.
+    """
+    supervisor = ProbeSupervisor()
+    pool = cf.ThreadPoolExecutor(max_workers=max_workers)
+    futures = {
+        pool.submit(_supervised_check, supervisor, target, query, timeout, retry_delay): target
+        for target in targets
+    }
+    results: list[dict[str, Any]] = []
+    try:
+        done, pending = cf.wait(futures, timeout=fleet_deadline)
+        for future in done:
+            target = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:  # noqa: BLE001 - one worker must not sink the sweep
+                results.append({
+                    "label": target.label,
+                    "state": "indeterminate",
+                    "retryable": False,
+                    "detail": f"worker failed: {str(exc)[:160]}",
+                })
+        for future in pending:
+            target = futures[future]
+            future.cancel()
+            results.append({
+                "label": target.label,
+                "state": "unreachable",
+                "retryable": False,
+                "detail": f"fleet deadline exceeded after {fleet_deadline}s",
+            })
+    finally:
+        # Reap the actual probe groups before abandoning worker threads.
+        # Cancelling a future alone cannot stop an already running subprocess.
+        supervisor.stop()
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    order = {target.label: i for i, target in enumerate(targets)}
+    return sorted(results, key=lambda result: order[result["label"]])
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Cortex nightly doctor fleet-wide.")
     parser.add_argument("--targets", required=True,
@@ -259,6 +397,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="retrieval canary query (default: %(default)s)")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--retry-delay", type=int, default=DEFAULT_RETRY_DELAY)
+    parser.add_argument("--fleet-deadline", type=int, default=DEFAULT_FLEET_DEADLINE,
+                        help="maximum seconds for the whole sweep (default: %(default)s)")
     parser.add_argument("--max-workers", type=int, default=6)
     args = parser.parse_args(argv)
 
@@ -270,10 +410,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"🔴 Cortex fleet doctor could not load targets: {exc}")
         return 0
 
-    with cf.ThreadPoolExecutor(max_workers=args.max_workers) as pool:
-        results = list(pool.map(
-            lambda t: check(t, args.query, args.timeout, args.retry_delay), targets
-        ))
+    results = run_checks(
+        targets,
+        args.query,
+        args.timeout,
+        args.retry_delay,
+        args.fleet_deadline,
+        args.max_workers,
+    )
 
     report = format_report(results)
     if report:
@@ -282,4 +426,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    # Exit without joining worker threads.
+    #
+    # The fleet deadline bounds how long we WAIT for results, but it cannot
+    # bound how long the process LIVES. `pool.shutdown(wait=False)` returns
+    # immediately, yet a ThreadPoolExecutor's workers are non-daemon threads,
+    # so the interpreter's own shutdown joins them anyway -- and a worker
+    # blocked in a probe launch stays blocked until its child returns.
+    # A single store that hangs past the deadline therefore holds the whole
+    # sweep open past the scheduler's hard timeout, and the run is killed and
+    # reported as failed even though the report above is complete and correct.
+    #
+    # Flush explicitly, because os._exit skips the buffer flush that a normal
+    # exit would perform.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

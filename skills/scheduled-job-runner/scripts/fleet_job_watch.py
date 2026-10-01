@@ -30,7 +30,17 @@ HOURS = int(os.environ.get("FLEET_WATCH_HOURS", "4"))
 NOW = datetime.now(timezone.utc)
 SINCE = NOW - timedelta(hours=HOURS)
 
-HOSTS = ["hex", "ali", "gil", "julianna", "sous", "trading"]
+#: SSH targets to sweep, in addition to this machine.
+#:
+#: Empty by default: this is a public, shareable file, and one deployment's
+#: hostnames are both private and useless to everyone else. Set the host list
+#: for your own fleet:
+#:
+#:     export FLEET_WATCH_HOSTS="box-a,box-b,box-c"
+#:
+#: With none set, the watch reports on the local host only, which is the
+#: correct behaviour for a single-machine install rather than an error.
+HOSTS = [h.strip() for h in os.environ.get("FLEET_WATCH_HOSTS", "").split(",") if h.strip()]
 
 REMOTE = r'''
 import json, os, sys
