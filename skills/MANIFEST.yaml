@@ -158,7 +158,8 @@ skills:
   summary: On-demand real-time web and X (Twitter) search via xAI's Grok.
   use_when: ''
   requires:
-  - 'env: XAI_API_KEY (xAI console)'
+  - 'env: XAI_API_KEY (xAI console; environment or profile .env)'
+  - 'terminal: local backend for profile .env loading, or credentials provisioned inside the sandbox'
   works_out_of_the_box: false
   tags:
   - grok

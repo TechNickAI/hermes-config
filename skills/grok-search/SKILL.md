@@ -10,7 +10,9 @@ license: MIT
 metadata:
   hermes:
     requires:
-      - "env: XAI_API_KEY (xAI console)"
+      - "env: XAI_API_KEY (xAI console; environment or profile .env)"
+      - "terminal: local backend for profile .env loading, or credentials provisioned
+        inside the sandbox"
     tags: [grok, xai, real-time, twitter, x]
     related_skills: []
     # referenced but not shipped here (Hermes core / another source): xurl
@@ -50,6 +52,10 @@ cost.
   file fallback is needed for agent and cron runs. Prefer the profile `.env` over
   `--api-key`: command-line keys appear in shell history and process listings.
 - Python 3 (stdlib only — no packages to install).
+- Hermes `terminal.backend: local` for automatic profile credential loading. Sandboxed
+  backends such as Docker do not necessarily mount the host profile `.env`; this skill
+  does not automatically hand credentials into those containers. Run it through the
+  local backend, or provision `XAI_API_KEY` securely inside the sandbox yourself.
 
 If the key is missing, the script exits with a clear JSON error; tell the user a key is
 needed and stop, don't fall back silently.
