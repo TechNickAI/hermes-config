@@ -10,7 +10,9 @@ license: MIT
 metadata:
   hermes:
     requires:
-      - "env: XAI_API_KEY (xAI console)"
+      - "env: XAI_API_KEY (xAI console; environment or profile .env)"
+      - "terminal: local backend for profile .env loading, or credentials provisioned
+        inside the sandbox"
     tags: [grok, xai, real-time, twitter, x]
     related_skills: []
     # referenced but not shipped here (Hermes core / another source): xurl
