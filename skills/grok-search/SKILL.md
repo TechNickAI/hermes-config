@@ -42,9 +42,13 @@ cost.
 
 ## Prerequisites
 
-- `XAI_API_KEY` set in the profile's `~/.hermes/.env` (an xAI developer key from the xAI
-  console). The script also accepts `--api-key`, but **prefer the env var** — a key on
-  the command line lands in shell history and process listings.
+- `XAI_API_KEY` in the Hermes profile's `.env` (an xAI developer key from the xAI
+  console). The script checks `--api-key`, then the environment, then
+  `$HERMES_HOME/.env`, then the profile `.env` above the installed `skills/` directory
+  (including category-nested installs). When `HERMES_HOME` is unset, it also tries
+  `~/.hermes/.env`. Hermes strips provider keys from subprocess environments, so the
+  file fallback is needed for agent and cron runs. Prefer the profile `.env` over
+  `--api-key`: command-line keys appear in shell history and process listings.
 - Python 3 (stdlib only — no packages to install).
 
 If the key is missing, the script exits with a clear JSON error; tell the user a key is

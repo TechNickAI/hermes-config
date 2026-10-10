@@ -14,6 +14,8 @@ and falls back to the response's citation annotations if Grok narrates instead.
 Auth (first hit wins):
   1. --api-key flag
   2. env XAI_API_KEY
+  3. $HERMES_HOME/.env, then the installed skill's profile .env
+  4. ~/.hermes/.env when HERMES_HOME is unset
 
 Why a skill script and not the built-in `xai` web backend?
   The built-in backend makes Grok *the* web_search provider for a profile.
@@ -41,6 +43,7 @@ import argparse
 import datetime
 import json
 import os
+from pathlib import Path
 import re
 import sys
 import urllib.error
@@ -73,9 +76,36 @@ def _valid_url(url: str) -> bool:
 
 def _api_key(args) -> str:
     key = (args.api_key or os.environ.get("XAI_API_KEY", "")).strip()
-    if not key:
-        _die("No xAI credentials. Pass --api-key or set XAI_API_KEY.")
-    return key
+    if key:
+        return key
+
+    # Hermes removes provider keys from subprocess environments. Read only the
+    # needed assignment, never execute the .env or populate the process env.
+    home = os.environ.get("HERMES_HOME")
+    candidates = [Path(home) / ".env"] if home else []
+    for parent in Path(__file__).resolve().parents:
+        if parent.name == "skills":
+            candidates.append(parent.parent / ".env")
+            break
+    if not home:
+        candidates.append(Path.home() / ".hermes" / ".env")
+    for path in candidates:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            continue
+        for line in lines:
+            match = re.match(r"^\s*(?:export\s+)?XAI_API_KEY\s*=\s*(.*?)\s*$", line)
+            if not match:
+                continue
+            key = match.group(1)
+            if len(key) >= 2 and key[0] == key[-1] and key[0] in "\"'":
+                key = key[1:-1]
+            key = key.strip()
+            if key:
+                return key
+    _die("No xAI credentials. Set XAI_API_KEY in the profile .env or environment, or pass --api-key.")
+    return ""  # unreachable
 
 
 def _csv(value: str | None, label: str = "value", cap: int = _MAX_DOMAINS) -> list[str]:
@@ -308,7 +338,7 @@ def main() -> None:
     # whether they appear before OR after the subcommand (argparse otherwise
     # rejects a root-only flag placed after the subcommand name).
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--api-key", help="xAI API key (else env XAI_API_KEY)")
+    common.add_argument("--api-key", help="xAI API key (else XAI_API_KEY or profile .env)")
 
     parser = argparse.ArgumentParser(
         description="Grok real-time web + X search", parents=[common]
