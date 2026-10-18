@@ -12,6 +12,18 @@
 // The admin UI (default 127.0.0.1:<admin-ui-port>) is passwordless and must
 // NEVER appear under AllowFunnel.
 //
+// The apply script enforces that rule instead of trusting this comment. Every
+// handler declares how its upstream is protected with "Gate": "password",
+// "token", or "none". A handler on a funnel'd site must declare "password" or
+// "token". A missing Gate on a funnel'd handler is a hard failure, so
+// forgetting to annotate fails closed rather than publishing an upstream
+// nobody reasoned about. Tailnet-only handlers do not need a Gate.
+//
+// Gate is an author-declared assertion, not a probe. The script cannot reach
+// out and test an upstream, so a wrong Gate value still lets a bad config
+// through. What it buys is that publishing something passwordless now takes a
+// deliberate written claim that it is gated, instead of silence.
+//
 // ${HOST} is substituted with the node's MagicDNS name at apply time.
 {
   "TCP": {
@@ -22,16 +34,20 @@
     // password-gated by the auth sidecar.
     "${HOST}:443": {
       "Handlers": {
-        "/": { "Proxy": "http://127.0.0.1:8080" },
-        "/hooks/": { "Proxy": "http://127.0.0.1:8080/hooks/" }
+        // Caddy enforces forward_auth per app against the auth sidecar.
+        "/": { "Proxy": "http://127.0.0.1:8080", "Gate": "password" },
+        // The gateway hooks server requires a bearer token on every request.
+        // Caddy injects it, so the caller does not present one at the edge.
+        "/hooks/": { "Proxy": "http://127.0.0.1:8080/hooks/", "Gate": "token" }
       }
     }
     // Optional tailnet-only door for a passwordless admin UI. A port WITHOUT a
     // matching AllowFunnel entry stays tailnet-only. Add a "443"-style TCP entry
     // for 8443 and a Web handler pointing at the loopback admin port, e.g.:
     //   "TCP": { "8443": { "HTTPS": true } }
-    //   "${HOST}:8443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:<admin-port>" } } }
-    // Never list a passwordless port under AllowFunnel.
+    //   "${HOST}:8443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:<admin-port>", "Gate": "none" } } }
+    // Never list a passwordless port under AllowFunnel. The apply script will
+    // refuse to compile a funnel'd handler whose Gate is "none" or missing.
   },
   "AllowFunnel": {
     "${HOST}:443": true
