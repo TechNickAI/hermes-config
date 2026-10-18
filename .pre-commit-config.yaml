@@ -52,3 +52,10 @@ repos:
     hooks:
       - id: actionlint
         name: Check GitHub Actions
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.29.0
+    hooks:
+      - id: zizmor
+        name: Check GitHub Actions for injection (security)
+        args: ["--no-progress", "--min-severity=high"]
