@@ -11,11 +11,11 @@ sentence.
 
 ## Code
 
-- **Markdown over JSON for state.** Hermes and humans both read markdown naturally. JSON
-  is fine for tool output; persistent state files are markdown or SQLite.
-- **Lean over comprehensive.** If Hermes does it natively, don't recreate it here.
-- **Skills are starter kits, not the destination.** The self-improvement loop writes
-  better skills than we will. This repo seeds a few; it is not a marketplace.
+Project principles (Hermes-native first, lean, skills are seeds, markdown over JSON,
+public-safe) are the filters in
+[`CONTRIBUTING.md`](CONTRIBUTING.md#what-belongs-here-and-what-doesnt); persistent state
+is markdown or SQLite.
+
 - **No `pyproject.toml` at the root.** Plugins use the Hermes plugin manifest format and
   are self-contained.
 - **One runtime seam.** `plugins/memory/cortex/hermes_compat.py` is the only module that
@@ -26,6 +26,8 @@ sentence.
   it in its frontmatter `metadata.hermes.requires`; `skills/MANIFEST.yaml` is generated
   only by `scripts/generate_manifest.py`, which reads skills, not plugins. A plugin
   documents its dependency in its own README until a plugin mechanism exists.
+- **Migration is a first-class concern.** Hermes ships `hermes claw migrate`; this repo
+  documents the strategy around it.
 - **Knowledge docs lead with the conclusion.** State what to do, then why.
 
 ## Skills and other agent-facing docs
@@ -57,26 +59,5 @@ after selection. Write both for the agent that will run them.
 
 ## Attribution
 
-The skills section adapts `writing-for-agents` from
-[mattpocock/skills](https://github.com/mattpocock/skills), used under the MIT License:
-
-> MIT License
->
-> Copyright (c) 2026 Matt Pocock
->
-> Permission is hereby granted, free of charge, to any person obtaining a copy of this
-> software and associated documentation files (the "Software"), to deal in the Software
-> without restriction, including without limitation the rights to use, copy, modify,
-> merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
-> permit persons to whom the Software is furnished to do so, subject to the following
-> conditions:
->
-> The above copyright notice and this permission notice shall be included in all copies
-> or substantial portions of the Software.
->
-> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-> INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-> PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
-> HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
-> CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
-> OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+The skills section adapts an MIT-licensed third-party skill (`writing-for-agents`); its
+copyright and permission notice is reproduced in [`LICENSE`](LICENSE).
