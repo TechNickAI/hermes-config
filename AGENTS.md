@@ -85,7 +85,7 @@ every diff. Public-repo hygiene (above) outranks it.
 
 ## Testing
 
-**Tests must pass from a bare clone — do not require `hermes-agent` to be installed.**
+Tests pass from a bare clone; see [`CODING_STANDARDS.md`](CODING_STANDARDS.md#code).
 
 ```bash
 pytest -q                                                    # 64 Python tests
@@ -95,10 +95,8 @@ pre-commit run --all-files                                    # linting, matches
 
 Three things to know before touching plugin code:
 
-1. **`plugins/memory/cortex/hermes_compat.py` is the only place that may import the
-   Hermes runtime** (`agent`, `tools`, `hermes_cli`, `hermes_constants`). It re-exports
-   the real implementations when Hermes is installed and falls back to signature-matched
-   stubs when it isn't. Need something new from the runtime? Add it there with a stub.
+1. **One runtime seam** (`hermes_compat.py`): see
+   [`CODING_STANDARDS.md`](CODING_STANDARDS.md#code).
 2. **Hermes ships its own top-level `plugins` package** that shadows this repo's
    `plugins/` namespace directory, so `import plugins.memory.cortex` cannot resolve
    inside a real install. Use `tests/plugin_loader.load_cortex_plugin()`.

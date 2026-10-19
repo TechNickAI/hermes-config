@@ -22,9 +22,10 @@ sentence.
   imports the Hermes runtime (`agent`, `tools`, `hermes_cli`, `hermes_constants`). Need
   something new? Add it there with a signature-matched stub.
 - **Tests pass from a bare clone.** No test may require `hermes-agent` to be installed.
-- **Dependencies are declared, not assumed.** A skill or plugin that needs a package
-  lists it in `metadata.hermes.requires`; `skills/MANIFEST.yaml` is generated only by
-  `scripts/generate_manifest.py`.
+- **Skill dependencies are declared, not assumed.** A skill that needs a package lists
+  it in its frontmatter `metadata.hermes.requires`; `skills/MANIFEST.yaml` is generated
+  only by `scripts/generate_manifest.py`, which reads skills, not plugins. A plugin
+  documents its dependency in its own README until a plugin mechanism exists.
 - **Knowledge docs lead with the conclusion.** State what to do, then why.
 
 ## Skills and other agent-facing docs
