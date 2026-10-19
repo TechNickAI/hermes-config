@@ -43,6 +43,8 @@ jobs:
           prompt: |
             /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
 
+            Apply CODING_STANDARDS.md and the zero-PII rule in CONTRIBUTING.md to the diff.
+
             Evidence contract for this repository:
             - For every material defect, cite the affected file and line range.
             - Explain the concrete failure path and impact.

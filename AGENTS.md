@@ -77,21 +77,15 @@ individual templates, plugins, or skills into their own `~/.hermes/`.
 
 ## Code conventions
 
-- **Public-repo hygiene** — see the critical rule above.
-- **Markdown over JSON for state.** Hermes and humans both read markdown naturally. JSON
-  is fine for tool output; persistent state files should be markdown.
-- **Lean over comprehensive.** If Hermes does it natively, don't recreate it here.
-- **Skills are starter kits, not the destination.** The self-improvement loop writes
-  better skills than we will. This repo seeds a few; it is not a marketplace.
-- **No `pyproject.toml` at the root.** Plugins use the Hermes plugin manifest format and
-  are self-contained.
-- **Migration is a first-class concern.** Hermes ships `hermes claw migrate`; this repo
-  documents the surrounding strategy.
-- **Knowledge docs lead with the conclusion.** State what to do, then why.
+How code and skills here are written lives in
+[`CODING_STANDARDS.md`](CODING_STANDARDS.md): markdown-over-JSON state, the single
+Hermes runtime seam, bare-clone tests, declared dependencies, and how to write skill
+descriptions and bodies. **Read it before writing a change.** Reviewers apply it to
+every diff. Public-repo hygiene (above) outranks it.
 
 ## Testing
 
-**Tests must pass from a bare clone — do not require `hermes-agent` to be installed.**
+Tests pass from a bare clone; see [`CODING_STANDARDS.md`](CODING_STANDARDS.md#code).
 
 ```bash
 pytest -q                                                    # 64 Python tests
@@ -101,10 +95,8 @@ pre-commit run --all-files                                    # linting, matches
 
 Three things to know before touching plugin code:
 
-1. **`plugins/memory/cortex/hermes_compat.py` is the only place that may import the
-   Hermes runtime** (`agent`, `tools`, `hermes_cli`, `hermes_constants`). It re-exports
-   the real implementations when Hermes is installed and falls back to signature-matched
-   stubs when it isn't. Need something new from the runtime? Add it there with a stub.
+1. **One runtime seam** (`hermes_compat.py`): see
+   [`CODING_STANDARDS.md`](CODING_STANDARDS.md#code).
 2. **Hermes ships its own top-level `plugins` package** that shadows this repo's
    `plugins/` namespace directory, so `import plugins.memory.cortex` cannot resolve
    inside a real install. Use `tests/plugin_loader.load_cortex_plugin()`.

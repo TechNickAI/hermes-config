@@ -83,21 +83,12 @@ npm ci && npm test                         # 18 tests
 
 ### Tests must pass from a bare clone
 
-This is a hard constraint, not a preference. **Do not require `hermes-agent` to be
-installed in order to run the test suite.** A contributor evaluating this repo should be
-able to clone and run `pytest` as their first command and see green.
-
-The cortex plugin achieves this through `plugins/memory/cortex/hermes_compat.py`, the
-single seam between the two worlds:
-
-- **Inside a Hermes install** — re-exports the real `MemoryProvider`, `tool_error`,
-  `cfg_get`, and Hermes-home helpers. `HERMES_RUNTIME` is `True`.
-- **From a bare clone** — falls back to behaviour-equivalent stubs whose signatures
-  mirror upstream. `HERMES_RUNTIME` is `False`.
-
-If you add code that needs something from the Hermes runtime, add it to `hermes_compat`
-with a matching stub. Don't import `agent`, `tools`, `hermes_cli`, or `hermes_constants`
-directly anywhere else.
+The bare-clone and single-runtime-seam rules live in
+[`CODING_STANDARDS.md`](CODING_STANDARDS.md#code). How the seam works:
+`plugins/memory/cortex/hermes_compat.py` re-exports the real `MemoryProvider`,
+`tool_error`, `cfg_get` and Hermes-home helpers inside an install (`HERMES_RUNTIME` is
+`True`) and falls back to signature-matched stubs from a bare clone (`HERMES_RUNTIME` is
+`False`).
 
 Two more gotchas worth knowing:
 
