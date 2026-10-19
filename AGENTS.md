@@ -77,17 +77,11 @@ individual templates, plugins, or skills into their own `~/.hermes/`.
 
 ## Code conventions
 
-- **Public-repo hygiene** — see the critical rule above.
-- **Markdown over JSON for state.** Hermes and humans both read markdown naturally. JSON
-  is fine for tool output; persistent state files should be markdown.
-- **Lean over comprehensive.** If Hermes does it natively, don't recreate it here.
-- **Skills are starter kits, not the destination.** The self-improvement loop writes
-  better skills than we will. This repo seeds a few; it is not a marketplace.
-- **No `pyproject.toml` at the root.** Plugins use the Hermes plugin manifest format and
-  are self-contained.
-- **Migration is a first-class concern.** Hermes ships `hermes claw migrate`; this repo
-  documents the surrounding strategy.
-- **Knowledge docs lead with the conclusion.** State what to do, then why.
+How code and skills here are written lives in
+[`CODING_STANDARDS.md`](CODING_STANDARDS.md): markdown-over-JSON state, the single
+Hermes runtime seam, bare-clone tests, declared dependencies, and how to write skill
+descriptions and bodies. **Read it before writing a change.** Reviewers apply it to
+every diff. Public-repo hygiene (above) outranks it.
 
 ## Testing
 
