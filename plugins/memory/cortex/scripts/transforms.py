@@ -26,6 +26,24 @@ import collections
 import datetime
 import re
 from pathlib import Path
+import sys
+
+
+def _yaml():
+    """PyYAML when installed, else the plugin's ruamel-backed shim.
+
+    Hermes' managed runtime ships ruamel.yaml and no PyYAML; a bare
+    ``import yaml`` there degrades every caller below to its no-YAML path.
+    """
+    try:
+        import yaml
+        return yaml
+    except ImportError:
+        plugin_dir = str(Path(__file__).resolve().parents[1])
+        if plugin_dir not in sys.path:
+            sys.path.insert(0, plugin_dir)
+        import yaml_compat  # raises ImportError when neither library exists
+        return yaml_compat
 
 DATE_PREFIX = re.compile(r"^(\d{4}-\d{2}-\d{2})[-_]+")
 TS_PREFIX = re.compile(r"^(\d{8})T(\d{6})[-_]+")
@@ -93,7 +111,7 @@ def _looks_like_mapping(block: str) -> bool:
     if not block.strip():
         return False
     try:
-        import yaml
+        yaml = _yaml()
 
         return isinstance(yaml.safe_load(block), dict)
     except ImportError:
@@ -116,7 +134,7 @@ def parse_fm(block: str) -> dict:
     if not block.strip():
         return {}
     try:
-        import yaml
+        yaml = _yaml()
 
         data = yaml.safe_load(block)
         if isinstance(data, dict):
@@ -210,7 +228,7 @@ def render_fm(fm: dict) -> str:
             return ["%s: %s" % (key, scalar(value))]
         # Anything structured or multi-line: let YAML handle it losslessly.
         try:
-            import yaml
+            yaml = _yaml()
 
             dumped = yaml.safe_dump({key: value}, default_flow_style=False,
                                     allow_unicode=True, sort_keys=False)

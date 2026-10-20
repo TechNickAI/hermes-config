@@ -17,6 +17,24 @@ import collections
 import json
 import re
 from pathlib import Path
+import sys
+
+
+def _yaml():
+    """PyYAML when installed, else the plugin's ruamel-backed shim.
+
+    Hermes' managed runtime ships ruamel.yaml and no PyYAML; a bare
+    ``import yaml`` there degrades every caller below to its no-YAML path.
+    """
+    try:
+        import yaml
+        return yaml
+    except ImportError:
+        plugin_dir = str(Path(__file__).resolve().parents[1])
+        if plugin_dir not in sys.path:
+            sys.path.insert(0, plugin_dir)
+        import yaml_compat  # raises ImportError when neither library exists
+        return yaml_compat
 
 SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv"}
 LINK = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
@@ -229,7 +247,7 @@ def rename_analysis(before: dict[str, str], after: dict[str, str]) -> dict:
 
 def frontmatter_audit(store: dict[str, str]) -> dict:
     try:
-        import yaml
+        yaml = _yaml()
     except ImportError:
         return {"skipped": "PyYAML unavailable"}
 

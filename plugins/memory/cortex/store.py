@@ -32,9 +32,11 @@ from typing import Any, Optional
 try:  # package import (normal Hermes runtime)
     from .embeddings import pack_vector, unpack_vector, top_matches
     from .chunking import split_markdown, chunk_embedding_text
+    from . import yaml_compat as yaml
 except ImportError:  # flat import (tests add plugin dir to sys.path)
     from embeddings import pack_vector, unpack_vector, top_matches
     from chunking import split_markdown, chunk_embedding_text
+    import yaml_compat as yaml
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +83,6 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
         return ({}, text)
     fm_text, body = m.group(1), m.group(2)
     try:
-        import yaml
         fm = yaml.safe_load(fm_text) or {}
         if not isinstance(fm, dict):
             fm = {}
@@ -92,7 +93,6 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 
 def _serialize_frontmatter(fm: dict, body: str) -> str:
     """Re-serialize page with YAML frontmatter."""
-    import yaml
     fm_text = yaml.safe_dump(fm, default_flow_style=False, sort_keys=False).strip()
     return f"---\n{fm_text}\n---\n\n{body.lstrip()}"
 
