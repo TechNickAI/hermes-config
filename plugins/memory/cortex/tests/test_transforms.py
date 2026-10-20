@@ -510,7 +510,9 @@ class TestRenderIdempotence:
         assert first == second == third
 
     def test_every_rendered_block_is_valid_yaml(self):
-        import yaml
+        # Whichever YAML library this runtime has: PyYAML, or ruamel via the shim.
+        from transforms import _yaml
+        yaml = _yaml()
         data = {
             "title": "Session: 12:26 — a: b",
             "tags": ["a#b", "it's"],

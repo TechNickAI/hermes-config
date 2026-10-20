@@ -36,6 +36,7 @@ from .hermes_compat import (
     display_hermes_home,
 )
 from .store import CortexStore, KNOWLEDGE_CATEGORIES, DAILY_DIR
+from . import yaml_compat as yaml
 from .retrieval import CortexRetriever
 from .embeddings import OpenAIEmbeddingClient
 from .reranker import CortexReranker
@@ -111,7 +112,6 @@ def _load_plugin_config() -> dict:
         config_path = get_hermes_home() / "config.yaml"
         if not config_path.exists():
             return {}
-        import yaml
         with open(config_path, encoding="utf-8-sig") as f:
             all_config = yaml.safe_load(f) or {}
         return cfg_get(all_config, "plugins", "cortex", default={}) or {}
@@ -264,7 +264,6 @@ class CortexMemoryProvider(MemoryProvider):
         """Write non-secret config to config.yaml under plugins.cortex."""
         config_path = Path(hermes_home) / "config.yaml"
         try:
-            import yaml
             existing: dict = {}
             if config_path.exists():
                 with open(config_path, encoding="utf-8-sig") as f:

@@ -39,6 +39,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from review_queue import ReviewQueue  # noqa: E402
 
+
+def _yaml():
+    """PyYAML when installed, else the plugin's ruamel-backed shim.
+
+    Hermes' managed runtime ships ruamel.yaml and no PyYAML; a bare
+    ``import yaml`` there degrades every caller below to its no-YAML path.
+    """
+    try:
+        import yaml
+        return yaml
+    except ImportError:
+        plugin_dir = str(Path(__file__).resolve().parents[1])
+        if plugin_dir not in sys.path:
+            sys.path.insert(0, plugin_dir)
+        import yaml_compat  # raises ImportError when neither library exists
+        return yaml_compat
+
 CHECKPOINT_NAME = ".curation-checkpoint.json"
 # Cap the LLM work set so one run cannot balloon; leftovers roll to next run.
 MAX_PAGES_PER_RUN = 60
@@ -139,7 +156,7 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             block = "".join(lines[1:index])
             body = "".join(lines[index + 1:]).lstrip("\n")
             try:
-                import yaml
+                yaml = _yaml()
 
                 data = yaml.safe_load(block)
                 if isinstance(data, dict):

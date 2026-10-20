@@ -38,6 +38,23 @@ from embeddings import OpenAIEmbeddingClient  # noqa: E402
 from retrieval import CortexRetriever  # noqa: E402
 from store import SKIP_DIRS, CortexStore, _should_skip_file  # noqa: E402
 
+
+def _yaml():
+    """PyYAML when installed, else the plugin's ruamel-backed shim.
+
+    Hermes' managed runtime ships ruamel.yaml and no PyYAML; a bare
+    ``import yaml`` there degrades every caller below to its no-YAML path.
+    """
+    try:
+        import yaml
+        return yaml
+    except ImportError:
+        plugin_dir = str(Path(__file__).resolve().parents[1])
+        if plugin_dir not in sys.path:
+            sys.path.insert(0, plugin_dir)
+        import yaml_compat  # raises ImportError when neither library exists
+        return yaml_compat
+
 DEFAULT_QUERY = "memory"
 # A reindex may legitimately drop pages, but losing most of the corpus means the
 # tree is missing rather than edited. Abort instead of letting the store's
@@ -143,7 +160,7 @@ def load_plugin_config(profile_home: Path) -> dict[str, Any]:
     if not config_path.exists():
         return {}
     try:
-        import yaml
+        yaml = _yaml()
     except ImportError:
         return {}
     try:
