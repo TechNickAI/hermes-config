@@ -11,10 +11,12 @@ decorative.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -149,3 +151,234 @@ def test_readme_points_agents_at_the_manifest() -> None:
     readme = (ROOT / "README.md").read_text()
     assert "MANIFEST.yaml" in readme, "the README should route agents to the manifest"
     assert "SETUP.md" in readme, "the README should route agent users to SETUP.md"
+
+
+# --------------------------------------------------------------- gateway code skew
+#
+# A gateway process serves the code it booted with. `git pull` does not restart it, so
+# a long-lived gateway can drift far behind the checkout it runs from while every other
+# check in verify_setup.sh reports healthy. These tests pin the detection contract.
+
+
+def _fake_checkout(root: pathlib.Path, head_moved_at: int, commit_at: int) -> pathlib.Path:
+    """Build a throwaway hermes-agent checkout with controlled HEAD-move and commit times.
+
+    `head_moved_at` drives the reflog (when HEAD last actually moved) and `commit_at`
+    drives the commit date. They are separate on purpose: checking out an older branch
+    moves HEAD forward in time while the commit date goes backwards.
+    """
+    checkout = root / "hermes-agent"
+    checkout.mkdir(parents=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        "GIT_AUTHOR_DATE": f"@{commit_at} +0000",
+        "GIT_COMMITTER_DATE": f"@{commit_at} +0000",
+    }
+
+    def run(*args: str) -> None:
+        subprocess.run(["git", "-C", str(checkout), *args], check=True, capture_output=True, env=env)
+
+    run("init", "-q", ".")
+    (checkout / "f.txt").write_text("x\n")
+    run("add", "f.txt")
+    run("commit", "-qm", "seed")
+    # A second HEAD move, timestamped independently, becomes the reflog reference point.
+    env["GIT_COMMITTER_DATE"] = f"@{head_moved_at} +0000"
+    run("checkout", "-q", "-b", "moved")
+    return checkout
+
+
+def _run_verify(home: pathlib.Path) -> subprocess.CompletedProcess:
+    """Drive the script against a fake HERMES_HOME with a system-only PATH.
+
+    The bare PATH matters: CI runners have no hermes CLI, and the skew block must
+    behave identically there.
+    """
+    return subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_setup.sh")],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "HERMES_HOME": str(home), "HOME": str(home)},
+        timeout=60,
+    )
+
+
+@pytest.fixture
+def fake_gateway():
+    """Start a process whose argv matches the gateway matcher, and always reap it."""
+    started = []
+
+    def start(argv: str):
+        # argv goes through the environment, not string interpolation, so a quote in a
+        # future test argument cannot break out of the shell command.
+        proc = subprocess.Popen(
+            ["bash", "-c", 'exec -a "$FAKE_ARGV" sleep 60'], env={**os.environ, "FAKE_ARGV": argv}
+        )
+        started.append(proc)
+        # Wait for the exec to land, otherwise pgrep races the argv rewrite.
+        for _ in range(50):
+            time.sleep(0.05)
+            found = subprocess.run(["pgrep", "-f", argv], capture_output=True, text=True)
+            if str(proc.pid) in found.stdout.split():
+                return proc
+        raise AssertionError(f"fake gateway argv never became visible to pgrep: {argv!r}")
+
+    yield start
+    for proc in started:
+        proc.kill()
+        proc.wait()
+
+
+def test_stale_gateway_is_reported(tmp_path: pathlib.Path, fake_gateway) -> None:
+    """A gateway that booted before HEAD last moved must be named, with its pid."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    # HEAD moved far in the future, so any process alive now booted before it.
+    _fake_checkout(home, head_moved_at=4_102_444_800, commit_at=4_102_444_800)
+    proc = fake_gateway("hermes-argus-test gateway run --replace")
+
+    result = _run_verify(home)
+
+    assert "booted before" in result.stdout, result.stdout
+    assert str(proc.pid) in result.stdout, result.stdout
+    assert "code on disk" in result.stdout, "the warning must name the remedy"
+
+
+def test_stale_gateway_is_a_warning_not_a_failure(tmp_path: pathlib.Path, fake_gateway) -> None:
+    """Deferring a restart is a legitimate state. Warn, never fail.
+
+    Making this fatal would turn a routine condition into exit 1, which is the
+    false-failure problem the verifier is supposed to be free of.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    _fake_checkout(home, head_moved_at=4_102_444_800, commit_at=4_102_444_800)
+    fake_gateway("hermes-argus-test gateway run --replace")
+
+    result = _run_verify(home)
+
+    assert "booted before" in result.stdout
+    assert "FAIL  gateway" not in result.stdout, "code skew must not be a hard failure"
+
+
+def test_current_gateway_is_not_reported(tmp_path: pathlib.Path, fake_gateway) -> None:
+    """A gateway started after the last HEAD move is current. Silence is the contract."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    # HEAD moved in the past, so a process started now is newer than the checkout.
+    _fake_checkout(home, head_moved_at=1_000_000_000, commit_at=1_000_000_000)
+    fake_gateway("hermes-argus-test gateway run --replace")
+
+    result = _run_verify(home)
+
+    assert "booted before" not in result.stdout, result.stdout
+
+
+def test_skew_is_measured_from_head_movement_not_commit_date(
+    tmp_path: pathlib.Path, fake_gateway
+) -> None:
+    """Checking out an older revision is skew, even though the commit date went backwards.
+
+    This is the case a naive `git log -1 --format=%ct` comparison gets wrong: the
+    working tree changed under the running gateway, but HEAD now points at an old
+    commit, so the commit date looks older than the process and the drift is missed.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    _fake_checkout(home, head_moved_at=4_102_444_800, commit_at=1_000_000_000)
+    proc = fake_gateway("hermes-argus-test gateway run --replace")
+
+    result = _run_verify(home)
+
+    assert "booted before" in result.stdout, result.stdout
+    assert str(proc.pid) in result.stdout
+
+
+def test_no_checkout_means_no_skew_section(tmp_path: pathlib.Path, fake_gateway) -> None:
+    """A uv/pip install has no git checkout. The block must skip, not error."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    fake_gateway("hermes-argus-test gateway run --replace")
+
+    result = _run_verify(home)
+
+    assert "booted before" not in result.stdout
+    assert "fatal" not in result.stdout.lower(), "git must never be run without a checkout"
+
+
+def test_skew_check_does_not_disturb_the_missing_install_contract(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The pre-existing failure contract still holds with the new block in place."""
+    result = _run_verify(tmp_path / "nonexistent")
+
+    assert result.returncode == 1
+    assert "FAIL" in result.stdout
+
+
+def test_verifier_does_not_report_itself(tmp_path: pathlib.Path) -> None:
+    """A shell whose own argv matches the pattern must not be reported as a gateway.
+
+    `pgrep -f` matches the whole command line, so invoking the script from a wrapper
+    whose arguments contain the pattern makes the verifier match its own process tree.
+    Without an ancestry check it reports itself as stale code, which is nonsense.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    _fake_checkout(home, head_moved_at=4_102_444_800, commit_at=4_102_444_800)
+    pidfile = tmp_path / "wrapper.pid"
+
+    # The wrapper's argv contains the matcher pattern, so this shell is in the pgrep set.
+    script = (
+        f'true "hermes gateway run"; echo $$ > "{pidfile}"; '
+        f'bash "{ROOT / "scripts" / "verify_setup.sh"}"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "HERMES_HOME": str(home), "HOME": str(home)},
+        timeout=60,
+    )
+
+    # Assert on our own pid rather than on the absence of all warnings: the developer
+    # running this may have real gateways up, and those are legitimately reportable.
+    wrapper_pid = pidfile.read_text().strip()
+    assert f"pid {wrapper_pid} " not in result.stdout, result.stdout
+
+
+def test_skew_check_survives_a_non_english_locale(tmp_path: pathlib.Path, fake_gateway) -> None:
+    """`ps -o lstart=` is locale-dependent; the parse must not be."""
+    locales = subprocess.run(["locale", "-a"], capture_output=True, text=True, timeout=60).stdout
+    locale = next(
+        (name for name in ("fr_FR.UTF-8", "fr_FR.utf8", "de_DE.UTF-8") if name in locales.split()),
+        None,
+    )
+    if locale is None:
+        pytest.skip("no non-English locale installed, the assertion would pass vacuously")
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    _fake_checkout(home, head_moved_at=4_102_444_800, commit_at=4_102_444_800)
+    proc = fake_gateway("hermes-argus-test gateway run --replace")
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_setup.sh")],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HERMES_HOME": str(home),
+            "HOME": str(home),
+            "LC_ALL": locale,
+            "LANG": locale,
+        },
+        timeout=60,
+    )
+
+    assert "booted before" in result.stdout, result.stdout
+    assert str(proc.pid) in result.stdout
