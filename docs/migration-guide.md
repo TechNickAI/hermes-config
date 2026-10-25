@@ -19,6 +19,8 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 # 2. Check for updates IMMEDIATELY after install (the installer can be 50+ commits stale)
 hermes --version
 hermes update     # if "Update available: N commits behind"
+# On a multi-profile host, `hermes update` can fold per-profile gateways with no
+# prompt. See "hermes update can fold multi-profile gateways automatically" in Pitfalls.
 
 # 3. Dry-run first, always
 hermes claw migrate --preset full --overwrite --migrate-secrets --dry-run
@@ -970,6 +972,17 @@ and `providers:` blocks by hand using your Phase 0 snapshot as the authoritative
 - **Update right after install.** The installer can be 50+ commits behind the release
   branch. Run `hermes update` before the migrate step, or you'll bake a stale Hermes
   into the host.
+- **`hermes update` can fold multi-profile gateways automatically.** On an install with
+  two or more profiles where a secondary profile runs its own gateway and
+  `gateway.multiplex_profiles` is off, `hermes update` runs the multiplex migration
+  itself, with no prompt, including on headless and cron-driven updates. It stops at a
+  service-manager, UNIX-user, or `HERMES_HOME` boundary, where it prints the blocker and
+  changes nothing. If per-profile gateways are deliberate, pin the policy before
+  upgrading with `hermes config set gateway.auto_multiplex_migration false` on the
+  default profile. The setting lives in config and survives updates.
+  `hermes gateway migrate --multiplex` stays the explicit opt-in and ignores the flag.
+  Landed upstream on 2026-09-13 in commit `0abfd11`, after tag `v2026.9.11`, so it
+  applies once your install picks up that commit.
 - **OpenClaw installs more than the gateway unit.** Phase 9 must enumerate all
   `openclaw-*` units (backup-s3, backup-verify, health-check, workspace-backup) and the
   gateway's `.bak` files, not just the gateway service.
