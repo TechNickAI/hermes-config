@@ -231,17 +231,48 @@ def c_disk_trend():
     if free_gb is not None:
         con.execute("INSERT OR REPLACE INTO disk VALUES(?,?)", (now, free_gb))
         con.commit()
+    # Endpoint arithmetic (last minus first) is NOT a trend: free space swings by
+    # gigabytes as caches fill and drain, so a window that happens to start at a peak
+    # and end in a dip manufactures a cliff. That produced a real page claiming a disk
+    # would fill in 17 days while the longer series showed it GAINING space. Use a
+    # least-squares slope over every sample, and report the noise alongside it.
     rows = con.execute("SELECT ts, free_gb FROM disk WHERE ts > ? ORDER BY ts", (now - 86400,)).fetchall()
     fact("samples_24h", len(rows))
     if len(rows) >= 2:
         span_h = (rows[-1][0] - rows[0][0]) / 3600
-        delta = rows[-1][1] - rows[0][1]
-        fact("free_gb_delta_24h", f"{delta:+.2f}")
-        if span_h > 0.5:
-            rate = delta / span_h
-            fact("free_gb_per_hour", f"{rate:+.3f}")
-            if rate < -0.5 and free_gb is not None:
-                fact("hours_to_full_at_current_rate", f"{free_gb/abs(rate):.1f}")
+        fact("free_gb_endpoint_delta_24h", f"{rows[-1][1] - rows[0][1]:+.2f}")
+        lo = min(r[1] for r in rows)
+        hi = max(r[1] for r in rows)
+        fact("free_gb_range_24h", f"{lo:.1f}-{hi:.1f}")
+        if span_h > 0.5 and len(rows) >= 4:
+            n = len(rows)
+            t0 = rows[0][0]
+            xs = [(r[0] - t0) / 3600 for r in rows]
+            ys = [r[1] for r in rows]
+            mx = sum(xs) / n
+            my = sum(ys) / n
+            denom = sum((x - mx) ** 2 for x in xs)
+            if denom > 0:
+                slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
+                fact("free_gb_per_hour_regression", f"{slope:+.3f}")
+                # residual spread says whether the slope means anything at all
+                resid = [y - (my + slope * (x - mx)) for x, y in zip(xs, ys)]
+                spread = (sum(r * r for r in resid) / n) ** 0.5
+                fact("free_gb_noise_stddev", f"{spread:.2f}")
+                # Only project exhaustion when the decline dominates the noise AND the
+                # absolute floor is close. Both guards matter: a steady 0.1GB/h drift on
+                # a 400GB volume is not news, and a noisy series is not a direction.
+                if (
+                    slope < 0
+                    and abs(slope) > spread
+                    and free_gb is not None
+                    and free_gb < 25
+                ):
+                    fact("hours_to_full_at_regression_rate", f"{free_gb/abs(slope):.1f}")
+                else:
+                    fact("projection", "withheld (noise exceeds slope, or ample free space)")
+        elif span_h > 0.5:
+            fact("projection", "withheld (need 4+ samples for a slope)")
     else:
         fact("note", "insufficient history for trajectory (needs 2+ samples)")
     con.execute("DELETE FROM disk WHERE ts < ?", (now - 30 * 86400,))
