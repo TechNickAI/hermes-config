@@ -134,6 +134,56 @@ def test_verify_setup_reports_a_missing_install() -> None:
     assert "FAIL" in result.stdout
 
 
+@pytest.mark.parametrize(
+    "shim_body",
+    ["exit 1", "printf 'not a version\\n'\nexit 1", "exit 0"],
+    ids=["silent-failure", "output-then-failure", "empty-success"],
+)
+def test_verify_setup_rejects_a_broken_hermes_shim(tmp_path: pathlib.Path, shim_body: str) -> None:
+    """A command name or partial output is not proof that the Hermes CLI can run."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    hermes = bin_dir / "hermes"
+    hermes.write_text(f"#!/bin/sh\n{shim_body}\n")
+    hermes.chmod(0o755)
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_setup.sh")],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HERMES_HOME": str(hermes_home), "HOME": str(tmp_path)},
+    )
+
+    assert result.returncode == 1, "verify_setup.sh should exit 1 when the Hermes shim cannot run"
+    assert "FAIL" in result.stdout
+    assert "broken install or stale shim" in result.stdout
+    assert "hermes CLI on PATH" not in result.stdout
+
+
+def test_verify_setup_accepts_a_working_hermes_shim(tmp_path: pathlib.Path) -> None:
+    """A successful version response keeps the healthy path unchanged."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    hermes = bin_dir / "hermes"
+    hermes.write_text("#!/bin/sh\nprintf 'Hermes Agent test-version\\n'\n")
+    hermes.chmod(0o755)
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_setup.sh")],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HERMES_HOME": str(hermes_home), "HOME": str(tmp_path)},
+    )
+
+    assert result.returncode == 0
+    assert "hermes CLI on PATH (Hermes Agent test-version)" in result.stdout
+    assert "broken install or stale shim" not in result.stdout
+
+
 def test_readme_does_not_claim_universal_zero_setup() -> None:
     """Over half the skills need a credential or service; the README must not imply otherwise."""
     readme = (ROOT / "README.md").read_text()
