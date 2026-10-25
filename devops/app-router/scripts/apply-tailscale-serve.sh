@@ -86,9 +86,19 @@ web = cfg.get("Web", {})
 funnel_on = cfg.get("AllowFunnel", {})
 
 def port_of(site, kind):
+    # The port is interpolated raw into a shell command line that bash later
+    # executes, so it must be a bare integer. Proxy upstreams and paths are
+    # already passed through shlex.quote; this closes the last gap.
     if ":" not in site:
         sys.exit(f"{kind} key {site!r} must include a port (host:port)")
-    return site.rsplit(":", 1)[1]
+    port = site.rsplit(":", 1)[1]
+    # re.fullmatch with an explicit length bound, not str.isdigit: isdigit
+    # accepts non-ASCII digits such as Arabic-Indic numerals and superscripts,
+    # and an unbounded int() on a very long digit string raises ValueError on
+    # Python 3.11+ (integer string conversion limit) instead of exiting cleanly.
+    if not re.fullmatch(r"[0-9]{1,5}", port) or not (1 <= int(port) <= 65535):
+        sys.exit(f"{kind} key {site!r} has an invalid port {port!r}; expected an integer 1-65535")
+    return port
 
 # Emit serve commands (one per path).
 for site, site_cfg in web.items():
