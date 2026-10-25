@@ -197,6 +197,23 @@ Apps have three modes:
   `APP_PASSWORD_<SLUG>` is unset, the auth service treats the app as open. Useful during
   development.
 
+The third mode is the default, and it fails open. A typo in an env var name
+(`APP_PASSWORD_MYAP` instead of `APP_PASSWORD_MYAPP`) serves the app to anyone who
+reaches it, while the Caddyfile still reads as protected. Set `AUTH_REQUIRE_PASSWORD=1`
+on the auth service to invert that: an app with no configured password and no entry in
+`NO_AUTH_APPS` gets a 401 from `/auth/verify`, and `/auth/login` returns a 403 page
+naming the misconfiguration instead of bouncing the visitor into a redirect loop.
+Rejections are logged as `verify-401-unconfigured` so the cause is distinguishable from
+an ordinary failed login, and the startup banner prints which mode is active.
+
+Strict mode is opt-in and off by default, so leaving `AUTH_REQUIRE_PASSWORD` unset
+preserves the behavior described above exactly. The value must be exactly `1`; anything
+else leaves strict mode off and logs a warning at startup, because a security flag that
+looks set but is not is worse than one that was never set. With strict mode on,
+`NO_AUTH_APPS` becomes the only way an app is open: it is open because someone named it,
+not because a variable failed to resolve. Turn it on once every app you intend to expose
+is either password-protected or listed in `NO_AUTH_APPS`.
+
 The auth service signs cookies with `AUTH_SECRET`. If unset and `NODE_ENV=production`,
 the service refuses to start; pass `AUTH_ALLOW_RANDOM_SECRET=1` to opt into ephemeral
 sessions (a random secret is generated each boot, so every restart logs everyone out).
