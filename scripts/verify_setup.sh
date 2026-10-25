@@ -139,6 +139,103 @@ if [ -d "$HERMES_HOME/plugins/cortex" ] || [ -d "$HERMES_HOME/plugins/memory/cor
   fi
 fi
 
+# -------------------------------------------------------------------------- cron
+# Built-in cron jobs are ticked by the gateway process, nothing else. Enabled jobs
+# with no live gateway is the exact failure this script exists to catch: everything
+# reads as configured, nothing ever fires, and the gap only surfaces when someone
+# notices a report that never arrived. No cron configured is not a defect, so this
+# section stays silent unless there is something to say.
+if [ -f "$HERMES_HOME/cron/jobs.json" ] && command -v python3 >/dev/null 2>&1; then
+  cron_enabled=$(python3 - "$HERMES_HOME/cron/jobs.json" <<'PYEOF'
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as handle:
+        data = json.load(handle)
+except Exception:
+    sys.exit(1)  # unreadable or malformed: skip rather than fail the whole run
+
+# Current stores are {"jobs": [...], "updated_at": ...}. Older ones were a bare list.
+jobs = data.get("jobs", []) if isinstance(data, dict) else data
+if not isinstance(jobs, list):
+    sys.exit(1)
+
+print(sum(1 for job in jobs if isinstance(job, dict) and job.get("enabled", True)))
+print(len(jobs))
+PYEOF
+  )
+  if [ -n "$cron_enabled" ]; then
+    enabled_count=$(printf '%s\n' "$cron_enabled" | sed -n 1p)
+    total_count=$(printf '%s\n' "$cron_enabled" | sed -n 2p)
+    # Guard the arithmetic. This script must never abort the whole run because a
+    # count came back unexpectedly empty; an unverifiable check is skipped, not fatal.
+    case "$enabled_count" in
+      "" | *[!0-9]*) enabled_count="" ;;
+    esac
+  else
+    enabled_count=""
+  fi
+  if [ -n "$enabled_count" ]; then
+    if [ "$enabled_count" -eq 0 ]; then
+      ok "cron: $total_count job(s) configured, none enabled"
+    else
+      gateway_pid=""
+      if [ -f "$HERMES_HOME/gateway.pid" ]; then
+        gateway_pid=$(python3 - "$HERMES_HOME/gateway.pid" <<'PYEOF'
+import json
+import sys
+
+try:
+    raw = open(sys.argv[1]).read().strip()
+except Exception:
+    sys.exit(1)
+
+try:
+    pid = json.loads(raw).get("pid")  # current shape: {"pid": N, "kind": ...}
+except Exception:
+    pid = raw  # older shape: the bare pid
+
+try:
+    print(int(pid))
+except Exception:
+    sys.exit(1)
+PYEOF
+        )
+      fi
+      # kill -0 signals nothing; it only asks whether the process is still there.
+      # A pid alone is not proof: pids are reused, so a dead gateway whose number
+      # got recycled by an unrelated process would report healthy while nothing
+      # fires. Confirm the process is actually a hermes gateway before saying ok.
+      gateway_cmd=""
+      if [ -n "$gateway_pid" ] && kill -0 "$gateway_pid" 2>/dev/null; then
+        gateway_cmd=$(ps -p "$gateway_pid" -o command= 2>/dev/null)
+      fi
+      # Match a hermes token AND `gateway` as a standalone argument. The real
+      # command line is ".../venv/bin/python -m hermes_cli.main gateway run",
+      # so requiring the bare word excludes near misses that merely mention the
+      # gateway in a path, such as `tail -f /var/log/hermes-gateway.log`.
+      # Erring toward a false warning is safe here, a false ok is the whole bug.
+      gateway_ok=no
+      case "$gateway_cmd" in
+        *hermes*)
+          case "$gateway_cmd" in
+            *" gateway "* | *" gateway") gateway_ok=yes ;;
+          esac ;;
+      esac
+      if [ -z "$gateway_cmd" ]; then
+        warn "cron: $enabled_count enabled job(s) but no live gateway, these jobs will not fire"
+        note "start it with: hermes gateway start"
+      elif [ "$gateway_ok" = yes ]; then
+        ok "cron: $enabled_count enabled job(s), gateway pid $gateway_pid alive"
+      else
+        warn "cron: $enabled_count enabled job(s) but pid $gateway_pid is not a hermes gateway"
+        note "stale $HERMES_HOME/gateway.pid, the pid was reused; run: hermes gateway start"
+      fi
+    fi
+  fi
+fi
+
 # ------------------------------------------------------------------------ result
 echo
 if [ "$fails" -gt 0 ]; then
