@@ -85,10 +85,45 @@ cfg = json.loads(raw)
 web = cfg.get("Web", {})
 funnel_on = cfg.get("AllowFunnel", {})
 
+GATED = {"password", "token"}
+UNGATED = {"none"}
+
 def port_of(site, kind):
     if ":" not in site:
         sys.exit(f"{kind} key {site!r} must include a port (host:port)")
     return site.rsplit(":", 1)[1]
+
+# Enforce the security rule at the top of tailscale-serve.json: a funnel'd port
+# is fully public, so every handler behind it must declare a real gate. A
+# missing Gate fails closed, because an unannotated handler is one nobody has
+# reasoned about, and the right answer for "about to be publicly reachable" is
+# refusal. This runs before any command is emitted, so a rejected config never
+# reaches the preflight replay or `serve reset` and live state is untouched.
+for site, on in funnel_on.items():
+    if not on:
+        continue
+    site_cfg = web.get(site)
+    if not site_cfg:
+        continue  # reported by the funnel emit loop below
+    for path, handler in site_cfg.get("Handlers", {}).items():
+        gate = handler.get("Gate")
+        if gate is None:
+            sys.exit(
+                f"funnel'd handler {site}{path} has no Gate. A funnel'd port is "
+                'public: declare "Gate": "password" or "token", or remove the '
+                "site from AllowFunnel."
+            )
+        if gate in UNGATED:
+            sys.exit(
+                f'funnel\'d handler {site}{path} declares Gate "{gate}". A '
+                "passwordless upstream may not be published to the internet. "
+                "Remove the site from AllowFunnel or put a gate in front of it."
+            )
+        if gate not in GATED:
+            sys.exit(
+                f'handler {site}{path} has unknown Gate "{gate}". Valid values '
+                "are: password, token, none."
+            )
 
 # Emit serve commands (one per path).
 for site, site_cfg in web.items():
