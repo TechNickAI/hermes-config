@@ -9,6 +9,7 @@ than a shared smoke test.
 
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -92,6 +93,37 @@ def test_suppressed_runs_say_so_on_stdout():
     r = _run(home, "--spec", "q")
     assert "suppressed" in r.stdout, r.stdout
 
+
+
+def test_suppressed_line_is_identical_on_every_repeat():
+    """The scheduler groups failures by a signature of this run's output.
+
+    A per-run occurrence counter in the suppressed line made that signature
+    change on every tick, so the scheduler's repeat-alert cooldown never
+    engaged and every "suppressed" repeat was delivered anyway. The line must
+    carry only stable identity (reason + fingerprint), never a run counter.
+    """
+    home = _home()
+    (home / "scripts" / "boom.py").write_text("import sys\nsys.exit(20)\n")
+    (home / "jobs.d" / "sig.toml").write_text(
+        'job_id = "sig"\nscript = "boom.py"\nruntime = "python"\n')
+    _run(home, "--spec", "sig")
+    outputs = [_run(home, "--spec", "sig") for _ in range(4)]
+
+    lines = []
+    for r in outputs:
+        assert r.returncode != 0, "a suppressed repeat must still exit non-zero"
+        got = [ln for ln in r.stdout.splitlines() if ln.startswith("(suppressed:")]
+        assert len(got) == 1, r.stdout
+        lines.append(got[0])
+        # The scheduler folds stderr into the same signature text.
+        assert "occurrence" not in r.stderr, r.stderr
+
+    assert len(set(lines)) == 1, f"suppressed line drifts between runs: {lines}"
+    assert "occurrence" not in lines[0], lines[0]
+    assert re.fullmatch(
+        r"\(suppressed: repeat of an open condition \[\S+ [0-9a-f]+\]\)", lines[0]
+    ), lines[0]
 
 def test_critical_repeat_is_suppressed_until_an_escalation_milestone():
     """Top severity must not turn one condition into a high-cadence flood."""
