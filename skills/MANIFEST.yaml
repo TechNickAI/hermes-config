@@ -14,7 +14,7 @@ _do_not_edit: Regenerate with `python scripts/generate_manifest.py`; CI checks i
 count: 26
 skills:
 - name: address-pr-comments
-  version: 2.0.3
+  version: 2.0.6
   scope: solo
   summary: Use when a pull request has review comments from bots (Cursor Bugbot, Codex, Claude Code Review, Gemini Code Assist, Greptile, CodeRabbit) or humans to triage and resolve.
   use_when: a pull request has review comments from bots (Cursor Bugbot, Codex, Claude Code Review, Gemini Code Assist, Greptile, CodeRabbit) or humans to triage and resolve. Fixes the real defects the PR introduced, declines the rest with a one-line reason, answers every bot comment, and drives the PR to a con…
