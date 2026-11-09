@@ -40,16 +40,19 @@ cd <checkout>
 git fetch origin main
 git checkout <pr-branch>
 git merge origin/main --no-edit
-# If conflicts (most likely in shared test files when multiple PRs each added
-# test functions), keep BOTH sides — they test different things. Use Python to
-# strip <<<<<<< / ======= / >>>>>>> markers and concatenate both halves.
-git add -A && git commit -m "Merge main: resolve conflicts"
+# If conflicts: resolve each hunk by reading both sides (see below), then
+# run the tests before committing.
+git add <resolved files> && git commit -m "Merge main: resolve conflicts"
 git push origin <pr-branch>
 ```
 
-**Most common conflict file**: `tests/test_kalshi_client.py` (or equivalent shared test
-file) when multiple PRs each added new test functions. The conflict is just both sides
-adding different functions at the same location — keep both.
+**Most common conflict:** a shared test file where several PRs each added test functions
+at the same spot. Keeping both is usually right, but resolve each hunk by hand; never
+strip the markers and concatenate. If both sides edit the same test, or define a test
+with the same name, Python keeps only the later definition and silently drops the
+other's coverage while pytest stays green. Rename or merge those, then check the
+collected test count went up by what both PRs added
+(`pytest --collect-only -q | tail -1`).
 
 **Subagent-created checkouts**: subagents may create their own checkouts at unexpected
 paths (e.g. `~/src/<repo>-pr33`). Record every clone path in the ledger; for linked

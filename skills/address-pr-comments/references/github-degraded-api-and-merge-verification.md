@@ -8,38 +8,7 @@ compound `gh` command exits non-zero.
 Do not interpret a failed `/pulls/<N>/comments` request as "no comments." Query GraphQL
 review threads instead:
 
-```graphql
-query ($owner: String!, $name: String!, $n: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $n) {
-      reviewThreads(first: 100) {
-        nodes {
-          isResolved
-          comments(first: 20) {
-            nodes {
-              databaseId
-              author {
-                login
-              }
-              body
-              path
-              line
-              reactions(first: 10) {
-                nodes {
-                  content
-                  user {
-                    login
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-```
+Use the paginated query in the next section; it is the only form to run.
 
 This exposes unresolved threads, replies, and reactions. Preserve the root comment's
 `databaseId`; once REST recovers, use it with the normal reply and reaction endpoints.
@@ -58,13 +27,15 @@ Write the query to a `.graphql` file and use shell expansion:
 
 ```bash
 cat > /tmp/prthreads.graphql << 'EOF'
-query($owner: String!, $name: String!, $n: Int!) {
+query($owner: String!, $name: String!, $n: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $n) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           isResolved
-          comments(first: 20) {
+          comments(first: 100) {
+            totalCount
             nodes {
               databaseId
               author { login }
@@ -81,20 +52,30 @@ query($owner: String!, $name: String!, $n: Int!) {
 }
 EOF
 
-gh api graphql -f query="$(< /tmp/prthreads.graphql)" \
-  -F owner=<owner> -F name=<repo> -F n=<pr_number> \
-  --jq '.data.repository.pullRequest.reviewThreads.nodes
+gh api graphql --paginate -f query="$(< /tmp/prthreads.graphql)" \
+  -F owner=<owner> -F name=<repo> -F n=<pr_number> > /tmp/prthreads.json \
+  || { echo "FETCH FAILED: thread counts UNKNOWN, not zero"; exit 1; }
+jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[]]
     | "threads=\(length) unresolved=\(map(select(.isResolved|not))|length)",
+      (.[] | select(.comments.totalCount > (.comments.nodes|length))
+        | "TRUNCATED thread \(.comments.nodes[0].databaseId): read it on the web"),
       (.[] | select(.isResolved|not) | {
         id:.comments.nodes[0].databaseId,
         author:.comments.nodes[0].author.login,
         path:.comments.nodes[0].path,
         line:.comments.nodes[0].line,
-        replies: (.comments.nodes|length-1),
+        replies: (.comments.totalCount-1),
         reactions: (.comments.nodes[0].reactions.nodes|length),
         body:.comments.nodes[0].body[0:400]
-      })'
+      })' /tmp/prthreads.json
 ```
+
+Fetch to a file first and check `gh`'s exit status: piped straight into `jq -s`, a
+failed or half-finished fetch prints `threads=0 unresolved=0` and exits 0, which is the
+false all-clear this fallback exists to prevent. `--paginate` follows `$endCursor`
+across every thread page and `jq -s` joins the pages (works on any `gh`; `--slurp` needs
+a recent one), so the counts cover the whole PR. A thread longer than 100 comments
+prints `TRUNCATED`; read that one on the web rather than trusting the partial replies.
 
 The `-F` flag passes variables as typed GraphQL fields (String/Int), avoiding all shell
 quoting issues.

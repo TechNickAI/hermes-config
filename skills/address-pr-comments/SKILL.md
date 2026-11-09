@@ -5,7 +5,7 @@ description: >
   Code Review, Gemini Code Assist, Greptile, CodeRabbit) or humans to triage and
   resolve. Fixes the real defects the PR introduced, declines the rest with a one-line
   reason, answers every bot comment, and drives the PR to a converged, mergeable state.
-version: 2.0.2
+version: 2.0.3
 license: MIT
 metadata:
   hermes:
