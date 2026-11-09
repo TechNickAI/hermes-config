@@ -1,12 +1,11 @@
 ---
 name: address-pr-comments
 description: >
-  Use when a pull request has feedback from code-review bots (Cursor Bugbot, Codex,
-  Claude Code Review, Greptile, CodeRabbit) or humans and you need to triage it, fix
-  what is valid, push back on what is wrong, react and reply to every comment, and drive
-  the PR to a clean, mergeable state. Trigger phrases: "address the PR comments",
-  "handle the bot feedback", "get the review comments addressed".
-version: 1.0.0
+  Use when a pull request has review comments from bots (Cursor Bugbot, Codex, Claude
+  Code Review, Gemini Code Assist, Greptile, CodeRabbit) or humans to triage and
+  resolve. Fixes the real defects the PR introduced, declines the rest with a one-line
+  reason, answers every bot comment, and drives the PR to a converged, mergeable state.
+version: 2.0.1
 license: MIT
 metadata:
   hermes:
@@ -20,379 +19,398 @@ metadata:
 
 ## Overview
 
-You are the last line of defense before code ships. One or more review bots have
-analyzed this PR; humans may have too. Your job is to process that feedback
-intelligently: fix what genuinely improves the code, push back on what is wrong, and
-leave a clean audit trail so the PR is ready to merge.
+One or more review bots have analyzed this PR; humans may have too. Process that
+feedback with the context the bots lack (the codebase, conventions, intent, the inputs
+the code really receives): fix what is a real defect, push back on what is wrong, leave
+a clean audit trail, and get the PR to merge.
 
-You have context the bots lack — the full codebase, project conventions, and
-architectural intent. Use that advantage. A bot can be confidently wrong; verify each
-claim against the actual source before acting on it.
+The goal is simple, correct code that ships, not zero comments. The failure this skill
+prevents is the loop: a bot raises an edge case, you add complexity for it, the next
+round finds an edge case in the new code, and hours later the PR is a complex mess built
+for things that never happen. Pushes usually re-trigger the configured reviewers, so an
+agent pays for each commit with a review round that a human author would have spent
+seconds waving off.
 
-This skill is the per-PR engine. To _find_ PRs with unaddressed feedback across an org
-or a date range, see `pr-review-sweep`, which dispatches this workflow per PR. For a
-proactive multi-lens review of an artifact before it becomes a PR, see `multi-review`.
+This skill is the per-PR engine. To _find_ PRs with unaddressed feedback, see
+`pr-review-sweep`. For a proactive review before a PR exists, see `multi-review`.
 
 ## When to Use
 
-- The user says "address the PR comments", "handle the bot feedback", "get the bots
-  happy", "process the review on PR #N", or names a PR that has review comments.
-- You opened a PR and want to clear bot findings before asking for merge.
-- A `pr-review-sweep` run handed you a specific PR number to work.
+- "Address the PR comments", "handle the bot feedback", or a PR number with review
+  comments to resolve.
+- You opened a PR and want its bot findings cleared before merge.
+- A `pr-review-sweep` run handed you a PR number.
 
-Do **not** use for:
-
-- Opening a PR or routine commit/push (that is `github-pr-workflow` territory).
-- Merging — this skill drives a PR to _ready_, it does not merge. Merge stays behind the
-  user's explicit approval unless they said otherwise.
-- Resolving feedback on someone else's PR you lack push access to.
+Not for: opening a PR or routine commits (`github-pr-workflow`), summarizing comments
+without acting on them, or PRs you lack push access to. Merging is in scope only when
+the user authorized it.
 
 ## Core Mandate
 
-Fix every valid issue — not "triage what's blocking." Each comment ends in exactly one
-of four states:
+Fix every valid defect the PR introduced, whatever label the bot gave it. Defects the PR
+did not introduce are tracked, not fixed here (step 4). Each bot comment ends in exactly
+one state, with a reason:
 
-1. **Fixed** — the suggestion improves the code, so you implemented it.
-2. **Incorrect** — the bot's analysis is wrong given context it lacks; explain why and
-   react 👎.
-3. **WONTFIX** — technically correct but explicitly unwanted for this project (e.g.
-   "ARIA is out of scope here"); decline with 👎 and a one-line reason.
-4. **Tracked** — valid but scope exceeds this PR; create a GitHub issue and link it.
+1. **Fixed** — a real defect in the merged code, or a cheap improvement you are already
+   pushing for. Implement the simplest version.
+2. **Incorrect** — the bot's analysis is wrong given context it lacks. Reply why, 👎.
+3. **WONTFIX** — correct but not worth it: an edge case the merged code cannot reach in
+   normal operation whose fix adds complexity, a nit not worth a review round, or style
+   the project doesn't want. 👎 and one line.
+4. **Tracked** — a real defect this PR did not introduce (step 6). File it if it passes
+   the filing gate and link it. 👍, not 👎: the bot was right.
 
-"Defer" and "not a blocker" are not outcomes. If a change would genuinely improve the
-code and we want it, make it now. The goal is code quality, not just clearing a gate.
+"Defer" and "not a blocker" are not outcomes. Never decline a real defect in the merged
+code because fixing it is inconvenient; decline an edge case only when you can say why
+it cannot happen and its fix costs more complexity than the failure it prevents.
 
-## Authentication & Environment
+Human comments are not bot comments: never react on a human's behalf, decline, or
+WONTFIX a human request (step 11).
 
-This repo's review checks run on GitHub. Drive everything through the `gh` CLI.
+## Setup
 
-- Confirm auth first: `gh auth status`. If it fails inside a sandboxed/profile shell
-  whose `$HOME` is rewritten, point `gh` at its real config dir for the session, e.g.
-  `export GH_CONFIG_DIR="$REAL_HOME/.config/gh"` (substitute the operator's real home),
-  or prefix the command: `HOME="$REAL_HOME" gh …`. Verify with `gh auth status` again.
-- Resolve owner/repo from the remote when you need it raw:
-  ```bash
-  REMOTE_URL=$(git remote get-url origin)
-  R=$(echo "$REMOTE_URL" | sed -E 's#.*github\.com[:/]##; s#\.git$##')   # owner/repo
-  ```
+```bash
+gh auth status   # in a sandbox with a rewritten $HOME, set GH_CONFIG_DIR to the user's real ~/.config/gh first
+R=$(gh repo view --json nameWithOwner --jq .nameWithOwner)   # or owner/repo from the PR URL; watch for forks
+BASE=$(gh pr view <N> --repo $R --json baseRefName --jq .baseRefName)
+git fetch origin "$BASE"
+```
+
+Pass `--repo $R` on every `gh pr` command. An explicit PR number wins; only fall back to
+`gh pr view --repo $R --json number` when checked out on the PR's branch. With neither,
+stop.
+
+Repo rules outrank bot labels. Read the repo's `AGENTS.md` / `CLAUDE.md` (a
+`## Code Review Rules` section or similar), `REVIEW.md` and `CODING_STANDARDS.md` before
+triaging: they define severity and what reviewers should not raise.
 
 ## Workflow
 
-### 1. Detect the PR
-
-If the user gave a PR number, use it directly as `<N>` in every command below — do not
-re-derive it from the branch. Only fall back to branch detection when no number was
-given:
+### 1. Preflight: will reviewers even run?
 
 ```bash
-# Explicit number wins:
-N=<pr-number-from-user>
-
-# Otherwise auto-detect from the current branch:
-N=$(gh pr view --json number --jq '.number')
+gh pr view <N> --repo $R --json mergeable,mergeStateStatus,isDraft,headRefOid,reviewDecision,statusCheckRollup
 ```
 
-`gh pr view` with no argument resolves the PR for the _current branch_, so it only works
-when you're checked out on the PR's branch. If the user said "process PR #123" while you
-sit on `main`, using branch detection would target the wrong PR (or none). When you have
-a number, pass `gh pr view <N> --repo $R`. If neither a number nor a branch PR is
-available, say so and stop — don't guess.
+- **`CONFLICTING`/`DIRTY` suppresses `pull_request` workflows**, so pushes and re-review
+  requests may start nothing. Merge the base branch in. If the conflict is
+  architectural, or the base branch has since made the opposite design choice, flag it
+  to the user instead of silently picking a side. If `git merge-base HEAD origin/$BASE`
+  returns nothing, the branch has no shared history; report it.
+- **Draft PRs often get no AI review.** Do not mark a draft ready unless the user asked
+  to publish it; say it is a draft and stop.
+- **A failing build often blocks downstream checks**; fix it first. `UNKNOWN` right
+  after a push means GitHub is still computing; re-poll.
+- **A red check may be infrastructure.** Read its log before treating it as a finding.
+  Auth failures from an empty secret (often red on every open PR at once), runner OOM,
+  rate limits, container-pull timeouts and bot actor-policy refusals are infra: rerun
+  with `gh run rerun <run_id> --repo $R --failed`, note the cause on the PR, and surface
+  a broken secret to the user. A review check that crashed may have posted partial
+  findings, so still read what it posted. Signatures:
+  `references/ci-infra-flake-patterns.md`.
+- **CI that runs pre-commit `--all-files`** fails on files the PR never touched when the
+  branch is behind; merging the base branch usually fixes it
+  (`references/pre-commit-ci-all-files.md`).
 
-### 2. Preflight: is the PR even runnable?
+### 2. Fetch every comment, in full
 
-Bots won't post (or their checks stay stuck) when the PR can't build or merge. Check
-before you wait on feedback that will never arrive:
-
-```bash
-gh pr view <N> --repo $R --json mergeable,mergeStateStatus,statusCheckRollup \
-  --jq '{mergeable, state: .mergeStateStatus,
-         checks: [(.statusCheckRollup // [])[] | {name, status, conclusion}]}'
-```
-
-- **Merge conflicts** (`mergeable: CONFLICTING`) block bot checks — resolve first
-  (rebase/merge per project convention), push, then bots re-run. Flag architectural
-  conflicts for the user instead of auto-resolving.
-- **Failing build / required check** often blocks downstream checks — fix the build
-  before chasing individual comments.
-- **`UNKNOWN`** usually means GitHub is still computing mergeability right after a push;
-  re-poll in a few seconds.
-
-### 3. Fetch comments from BOTH endpoints
-
-Review feedback lives at two different API levels. Miss one and you miss half the
-findings. Fetch bot and human feedback separately so you never react on a human's behalf
-(step 10) and never declare "no actionable feedback" while a maintainer's top-level
-comment sits unread.
+Feedback lives in three places. Keep ids, parent ids and timestamps; read full bodies
+before triage.
 
 ```bash
-# --- BOT feedback ---
-
-# PR-level / issue comments from bots (Claude Code Review, some Greptile/CodeRabbit)
+BOT='(.user.type == "Bot") or (.user.login | endswith("[bot]"))'
+# PR-level (issue) comments
 gh api repos/$R/issues/<N>/comments --paginate \
-  --jq '.[] | select(.user.login | endswith("[bot]")) | {id, user: .user.login, created_at, body}'
-
-# Line-level / inline review comments from bots (Cursor, Codex, Greptile inline)
+  --jq ".[] | select($BOT) | {id, user: .user.login, created_at, reactions: .reactions.total_count, body}"
+# Inline review comments
 gh api repos/$R/pulls/<N>/comments --paginate \
-  --jq '.[] | select(.user.login | endswith("[bot]"))
-            | "\n=== \(.path):\(.line // .original_line) — \(.user.login) [id \(.id)] ===\n\(.body)"'
-
-# Bot review summaries (Cursor/Codex headers, verdict bodies). Use real jq with
-# --slurp (`-s`) so pagination is sorted globally, not page-by-page. Include review IDs
-# for traceability; review-body records do not use the inline/issue comment reaction
-# endpoints from step 6.
+  --jq ".[] | select($BOT) | {id, in_reply_to_id, user: .user.login, path, line: (.line // .original_line), commit_id, created_at, reactions: .reactions.total_count, body}"
+# Review bodies (no reactions endpoint; findings can hide here)
 gh api repos/$R/pulls/<N>/reviews --paginate \
-  | jq -sr 'add
-            | map(select(.user.login | endswith("[bot]")))
-            | sort_by(.submitted_at) | reverse
-            | .[] | "--- review_id \(.id) \(.user.login) [\(.state)] \(.submitted_at) ---\n\(.body[0:600])"'
-
-# --- HUMAN feedback (surface separately; do NOT auto-react or auto-decline — step 10) ---
-
-# Human top-level PR conversation comments
-gh api repos/$R/issues/<N>/comments --paginate \
-  --jq '.[] | select((.user.login | endswith("[bot]")) | not) | "\(.user.login): \(.body[0:300])"'
-
-# Human inline + review-body feedback
-gh api repos/$R/pulls/<N>/comments --paginate \
-  --jq '.[] | select((.user.login | endswith("[bot]")) | not) | "\(.path):\(.line // .original_line) \(.user.login): \(.body[0:300])"'
-gh api repos/$R/pulls/<N>/reviews --paginate \
-  --jq '.[] | select((.user.login | endswith("[bot]")) | not) | select(.body != "") | "\(.user.login) [\(.state)]: \(.body[0:300])"'
+  --jq ".[] | select($BOT) | {id, user: .user.login, state, commit_id, submitted_at, body}"
 ```
 
-Notes:
+Run the same three queries with `select(($BOT) | not)` for human feedback, and read
+`reviewDecision` from step 1. If you post through the user's own account, your replies
+appear in the human results too. Skip only the comments you posted this session (keep
+their ids); anything else from that account is the user's own feedback, so read it.
 
-- **`claude-review` posts as a CHECK, not a comment** — its pass/fail shows in
-  `gh pr checks <N>`, not in the comment endpoints. Read it there.
-- **Cursor Bugbot `NEUTRAL` is not proof that findings are cleared.** GitHub may treat
-  the check as successful even when Bugbot reported findings, a newer commit cancelled
-  the run, or the run errored. Inspect the current HEAD's inline findings and confirm
-  every still-live `BUGBOT_BUG_ID` is resolved. A `skipping` or disabled message means
-  Bugbot did not review that push; never treat it as a pass. This skill drives a PR to
-  ready, but merging remains the user's decision.
-- **Only act on the most recent Claude/PR-level bot review.** Older ones reflect
-  outdated code — that is why the review-summary query slurps all paginated pages, sorts
-  globally by `submitted_at`, and reverses, so the newest verdict is first; ignore
-  superseded earlier ones.
-- Process any login ending in `[bot]` — don't hardcode an allowlist; new reviewers
-  appear. Known set: `cursor[bot]`, `chatgpt-codex-connector[bot]`, `claude[bot]`,
-  `greptile[bot]`, `coderabbitai[bot]`.
-- The human queries above are for triage/surfacing only. Reactions, replies, and
-  auto-decline (steps 6–7) apply to **bot** comments; human feedback goes to the user
-  per step 10.
+- **A 503 or error is never "no comments."** Retry, or fall back to GraphQL
+  `reviewThreads` (`references/github-degraded-api-and-merge-verification.md`).
+- Read each reviewer's state per head. Some post as a check (`claude-review`); some run
+  once per PR rather than per push, so a green check can be the OLD head's verdict; read
+  the workflow trigger and count only a verdict created after your last push. If Codex
+  posts a summary carrying `codex-review-state` JSON, its `commit_sha` must equal the
+  current head. Cursor Bugbot `NEUTRAL` can hide findings, a cancelled run or an error;
+  `skipping` means it did not review that push.
+- **A clean summary on the newest head does not close older threads.** Incremental
+  reviewers review only the new diff and don't re-post open findings, so an unanswered
+  finding from round one stays open under a later "no issues found."
+- Your own threaded reply can create a `COMMENTED` review record; check the author
+  before treating a new review id as findings.
+- A bot comment is closed only when you (or the PR author) replied with its outcome and
+  reacted. A reply from the bot itself or another reviewer doesn't close it.
 
-### 4. Separate stale-anchored findings from live ones
+### 3. Separate stale findings from live ones
 
-After any prior fix push, a bot's inline comment stays anchored to the line numbers of
-the commit it reviewed — it is **not** necessarily a re-finding. A green check-run means
-the tooling ran, not that every inline finding is resolved, so use the check-run only to
-confirm the bot reviewed this head. Resolution is decided per finding, by re-reading the
-current code. To isolate findings actually tied to the current head:
+GitHub re-anchors old inline comments onto the new head, and Bugbot may re-post the same
+`BUGBOT_BUG_ID` at the fix commit's new lines. Neither is a new finding. Find what is
+new by unseen ids (or `created_at` after your last push, `in_reply_to_id` null), then
+apply the only real test: **does the current code still exhibit the described defect?**
+
+- Already fixed: reply citing the fix SHA; don't re-fix.
+- About a mechanism a later commit removed: prove it with `git grep <symbol> <head-sha>`
+  and reply citing the removing SHA. When you replace a mechanism mid-PR, update the PR
+  body and the component docs in the same push; stale prose draws these findings.
+
+### 4. Tag each finding Introduced or Pre-existing
+
+Re-review rounds mostly surface old code the reviewer did not reach last pass. Fixing
+those in the PR turns a converging PR into an endless one, so tag first:
+
+- **Introduced** if any of these hold: the PR wrote or changed the cited lines (a
+  verbatim move does not count: check with `git diff --color-moved` or
+  `git blame -M -C`, which are heuristics); the PR changed a caller, contract, config or
+  invariant that makes old code wrong or newly reachable; or the cited code is what the
+  PR exists to change (its title, body or the user's ask).
+- **Pre-existing** only when the defect exists unchanged on the base branch and the PR
+  neither touches nor depends on it. `git blame` (with `-M -C` to follow moves, which is
+  heuristic) shows line history; confirm by reading the code on `origin/$BASE`.
+
+Pre-existing goes to the filing gate (step 6) and is not fixed here. Say so in the
+reply: "Predates this PR (present on `<base>` at `<sha>`); tracked in #n."
+
+### 5. Triage Introduced findings
+
+**Is it a real defect in the merged code?** Judge against the inputs and configuration
+the merged code is built to handle, not against what production has seen so far (new
+code has never run). A reproducible failure on an ordinary sequence is a defect.
+
+The burden is on the decline. If you can construct an ordinary sequence that triggers
+it, it is a defect. Decline only with one line naming the concrete reason the case can't
+arise, and only for cases like these, unless the fix is trivial and leaves the code no
+harder to read:
+
+- a same-instant or narrow-window interleaving that the merged code's invariants rule
+  out (name the invariant: the serializing queue, transaction or single writer);
+- two or more independent failures at once;
+- volume or data shapes the code is not built for;
+- absurd values in a hand-edited config, or validating the code's own outputs.
+
+A plausible race or check-then-act gap on a path the PR adds is a defect: fix it.
+Complexity looks like locks, revision counters, retry loops, re-read-and-compare, or new
+state added only to close a theoretical window. A new config knob tends to draw a chain
+of boundary variants (rounding, overflow, collisions): judge each on reachability, and
+once you have declined one as unreachable, answer its later variants by citing that
+reply instead of starting a fix chain.
+
+**Then decide whether it earns a push.** A defect earns one, whatever the bot labelled
+it. A nit (naming, wording, style, polish, an optional refactor) gets fixed only when
+you are already pushing for a defect and the change is cheap; otherwise WONTFIX with
+"nit, not worth a review round." **Never push a commit whose only content is nits.** A
+missing test for behaviour the PR adds is not a nit; it earns a push.
+
+**Fix the class, not the line.** A valid finding is usually one instance of a pattern.
+Find its siblings in the code this PR adds or changes, and fix them in the same push:
+
+- new state (a latch, flag, kill switch) some caller ignores: grep every entry point
+  that acts, give each the check and its own test, and confirm the detector that sets
+  the state is reachable on that path;
+- one counter-example to a classifier: scan the real population the code sees and fix
+  every value that slips the same way, with a positive control that must still pass;
+- one hot-path walk: switch every site in that pass;
+- copied code with one inherited constant flagged: check the copy's other constants.
+
+Classify each sibling with step 4: one the PR's change broke is Introduced and gets
+fixed; one that merely shares the pattern is Pre-existing, listed in the reply and the
+report and sent through the filing gate.
+
+**Watch for the spiral.** A finding in code you added to answer an earlier finding is a
+cue to stop adding mechanism. Fix the original defect the simplest way, and revert or
+simplify your own hardening rather than hardening it further, but never remove a control
+the finding itself is about. Patterns that break it (single-writer redesign, shipping an
+unrequested sub-feature off by default, fallbacks that already fail loudly):
+`references/breaking-the-spiral.md`.
+
+**Classify before you code, every round.** For "a path can reach X" findings, write the
+failing test first. If no realistic input fails, drop the test and decline with that
+reasoning; that cost one local run, not a review round.
+
+**Decline as Incorrect** when you can say why: a single-use value flagged as a magic
+string; a race on operations a queue, transaction or event loop already serializes (an
+`await` between read and write breaks that); a null check the types already guarantee;
+an optimization with no profile. Grep the repo's rules for the topic first; a finding
+that contradicts a written repo rule is answered by citing it.
+
+**Verify factual API claims live.** When a bot asserts what an external API accepts or
+returns, probe it both ways and paste the result. HTTP 200 does not mean a field was
+honored; confirm the effect. Correct a stale doc in the same PR, scoped to the endpoint
+you probed.
+
+**When the bot is right that new code lacks a test, write it.** Drive the real function
+on a small fixture (fresh temp dirs, the empty case included). If a fix breaks an
+existing test that pinned the old buggy behaviour, update and rename that test; don't
+delete it.
+
+### 6. The filing gate (Pre-existing and out-of-scope findings)
+
+File an issue only when all five hold; otherwise reply "Not filing: <reason>":
+
+1. **Normal operation:** reachable without a crash window, compound failure, or volume
+   the code isn't built for.
+2. **Reachable:** you can name the evidence (log, row, CI run) or an ordinary sequence
+   that reaches it.
+3. **Behaviour, not test plumbing:** "add coverage for X" with no defect in X is not an
+   issue.
+4. **Live code:** on the base branch and enabled, not a retired path.
+5. **Worth the complexity:** the fix would not make the code harder to read.
+
+Search open issues first and comment on a duplicate instead. One defect per issue,
+titled by the user-visible symptom (never "review follow-ups on #N"), with the sequence,
+evidence at `file:line` on the base SHA, impact, simplest fix and labels. Omnibus
+follow-up issues can't be closed and rot. If the repo has issues disabled, tell the user
+where it should be tracked; a Tracked item with nowhere tracked is a silent decline.
+
+The PR that fixes an issue names each one `Fixes #<n>` (one keyword per issue;
+`Closes #a, #b` closes only `#a`, and only on a merge into the default branch). Read the
+issue state back after merge.
+
+### 7. Push once per round
+
+- **Wait for every configured reviewer and CI to land on the current head**, fix all
+  real findings in local commits, then push once. Pushing per finding or per reviewer
+  re-runs the reviewers each time. Poll CI in a separate step from the push.
+- **Run the focused tests before committing and read the pass line**: zero tests
+  collected is not a pass. Run the repo's formatter on the files you changed only, and
+  check `git diff --stat` for unrelated churn and formatter-mangled conflict markers
+  (`> > > > > > >`).
+- **Prove each new test guards the fix:** copy the file aside, break the changed line,
+  run the one test, copy it back and `cmp`. Never use `git checkout -- <file>` for this;
+  it discards the uncommitted fix.
+- **Gate the push on the commit's exit status** (`git commit ... && git push`, or check
+  it explicitly). A hook-rejected commit leaves HEAD on the old commit; a push joined
+  with `;` ships old code under your "fixed" reply.
+- **Confirm the PR's `headRefOid` equals local `HEAD`** after the push. Reviewers review
+  whatever GitHub thinks the head is.
+- **Update the PR body when the approach changed**:
+  `gh api -X PATCH repos/$R/pulls/<N> -F body=@<file>`, then grep the returned body.
+  `gh pr edit --body-file` can fail without changing anything.
+
+### 8. Reply and react, after the push lands
+
+Post replies citing a fix SHA only after step 7 confirmed that SHA is the PR head. Never
+pre-write replies into a script that pushes; trace each claim in the code first.
 
 ```bash
-HEAD=$(gh pr view <N> --repo $R --json headRefOid --jq '.headRefOid')
-# gh's --jq does NOT forward jq's --arg; pipe to a real jq with --arg instead.
-gh api repos/$R/pulls/<N>/comments --paginate \
-  | jq -r --arg h "$HEAD" 'map(select(.commit_id == $h or .original_commit_id == $h))
-                           | .[] | "\(.path):\(.line // .original_line) — \(.body[0:140])"'
+gh api -X POST repos/$R/pulls/<N>/comments/<top_level_id>/replies -f body="..."  # inline thread
+gh api repos/$R/pulls/comments/<comment_id>/reactions -f content="+1"            # inline
+gh api repos/$R/issues/comments/<comment_id>/reactions -f content="+1"           # PR-level
+gh pr comment <N> --repo $R --body "Re review <review_id>: <outcome>"            # review body
 ```
 
-Read each finding's _description_ against the current file state. If your fix already
-changed that code, the comment is stale-anchored — reply that it's resolved (cite the
-fix SHA) rather than "re-fixing." Cursor embeds `<!-- BUGBOT_BUG_ID: <uuid> -->`; the
-same uuid reappearing means the same finding, not a new one.
+- One reaction per inline or PR-level bot comment (review bodies get the PR comment
+  above instead): 👍 addressed or Tracked, ❤️ subtle catch, 🚀 critical defect fixed, 👎
+  Incorrect or WONTFIX. Reactions are feedback signals some bots use.
+- **Target every reply and reaction by comment id**, never by matching body text: bot
+  bodies start with badge HTML, so a text match silently hits nothing. Inline replies go
+  to the thread's top-level comment.
+- Fixed: cite the SHA. Declined: one plain line of why. Introduced/Pre-existing goes in
+  the reply when it decided the outcome.
 
-**Subtler case (confirmed in a recent incident):** after a fix push, the bot may
-re-review and anchor the _same_ `BUGBOT_BUG_ID` to the fix commit's new line numbers.
-The step-4 `commit_id` filter will classify it as a "new finding on the fix commit." The
-correct test is not the commit — it is: **does the current code still exhibit the
-described bug?** If your fix changed that code and the answer is no, it is
-stale-anchored. Decline with the fix SHA and a one-line note. Do not re-fix code that is
-already correct just because the bot re-posted with a new anchor.
+### 9. Fix repeated false positives at the source
 
-### 5. Triage each comment
+When you decline the same class of finding as **Incorrect** twice on a repo, add it to
+that repo's "do not raise" list (`## Code Review Rules`, `REVIEW.md`,
+`CODING_STANDARDS.md`), in its own follow-up PR (that is not a nit push on this PR)
+unless this PR already edits those rules. If the mistake is mechanical, add a lint rule
+or hook instead. A 👎 per comment trains nothing on our side. Convenience declines
+(nits, WONTFIX) never become rules.
 
-Ask: **"Is this suggestion correct given context the bot lacks?"** Verify against the
-real code before agreeing _or_ pushing back.
+### 10. Stall detection
 
-**Fix it** when the analysis is correct:
+A reviewer `queued`/`in_progress` for ~5+ minutes with no output gets investigated:
+conflicts, a failing build blocking it, runner queue, rate limits, a draft PR, or a
+once-per-PR trigger. Report it plainly; never idle silently. If round 3+ still surfaces
+new Introduced defects (not Pre-existing, not your own hardening), tell the user and
+name the pattern: the approach may be wrong.
 
-- Bug, security issue, logic error, or a genuine improvement. For a security/production
-  bug, react 🚀 (critical) or ❤️ (subtle catch) and fix immediately.
-- When the bot diagnoses the right problem but proposes a clumsy fix, solve the
-  underlying issue the clean way and credit the diagnosis.
+### 11. Human comments
 
-**Decline as Incorrect** when you can articulate why the bot is wrong. Common
-false-positive classes (each is a _decline-with-explanation_, not a skip):
+Surface them separately for the user, or implement them when they are clear requests
+within the PR's scope. Don't react on a human's behalf, and never decline or WONTFIX a
+human request.
 
-- **Single-use values** flagged as "magic strings." Extracting a constant used exactly
-  once adds indirection without a DRY benefit. Constants exist to stay DRY across
-  multiple uses.
-- **Theoretical race conditions** where operations are already serialized by a queue,
-  mutex, transaction, or single-threaded event loop the bot can't see. (A real example:
-  a bot flagged a "concurrent map overwrite" in a get-or-create block that had no
-  `await` between the read and the write — atomic under a single-threaded runtime.)
-- **Redundant type/null checks** already guaranteed by the type system or handled by
-  runtime validation at another layer.
-- **Premature optimization** with no profiling data showing a real problem.
+### 12. Final sweep
 
-**Verify API/schema claims against the live source before Fix-or-Decline.** When a bot
-asserts a factual claim about an external API — "this field isn't in the schema", "the
-cap is N", "the endpoint returns X" — don't accept OR decline from memory. Probe the
-live API (a one-shot `curl`) and let the result decide. This session both directions
-fired on the same PR: a bot said `filters.recency_days` was unsupported — the API
-returned HTTP 200 but _silently ignored_ the unknown field (so recency-scoped queries
-came back unfiltered → real bug, real fix via the documented `from_date` mechanism); and
-a bot said the X-handle cap was higher than the code enforced — the API accepted 20
-handles where the code capped at 5 (→ real bug, cap was wrong). Note the trap: **HTTP
-200 does not mean the field was honored** — many APIs accept-and-ignore unknown keys, so
-"it didn't error" is not proof the parameter worked. Confirm the _effect_, not just the
-status code.
+After the last push, once checks settle:
 
-**Decline as WONTFIX** when correct but explicitly unwanted: accessibility when it isn't
-a project priority, i18n in an English-only tool, micro-optimizations on cold paths,
-style that conflicts with project convention. Check project config/conventions for the
-team's stance; if none is declared and the call is non-trivial, ask the user rather than
-guessing.
+- every top-level bot comment, from every round, has your reply where useful and your
+  reaction (`reactions.total_count` of 0 is a miss);
+- replying does not resolve a GitHub thread: if branch protection requires resolved
+  conversations, resolve the threads you closed (GraphQL `resolveReviewThread`);
+- every review body was read and answered;
+- every reviewer reported on the current head;
+- no human `CHANGES_REQUESTED` stands and no human request is unanswered;
+- tests re-ran after your last edit.
 
-**Create a GitHub issue** when valid but out of scope — e.g. the fix would touch a
-shared utility used by ten other files. Open it, link it in your reply, keep the PR
-focused:
+A valid new Introduced defect sends you back to step 5. Then the PR is ready.
 
-```bash
-gh issue create --repo $R --title "<concise>" --body "<context + link to PR #N>"
-```
+## Merging (only when authorized)
 
-Never decline merely because fixing is inconvenient.
-
-### 6. React to every comment — and use the right endpoint
-
-Every bot comment gets exactly one reaction. Reactions are training signals:
-
-- 👍 `+1` — helpful, addressed. "More like this."
-- ❤️ `heart` — exceptional catch (subtle bug, real security issue).
-- 🚀 `rocket` — critical security/production bug you fixed.
-- 👎 `-1` — incorrect/irrelevant/wrong analysis. "Less like this."
-
-**The endpoint depends on the comment level — mixing them 404s. Review-body records
-(from the reviews endpoint) do not have a reactions endpoint; respond to their findings
-by posting a regular PR comment that references the `review_id`.**
-
-```bash
-# Line-level (inline) comment — lives on the PULLS endpoint
-gh api repos/$R/pulls/comments/<comment_id>/reactions -f content="rocket"
-
-# PR-level (issue) comment — lives on the ISSUES endpoint
-gh api repos/$R/issues/comments/<comment_id>/reactions -f content="+1"
-
-# Review-body verdict (from the reviews endpoint) — no reactions endpoint.
-# Acknowledge and/or reply with a PR-level comment citing review_id instead:
-gh pr comment <N> --repo $R --body "Addressed review_id <review_id>: <summary>"
-```
-
-Valid contents: `+1`, `-1`, `heart`, `rocket`, `laugh`, `hooray`, `confused`, `eyes`.
-
-### 7. Reply where it adds training value
-
-A reply is most valuable when it explains _why_ a suggestion is wrong — that is the
-training data that improves bots over time. Keep it brief; the reaction is the primary
-signal.
-
-```bash
-# Threaded reply to a line-level comment (note in_reply_to)
-gh api repos/$R/pulls/<N>/comments -f body="Declining: this value appears exactly once; \
-extracting a constant adds indirection without a DRY benefit." -F in_reply_to=<comment_id>
-```
-
-- When fixing, the commit speaks for itself — mention the fix SHA for traceability.
-- For an exceptional catch, a short "Great catch — fixed in `<sha>`" plus ❤️ is welcome.
-- Pure pleasantries ("Thanks for the review!") add less than a reaction alone — skip
-  them.
-
-### 8. Push fixes, then re-poll (don't poll-and-sleep)
-
-Work while bots run. Process whatever comments are available from fast reviewers (Claude
-Code Review usually finishes first), commit, push, then check the slower ones (Cursor,
-Codex, Greptile). After a push, bots re-analyze:
-
-- Skip comment IDs you've already processed; only handle genuinely new feedback.
-- Group related fixes into a coherent commit with a conventional message.
-- Re-run the preflight (step 2) and check-status loop after each push.
-
-```bash
-gh pr checks <N> --repo $R          # one-shot status
-# or watch until checks settle:
-gh pr checks <N> --repo $R --watch
-```
-
-If you've pushed 3+ times and bots keep surfacing genuinely new issues, stop and flag it
-— something systematic is off, and the user should weigh in.
-
-### 9. Stall detection
-
-If a specific bot stays `queued`/`in_progress` for more than ~5 minutes with no output,
-investigate rather than wait silently. Usual causes: unresolved merge conflict, a build
-failure blocking downstream checks, CI runner queue depth, or rate limiting. Report it
-plainly: "Cursor has been queued 8 min; the build is failing on type-check, which is
-likely blocking it — fixing the build first." Never idle silently; if you have nothing
-actionable, say so and say why.
-
-### 10. Human comments are not yours to auto-resolve
-
-Surface human-reviewer comments separately and flag them for the user. Don't react on
-the user's behalf or auto-decline a human's request.
+- **Author check first.** "Merge what's ready" covers the user's PRs, PRs you opened for
+  them, and dependency bots if they said so. A PR from anyone else is outside the trust
+  boundary: post findings and hand the user the decision.
+- Merge **pinned to the reviewed head**, using the repo's allowed method:
+  `gh pr merge <N> --repo $R --squash --match-head-commit <full-40-char-sha>` (swap
+  `--squash` for `--merge`/`--rebase` if that is what the repo allows).
+- Read back `gh pr view <N> --repo $R --json state,mergeCommit`. Queued is not merged; a
+  non-zero exit can still have merged (branch deletion failed); a 409 "head branch was
+  modified" right after a push or label change is often transient, so re-read the head
+  and retry the same pinned merge. Then `git fetch origin $BASE` and confirm with
+  `git merge-base --is-ancestor <merge-commit> origin/$BASE`.
+- Comments that land after merge, and batches of PRs:
+  `references/multi-pr-and-post-merge.md`.
 
 ## Completion Report
-
-When all bots have settled and no actionable feedback remains, report:
 
 ```
 ## Bot Feedback Addressed
 **PR:** #<N> — <title>   (<url>)
-**Fixed:** <n>    **Declined:** <n> (<incorrect> incorrect, <wontfix> wontfix)
-**Issues created:** <n>
-**Checks:** <pre-commit/Cursor/claude-review status>
-<one-line summary of key fixes and notable declines>
-<any human comments still needing attention>
+**Rounds:** <n>   **Fixed:** <n>   **Declined:** <n> (<incorrect> incorrect, <wontfix> wontfix)
+**Introduced / Pre-existing:** <i> / <p>   **Issues filed:** <n>   **Siblings left:** <list or none>
+**Reviewers on head <sha>:** <per reviewer>
+<key fixes, notable declines, any "do not raise" rule added>
+<human comments still needing the user>
 ```
 
-Before declaring done, verify **every** bot comment got a reaction — go back and add any
-you missed. State explicitly whether the PR is now clean and mergeable, then hand the
-merge decision back to the user.
+Say plainly whether the PR is mergeable, and whether you merged it.
 
 ## Common Pitfalls
 
-1. **Only fetching one comment endpoint.** Inline findings (pulls) and PR-level verdicts
-   (issues) are separate APIs; `gh pr view --comments` misses inline ones entirely.
-   Always query both, plus `gh pr checks` for check-only reviewers like `claude-review`.
-2. **Reacting/replying on the wrong endpoint.** Line-level comment reactions go to
-   `pulls/comments/<id>`, PR-level to `issues/comments/<id>`. Cross them and you get
-   a 404.
-3. **Treating stale-anchored inline comments as new findings.** After a fix push, old
-   comments linger at their original line numbers. Check `commit_id` against the head
-   SHA and read the description against current code before "re-fixing."
-4. **Rubber-stamping the bot.** Bots are confidently wrong often enough that you must
-   verify each claim against the source. Equally: don't dismiss a real bug just because
-   the proposed fix is awkward — fix the underlying issue.
-5. **Merging.** This skill ends at _ready to merge_. Don't merge unless the user
-   explicitly authorized it.
-6. **Poll-and-sleep.** Don't block on the slowest bot. Process available comments, push,
-   and re-poll. Investigate stalls instead of waiting silently.
-7. **`gh` auth failing in a rewritten-`$HOME` shell.** Point `GH_CONFIG_DIR` at the real
-   config dir or prefix `HOME=<real-home>`; never assume the bare command will find
-   auth.
-8. **Forgetting a reaction.** Every bot comment gets exactly one. Audit before declaring
-   complete.
+1. **Fixing Pre-existing findings in the PR**, the main reason review loops don't
+   converge. Equally wrong: calling the PR's own change Pre-existing.
+2. **Treating the bot's P2 as a nit.** Labels don't decide; defect vs nit does.
+3. **A nit-only push.** It buys a review round for nothing.
+4. **Fixing the cited line and leaving its siblings.** The next round names the twin.
+5. **Hardening your own hardening.**
+6. **Trusting a green check or a clean latest summary** while older threads or review
+   bodies are unanswered.
+7. **Replying "fixed in <sha>" before that SHA is the PR head.**
+8. **Replying by text match** instead of comment id.
 
 ## Verification Checklist
 
-- [ ] PR detected (explicit number or branch auto-detect); stopped cleanly if none.
-- [ ] Preflight done: mergeable + check status read before waiting on bots.
-- [ ] Comments fetched from issues endpoint, pulls endpoint, AND `gh pr checks`.
-- [ ] Each comment triaged → Fixed / Incorrect / WONTFIX / Tracked.
-- [ ] Every bot comment has exactly one reaction, on the correct endpoint.
-- [ ] Declines have a one-line "why the bot is wrong / why unwanted" reply.
-- [ ] Fixes pushed; bots re-polled until checks settle; stalls investigated, not slept
-      on.
-- [ ] Human comments surfaced separately for the user.
-- [ ] Completion report with Fixed/Declined/Tracked counts and merge-readiness; merge
-      left to the user.
+- [ ] Preflight read: mergeable, draft state, infra-only red checks recognized.
+- [ ] Full comment bodies read from issues, pulls and reviews endpoints, plus each
+      reviewer's state on the current head; API errors never read as "no comments".
+- [ ] Each finding tagged Introduced / Pre-existing; the PR's own purpose never tagged
+      Pre-existing.
+- [ ] Every valid Introduced defect fixed with its siblings in the change; leftovers
+      listed; Tracked items passed the filing gate.
+- [ ] No nit-only push; one push per round; commit gated; PR head verified before
+      replying.
+- [ ] Every bot comment has a reaction and, where useful, a reply by id; review bodies
+      answered.
+- [ ] A false positive declined as Incorrect twice became a repo rule or check.
+- [ ] Humans surfaced and never declined; no standing `CHANGES_REQUESTED`.
+- [ ] Report sent; merge pinned and verified on the base branch if authorized.
