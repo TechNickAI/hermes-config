@@ -114,11 +114,11 @@ When processing multiple PRs across different repos:
 
 ## Session notes (one occasion)
 
-- cryptoai #793: ruff auto-fixed 2 import ordering issues; manual edit to address
+- One repo: ruff auto-fixed 2 import ordering issues; manual edit to address
   gemini-code-assist comment (set union → chained `and`) created a line >88 chars,
   ruff-format wrapped it in parentheses. Required two pushes: first for auto-fixes +
   comment fix, second for format wrap.
-- antevorta #17: `pre-commit run --all-files` modified 59 files (formatting churn across
+- Another repo: `pre-commit run --all-files` modified 59 files (formatting churn across
   the entire repo). Main branch also had 129 pre-existing ruff errors. No branch
   protection → mergeable despite failing lint. User authorized merge despite
   pre-existing CI failures.
