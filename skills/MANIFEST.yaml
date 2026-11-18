@@ -11,7 +11,7 @@
 #   use_when              the trigger conditions, for selective installation
 _generated_by: scripts/generate_manifest.py
 _do_not_edit: Regenerate with `python scripts/generate_manifest.py`; CI checks it.
-count: 26
+count: 27
 skills:
 - name: address-pr-comments
   version: 2.0.6
@@ -342,6 +342,19 @@ skills:
   - gateway
   - recovery
   path: skills/recall-from-openclaw
+- name: reddit-reading
+  version: 1.0.0
+  scope: solo
+  summary: Use when reading Reddit.
+  use_when: reading Reddit. Query the Arctic Shift archive.
+  requires: []
+  works_out_of_the_box: true
+  tags:
+  - reddit
+  - search
+  - archive
+  - arctic-shift
+  path: skills/reddit-reading
 - name: report
   version: 0.2.0
   scope: fleet
