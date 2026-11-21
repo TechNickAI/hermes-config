@@ -1577,7 +1577,20 @@ def run(spec: Spec, dry_run: bool = False) -> int:
             # Silent repeat: the ledger and incidents.db already recorded it.
             # One short line on stdout so a human reading logs by hand can see
             # the run happened and was deliberately not delivered.
-            print(f"(suppressed: {why})")
+            #
+            # The line MUST be identical on every repeat of one condition. The
+            # Hermes scheduler still sees a non-zero exit, and it groups
+            # failures by a signature of this text; its repeat-alert cooldown
+            # only works when that signature holds still. Printing the running
+            # occurrence count here minted a new scheduler incident on every
+            # tick, so every "suppressed" repeat was delivered anyway. The
+            # fingerprint is stable for one condition and changes when the
+            # condition does, which is exactly when a new alert is wanted. The
+            # count lives in incidents.db (`jobrun_repair.py --status`). Keep it
+            # off stderr too: the scheduler folds stderr into the same text.
+            fp = (incident or {}).get("fingerprint") or "unknown"
+            reason = getattr(outcome, "reason_code", None) or state
+            print(f"(suppressed: repeat of an open condition [{reason} {fp}])")
             return {
                 "child_failure": EXIT_CHILD,
                 "timeout": EXIT_TIMEOUT,
