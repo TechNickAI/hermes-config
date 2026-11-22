@@ -105,7 +105,7 @@ CORTEX_TOOL_SCHEMA = {
             "sources": {"type": "array", "items": {"type": "string"}, "description": "rel_paths an answer was built from (for 'file')."},
             "superseded_by": {"type": "string", "description": "rel_path of the page that replaces this one (for 'supersede')."},
             "reason": {"type": "string", "description": "Why the page is no longer current (for 'supersede')."},
-            "limit": {"type": "integer", "description": "Result limit (default 5 for search, 20 for list/log)."},
+            "limit": {"type": "integer", "description": "Result limit (default 5 for search, 20 for list/log, 8 matches per term for scan)."},
         },
         "required": ["action"],
     },
@@ -550,7 +550,8 @@ class CortexMemoryProvider(MemoryProvider):
                     terms = [t.strip() for t in terms.split(",")]
                 if not terms:
                     return tool_error("scan requires 'terms'")
-                return dumps_response(self._store.scan_terms(terms))
+                per_term = max(1, min(int(args.get("limit", 8)), 200))
+                return dumps_response(self._store.scan_terms(terms, per_term=per_term))
             elif action == "supersede":
                 rel = args.get("rel_path", "")
                 if not rel:

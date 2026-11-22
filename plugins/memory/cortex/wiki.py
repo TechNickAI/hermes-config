@@ -404,6 +404,8 @@ def scan_terms(pages: list[dict], terms: Iterable[str], *, per_term: int = 8,
         if len(clean) >= max_terms:
             break
     result: dict[str, list[dict]] = {}
+    totals: dict[str, int] = {}
+    all_rels: set[str] = set()
     live = [p for p in pages if not validity(p.get("frontmatter") or {})[0]]
     for term in clean:
         rx = re.compile(r"(?<![\w])" + re.escape(term) + r"(?![\w])", re.I)
@@ -427,6 +429,12 @@ def scan_terms(pages: list[dict], terms: Iterable[str], *, per_term: int = 8,
                 "line": line,
             })
         hits.sort(key=lambda h: (not h["in_title"], -h["mentions"], h["rel_path"]))
+        totals[term] = len(hits)
+        all_rels.update(h["rel_path"] for h in hits)
         result[term] = hits[:per_term]
-    return {"terms": clean, "matches": result,
-            "pages_touched": len({h["rel_path"] for hs in result.values() for h in hs})}
+    # Truncation is explicit: `total` per term and `pages_touched` count every
+    # match, so a caller seeing total > len(matches) knows to re-scan that term
+    # with a higher limit instead of assuming the list was complete.
+    return {"terms": clean, "matches": result, "totals": totals,
+            "truncated": sorted(t for t in clean if totals[t] > len(result[t])),
+            "pages_touched": len(all_rels)}

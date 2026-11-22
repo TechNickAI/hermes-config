@@ -65,7 +65,9 @@ EXCLUDE_DIRS = {".git", "_legacy-root", "artifacts", "node_modules", "__pycache_
 # Files the curation system itself generates. Excluded so the pass never
 # curates its own output (which otherwise shows up as a perpetually-dirty page
 # and inflates the "never curated" backlog by one every run).
-EXCLUDE_FILES = {"review-queue.md"}
+# log.md and catalog.md are Cortex bookkeeping (see wiki.py), not knowledge;
+# index.md is never indexed by the store either.
+EXCLUDE_FILES = {"review-queue.md", "log.md", "catalog.md", "index.md"}
 
 
 def today() -> datetime.date:
@@ -326,8 +328,6 @@ def _lint_summary(store: Path) -> dict:
             "content_date": wiki._iso(fm.get("updated") or fm.get("date") or fm.get("created")),
             "frontmatter": fm,
         })
-    rows = [r for r in rows if Path(r["rel_path"]).name not in
-            ("index.md", wiki.LOG_FILENAME, wiki.CATALOG_FILENAME)]
     return wiki.lint(rows, disk_paths=disk, examples=5)
 
 

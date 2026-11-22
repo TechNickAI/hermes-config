@@ -326,3 +326,32 @@ def test_lint_resolves_unindexed_folder_index_and_skips_directives(tmp_path: Pat
           "[[reply_to_current]], [[reply_to:42]] and [[truly-missing]].")
     rep = CortexStore(store_path=root).lint(write_catalog=False, log=False)
     assert [b["target"] for b in rep["broken_links"]["examples"]] == ["truly-missing"]
+
+
+def test_scan_reports_truncation_and_counts_every_page(tmp_path: Path) -> None:
+    root = tmp_path / "cortex"
+    for i in range(12):
+        _page(root, f"topics/t{i}.md", f"T{i}", "Mentions Wobbleton here.")
+    store = CortexStore(store_path=root)
+    out = store.scan_terms(["Wobbleton"])
+    assert len(out["matches"]["Wobbleton"]) == 8
+    assert out["totals"]["Wobbleton"] == 12
+    assert out["pages_touched"] == 12
+    assert out["truncated"] == ["Wobbleton"]
+    full = store.scan_terms(["Wobbleton"], per_term=50)
+    assert len(full["matches"]["Wobbleton"]) == 12 and full["truncated"] == []
+
+
+def test_curation_brief_ignores_bookkeeping_files(tmp_path: Path) -> None:
+    sys.path.insert(0, str(_plugin_dir / "scripts"))
+    import weekly_curation  # noqa: PLC0415
+
+    root = tmp_path / "cortex"
+    store = CortexStore(store_path=root)
+    store.write_page("topics", "real", "real page")
+    store.lint()
+    store.log("note", "x")
+    rels = {str(p.relative_to(root)) for p in weekly_curation.iter_pages(root)}
+    assert rels == {"topics/real.md"}
+    brief = weekly_curation.build_brief(root, days=7)
+    assert brief["work_set"] == ["topics/real.md"]
