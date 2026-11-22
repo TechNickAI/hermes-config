@@ -64,9 +64,16 @@ SKIP_DIRS = {
     ".DS_Store",
 }
 
+class _AlreadyMigrated(Exception):
+    """Another process finished the migration while we waited for the lock."""
+
+
 # File name patterns skipped during indexing. Same rationale as SKIP_DIRS.
-def _should_skip_file(name: str) -> bool:
-    if name in ("index.md", wiki.LOG_FILENAME, wiki.CATALOG_FILENAME):
+def _should_skip_file(name: str, *, at_root: bool = False) -> bool:
+    if name == "index.md":
+        return True
+    # Bookkeeping lives only at the store root; projects/log.md is a real page.
+    if at_root and name in (wiki.LOG_FILENAME, wiki.CATALOG_FILENAME):
         return True
     if name.endswith(".bak"):
         return True
@@ -276,8 +283,14 @@ class CortexStore:
             # completion marker, so a crash between the two would leave the
             # column present and permanently unpopulated — recency silently
             # dead with no way to detect it.
-            conn.execute("BEGIN")
+            # BEGIN IMMEDIATE takes the write lock before the re-check, so two
+            # processes opening a pre-migration store (gateway + cron) cannot
+            # both decide to ALTER; the loser re-reads and finds it done.
+            conn.execute("BEGIN IMMEDIATE")
             try:
+                if "content_date" in {r["name"] for r in conn.execute("PRAGMA table_info(pages)")}:
+                    conn.commit()
+                    raise _AlreadyMigrated
                 conn.execute("ALTER TABLE pages ADD COLUMN content_date TEXT")
                 # Backfill in place with UPDATE. Do NOT force a reindex here (e.g.
                 # by resetting mtime): rowid reassignment desyncs the external-content
@@ -298,6 +311,8 @@ class CortexStore:
                         "UPDATE pages SET content_date = ? WHERE rel_path = ?", (cd, rel)
                     )
                 conn.commit()
+            except _AlreadyMigrated:
+                pass
             except Exception:
                 conn.rollback()
                 raise
@@ -308,8 +323,14 @@ class CortexStore:
         # the completion marker, and a forced reindex would reassign rowids.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(pages)")}
         if "invalid_at" not in cols:
-            conn.execute("BEGIN")
+            # BEGIN IMMEDIATE takes the write lock before the re-check, so two
+            # processes opening a pre-migration store (gateway + cron) cannot
+            # both decide to ALTER; the loser re-reads and finds it done.
+            conn.execute("BEGIN IMMEDIATE")
             try:
+                if "invalid_at" in {r["name"] for r in conn.execute("PRAGMA table_info(pages)")}:
+                    conn.commit()
+                    raise _AlreadyMigrated
                 conn.execute("ALTER TABLE pages ADD COLUMN invalid_at TEXT")
                 conn.execute("ALTER TABLE pages ADD COLUMN superseded_by TEXT")
                 for row in conn.execute("SELECT rel_path FROM pages").fetchall():
@@ -326,6 +347,8 @@ class CortexStore:
                             (inv, succ, rel),
                         )
                 conn.commit()
+            except _AlreadyMigrated:
+                pass
             except Exception:
                 conn.rollback()
                 raise
@@ -356,7 +379,8 @@ class CortexStore:
                 # Prune skip dirs in-place so we don't descend into them
                 dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
                 for fname in filenames:
-                    if not fname.endswith(".md") or _should_skip_file(fname):
+                    at_root = Path(dirpath) == self.store_path
+                    if not fname.endswith(".md") or _should_skip_file(fname, at_root=at_root):
                         continue
                     p = Path(dirpath) / fname
                     try:
@@ -961,6 +985,17 @@ class CortexStore:
             "tags": tags or [],
             "updated": datetime.now().strftime("%Y-%m-%d"),
         }
+        # Overwriting a superseded page must not silently resurrect it: carry
+        # validity fields forward. Un-superseding is an explicit edit of the
+        # frontmatter, not a side effect of rewriting the body.
+        if path.exists():
+            try:
+                old_fm, _ = _parse_frontmatter(path.read_text(encoding="utf-8"))
+            except Exception:
+                old_fm = {}
+            for k in ("invalid_at", "superseded_by", "superseded_reason"):
+                if old_fm.get(k) and k not in (extra_frontmatter or {}):
+                    fm[k] = old_fm[k]
         for k, v in (extra_frontmatter or {}).items():
             if k not in fm and v not in (None, "", []):
                 fm[k] = v
@@ -1012,6 +1047,8 @@ class CortexStore:
         p = self._resolve_rel(rel_path)
         if not p.is_file():
             raise FileNotFoundError(rel_path)
+        if p.suffix != ".md" or rel_path.strip("/") in (wiki.LOG_FILENAME, wiki.CATALOG_FILENAME):
+            raise ValueError(f"only knowledge pages can be superseded: {rel_path}")
         if superseded_by:
             succ = self._resolve_rel(superseded_by)
             if not succ.is_file():
@@ -1028,11 +1065,15 @@ class CortexStore:
             fm["superseded_by"] = superseded_by
         if reason:
             fm["superseded_reason"] = " ".join(reason.split())[:300]
+        # Banner is rendered from the merged frontmatter so a re-supersede that
+        # omits arguments never disagrees with what search sees.
+        successor = fm.get("superseded_by")
+        why = fm.get("superseded_reason")
         banner_lines = [f"> **Status: Superseded** ({day})"]
-        if superseded_by:
-            banner_lines.append(f"> Current version: [{superseded_by}]({superseded_by})")
-        if reason:
-            banner_lines.append(f"> {' '.join(reason.split())[:300]}")
+        if successor:
+            banner_lines.append(f"> Current version: [{successor}]({successor})")
+        if why:
+            banner_lines.append(f"> {why}")
         banner = "\n".join(banner_lines) + "\n\n"
         stripped = body.lstrip()
         if stripped.startswith("> **Status: Superseded**"):
@@ -1097,8 +1138,12 @@ class CortexStore:
         for src in cited:
             if not self._resolve_rel(src).is_file():
                 raise FileNotFoundError(f"source page not found: {src}")
+        base = _safe_slug(title)
+        slug, n = base, 2
+        while (self.store_path / "analyses" / f"{slug}.md").exists():
+            slug, n = f"{base}-{n}", n + 1
         rel = self.write_page(
-            "analyses", title, body, tags=sorted(set((tags or []) + ["analysis"])), title=title,
+            "analyses", slug, body, tags=sorted(set((tags or []) + ["analysis"])), title=title,
             extra_frontmatter={"sources": cited, **({"question": question} if question else {})},
         )
         wiki.append_log(self.store_path, "query", title,
@@ -1131,12 +1176,14 @@ class CortexStore:
     def list_pages(self, category: str | None = None, limit: int = 50) -> list[dict]:
         if category:
             cur = self._conn.execute(
-                "SELECT rel_path, title, tags FROM pages WHERE category = ? ORDER BY mtime DESC LIMIT ?",
+                f"SELECT rel_path, title, tags FROM pages WHERE category = ? AND {wiki.live_sql()}"
+                " ORDER BY mtime DESC LIMIT ?",
                 (category, limit),
             )
         else:
             cur = self._conn.execute(
-                "SELECT rel_path, title, tags FROM pages ORDER BY mtime DESC LIMIT ?",
+                f"SELECT rel_path, title, tags FROM pages WHERE {wiki.live_sql()}"
+                " ORDER BY mtime DESC LIMIT ?",
                 (limit,),
             )
         return [dict(r) for r in cur.fetchall()]

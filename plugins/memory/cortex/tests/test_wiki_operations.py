@@ -355,3 +355,116 @@ def test_curation_brief_ignores_bookkeeping_files(tmp_path: Path) -> None:
     assert rels == {"topics/real.md"}
     brief = weekly_curation.build_brief(root, days=7)
     assert brief["work_set"] == ["topics/real.md"]
+
+
+# ------------------------------------------------- review regressions (PR #155)
+
+
+def test_nested_log_and_catalog_pages_are_real_pages(tmp_path: Path) -> None:
+    root = tmp_path / "cortex"
+    _page(root, "projects/log.md", "Project log", "nested log page")
+    _page(root, "topics/catalog.md", "Catalog topic", "nested catalog page")
+    store = CortexStore(store_path=root)
+    store.log("note", "root bookkeeping")
+    store.lint()
+    rels = {r["rel_path"] for r in CortexStore(store_path=root).list_pages(limit=50)}
+    assert rels == {"projects/log.md", "topics/catalog.md"}
+
+
+def test_concurrent_migration_loser_does_not_crash(tmp_path: Path) -> None:
+    """Gateway and cron open a pre-migration store at the same moment.
+
+    The loser reads the column list (no invalid_at), then the winner migrates,
+    then the loser decides. Without a re-check under the write lock the loser
+    runs ALTER again and dies with "duplicate column name".
+    """
+    root = tmp_path / "cortex"
+    _page(root, "topics/a.md", "A", "alpha", superseded_by="topics/b.md")
+    _page(root, "topics/b.md", "B", "beta")
+    CortexStore(store_path=root)
+    db = root / ".plugin.db"
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE pages DROP COLUMN superseded_by")
+    conn.execute("ALTER TABLE pages DROP COLUMN invalid_at")
+    conn.commit()
+    conn.close()
+
+    class Interleaved:
+        """Serves the stale column list to unlocked reads; winner runs between."""
+
+        def __init__(self, real):
+            self._real = real
+            self._stale = None
+
+        def execute(self, sql, *args):
+            if "table_info(pages)" in sql and not self._real.in_transaction:
+                if self._stale is None:
+                    self._stale = self._real.execute(sql).fetchall()
+                    CortexStore(store_path=root)  # the winner migrates now
+                return iter(self._stale)
+            return self._real.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real = sqlite3.connect(db)
+    real.row_factory = sqlite3.Row
+    loser = Interleaved(real)
+    stub = CortexStore.__new__(CortexStore)
+    stub.store_path = root
+    stub._init_schema(loser)
+    assert real.execute(
+        "select invalid_at from pages where rel_path='topics/a.md'"
+    ).fetchone()[0] == wiki.ALWAYS_INVALID
+
+
+def test_resupersede_without_args_keeps_banner_consistent(tmp_path: Path) -> None:
+    store = CortexStore(store_path=tmp_path / "cortex")
+    store.write_page("topics", "a", "alpha")
+    store.write_page("topics", "b", "beta")
+    store.supersede("topics/a.md", superseded_by="topics/b.md", reason="replaced")
+    store.supersede("topics/a.md")
+    body = store.get_page("topics/a.md")["body"]
+    assert "Current version: [topics/b.md]" in body and "replaced" in body
+
+
+def test_rewriting_superseded_page_does_not_resurrect_it(tmp_path: Path) -> None:
+    store = CortexStore(store_path=tmp_path / "cortex")
+    store.write_page("topics", "a", "zorblat alpha")
+    store.write_page("topics", "b", "beta")
+    store.supersede("topics/a.md", superseded_by="topics/b.md")
+    store.write_page("topics", "a", "zorblat alpha edited")
+    assert store.get_page("topics/a.md")["frontmatter"]["superseded_by"] == "topics/b.md"
+    assert "topics/a.md" not in _rels(CortexRetriever(store).search("zorblat", limit=5))
+
+
+def test_file_answer_never_overwrites(tmp_path: Path) -> None:
+    store = CortexStore(store_path=tmp_path / "cortex")
+    store.write_page("topics", "a", "alpha")
+    r1 = store.file_answer("Same Q", "first", ["topics/a.md"])
+    r2 = store.file_answer("Same Q", "second", ["topics/a.md"])
+    assert r1 != r2
+    assert "first" in store.get_page(r1)["body"] and "second" in store.get_page(r2)["body"]
+
+
+def test_supersede_refuses_non_pages(tmp_path: Path) -> None:
+    root = tmp_path / "cortex"
+    store = CortexStore(store_path=root)
+    store.log("note", "x")
+    (root / "notes.txt").write_text("plain")
+    for bad in (".plugin.db", "notes.txt", "log.md"):
+        try:
+            store.supersede(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"superseded non-page {bad}")
+    assert (root / "notes.txt").read_text() == "plain"
+
+
+def test_list_hides_superseded_pages(tmp_path: Path) -> None:
+    store = CortexStore(store_path=tmp_path / "cortex")
+    store.write_page("topics", "a", "alpha")
+    store.write_page("topics", "b", "beta")
+    store.supersede("topics/a.md", superseded_by="topics/b.md")
+    assert _rels(store.list_pages("topics")) == ["topics/b.md"]
+    assert _rels(store.list_pages()) == ["topics/b.md"]
