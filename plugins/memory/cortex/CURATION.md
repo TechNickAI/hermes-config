@@ -59,6 +59,25 @@ decision.
 traversal, and symlinked components are refused, so a malformed plan cannot rewrite
 files outside the store.
 
+## Verdicts and validity
+
+Curation decisions use four verdicts, adapted from Hindsight's consolidation
+prompt (which outscored a plain create/update/delete prompt on its own eval):
+
+* **new**: the fact is not in the KB; add it to the page it belongs on.
+* **update**: same fact, newer or more precise; rewrite in place.
+* **contradiction**: conflicting claims; keep both with dates and sources,
+  state which is current, and `supersede` the losing page if a whole page is
+  stale.
+* **none**: nothing material; mark the page curated and move on.
+
+Superseding is a frontmatter change (`invalid_at`, `superseded_by`), not a
+delete, so a wrong call is a one-line revert. The brief now carries the
+deterministic lint (`cortex(action="lint")`): broken links, missing pages,
+orphans and old pages that still say "currently". The weekly job still files
+queue items rather than editing pages unless the owner has granted edit
+authority.
+
 ## Known limits
 
 Stated plainly, because the previous system's failure was overclaiming:

@@ -179,6 +179,14 @@ _RECENCY_WINDOW = 4
 _RECENCY_TIE_RATIO = 0.95
 
 
+def _live_sql(alias: str) -> str:
+    try:
+        from .wiki import live_sql
+    except ImportError:
+        from wiki import live_sql
+    return live_sql(alias)
+
+
 def wants_recency(query: str) -> bool:
     """True when the query asks for current state rather than best match."""
     q = query or ""
@@ -236,7 +244,8 @@ class CortexRetriever:
             FROM pages_fts
             JOIN pages ON pages.rel_path = pages_fts.rel_path
             WHERE pages_fts MATCH ?
-        """
+            AND {live}
+        """.format(live=_live_sql("pages"))
         params: list[Any] = [fts_q]
         if category:
             sql += " AND pages.category = ?"

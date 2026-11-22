@@ -303,6 +303,34 @@ def find_contradiction_candidates(pages: dict, recent_rels: list[str], limit: in
 # --------------------------------------------------------------------- brief
 
 
+def _lint_summary(store: Path) -> dict:
+    """Deterministic wiki lint for the brief; never fatal to the curation pass."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        import wiki  # noqa: PLC0415
+    except Exception as exc:  # pragma: no cover - packaging fallback
+        return {"error": f"wiki module unavailable: {exc}"}
+    rows, disk = [], []
+    for p in iter_pages(store):
+        rel = str(p.relative_to(store))
+        disk.append(rel)
+        try:
+            fm, body = parse_frontmatter(p.read_text(errors="replace"))
+        except OSError:
+            continue
+        rows.append({
+            "rel_path": rel,
+            "category": rel.split("/")[0] if "/" in rel else "_root",
+            "title": fm.get("title") or p.stem,
+            "body": body,
+            "content_date": wiki._iso(fm.get("updated") or fm.get("date") or fm.get("created")),
+            "frontmatter": fm,
+        })
+    rows = [r for r in rows if Path(r["rel_path"]).name not in
+            ("index.md", wiki.LOG_FILENAME, wiki.CATALOG_FILENAME)]
+    return wiki.lint(rows, disk_paths=disk, examples=5)
+
+
 def build_brief(store: Path, days: int) -> dict:
     pages = load_pages(store)
     cp = Checkpoint(store)
@@ -353,6 +381,7 @@ def build_brief(store: Path, days: int) -> dict:
             "categories": dict(cats.most_common(8)),
         },
         "work_set": work,
+        "lint": _lint_summary(store),
         "recent_dailies": dailies[:14],
         "duplicate_candidates": find_duplicate_candidates(pages),
         "contradiction_candidates": find_contradiction_candidates(pages, recent),
