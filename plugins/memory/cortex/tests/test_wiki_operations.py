@@ -468,3 +468,39 @@ def test_list_hides_superseded_pages(tmp_path: Path) -> None:
     store.supersede("topics/a.md", superseded_by="topics/b.md")
     assert _rels(store.list_pages("topics")) == ["topics/b.md"]
     assert _rels(store.list_pages()) == ["topics/b.md"]
+
+
+def test_curation_keeps_nested_log_pages_and_sees_folder_indexes(tmp_path: Path) -> None:
+    sys.path.insert(0, str(_plugin_dir / "scripts"))
+    import weekly_curation  # noqa: PLC0415
+
+    root = tmp_path / "cortex"
+    _page(root, "projects/log.md", "Project log", "See [[topics/index]].")
+    _page(root, "topics/index.md", "Topics", "folder index")
+    store = CortexStore(store_path=root)
+    store.log("note", "x")
+    store.lint()
+    rels = {str(p.relative_to(root)) for p in weekly_curation.iter_pages(root)}
+    assert rels == {"projects/log.md"}
+    assert weekly_curation._lint_summary(root)["broken_links"]["count"] == 0
+
+
+def test_lint_resolves_markdown_links_relative_to_page(tmp_path: Path) -> None:
+    root = tmp_path / "cortex"
+    _page(root, "topics/a.md", "A", "See [B](sub/b.md) and [C](../people/c.md).")
+    _page(root, "topics/sub/b.md", "B", "b")
+    _page(root, "people/c.md", "C", "c")
+    rep = CortexStore(store_path=root).lint(write_catalog=False, log=False)
+    assert rep["broken_links"]["count"] == 0
+    assert "topics/sub/b.md" not in rep["orphans"]["examples"]
+    assert "people/c.md" not in rep["orphans"]["examples"]
+
+
+def test_hyphenated_validity_survives_rewrite(tmp_path: Path) -> None:
+    root = tmp_path / "cortex"
+    _page(root, "topics/b.md", "B", "beta")
+    (root / "topics/a.md").write_text(
+        "---\ntitle: A\nsuperseded-by: topics/b.md\n---\n\nqwibble alpha\n")
+    store = CortexStore(store_path=root)
+    store.write_page("topics", "a", "qwibble alpha edited")
+    assert "topics/a.md" not in _rels(CortexRetriever(store).search("qwibble", limit=5))

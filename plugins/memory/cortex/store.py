@@ -993,7 +993,8 @@ class CortexStore:
                 old_fm, _ = _parse_frontmatter(path.read_text(encoding="utf-8"))
             except Exception:
                 old_fm = {}
-            for k in ("invalid_at", "superseded_by", "superseded_reason"):
+            for k in ("invalid_at", "invalid-at", "superseded_by", "superseded-by",
+                      "superseded_reason"):
                 if old_fm.get(k) and k not in (extra_frontmatter or {}):
                     fm[k] = old_fm[k]
         for k, v in (extra_frontmatter or {}).items():

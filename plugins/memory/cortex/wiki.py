@@ -34,6 +34,7 @@ Design rules
 from __future__ import annotations
 
 import datetime as _dt
+import posixpath
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -281,7 +282,19 @@ def lint(pages: list[dict], *, on: _dt.date | None = None, examples: int = 8,
     on_disk = {_normalise_target(d) for d in disk_paths}
     disk_stems = {Path(d).name for d in on_disk}
 
-    def resolve(target: str) -> list[str]:
+    def resolve(target: str, base: str = "") -> list[str]:
+        # Markdown links are relative to the linking page first (`sub/b.md`
+        # from topics/a.md is topics/sub/b.md); store-root resolution is the
+        # fallback because wikilinks and most Cortex links are root-relative.
+        if base and not target.startswith("/"):
+            rel_norm = posixpath.normpath(posixpath.join(base, target.strip()))
+            if not rel_norm.startswith(".."):
+                rel_norm = _normalise_target(rel_norm)
+                for cand in (rel_norm, rel_norm + "/index"):
+                    if cand in by_norm:
+                        return [by_norm[cand]]
+                    if cand in on_disk:
+                        return [cand + ".md"]
         norm = _normalise_target(target)
         if "/" in norm:
             for cand in (norm, norm + "/index"):
@@ -299,10 +312,13 @@ def lint(pages: list[dict], *, on: _dt.date | None = None, examples: int = 8,
     broken: list[dict] = []
     missing: Counter = Counter()
     for rel, p in by_rel.items():
-        for target in _link_targets(p.get("body") or ""):
+        body = p.get("body") or ""
+        page_dir = posixpath.dirname(rel)
+        md_targets = {m.strip() for m in _MDLINK_RE.findall(body)}
+        for target in _link_targets(body):
             if _DIRECTIVE_RE.match(target) or "://" in target:
                 continue
-            hits = resolve(target)
+            hits = resolve(target, page_dir if target in md_targets else "")
             if not hits:
                 broken.append({"in": rel, "target": target})
                 missing[_normalise_target(target)] += 1

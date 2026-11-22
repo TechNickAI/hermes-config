@@ -65,9 +65,10 @@ EXCLUDE_DIRS = {".git", "_legacy-root", "artifacts", "node_modules", "__pycache_
 # Files the curation system itself generates. Excluded so the pass never
 # curates its own output (which otherwise shows up as a perpetually-dirty page
 # and inflates the "never curated" backlog by one every run).
-# log.md and catalog.md are Cortex bookkeeping (see wiki.py), not knowledge;
-# index.md is never indexed by the store either.
-EXCLUDE_FILES = {"review-queue.md", "log.md", "catalog.md", "index.md"}
+# Matches store._should_skip_file: index.md is never indexed; log.md and
+# catalog.md are bookkeeping only at the store root (projects/log.md is real).
+EXCLUDE_FILES = {"review-queue.md", "index.md"}
+ROOT_EXCLUDE_FILES = {"log.md", "catalog.md"}
 
 
 def today() -> datetime.date:
@@ -138,6 +139,8 @@ def iter_pages(store: Path):
         if p.name.startswith("."):
             continue
         if p.name in EXCLUDE_FILES:
+            continue
+        if p.parent == store and p.name in ROOT_EXCLUDE_FILES:
             continue
         yield p
 
@@ -312,10 +315,16 @@ def _lint_summary(store: Path) -> dict:
         import wiki  # noqa: PLC0415
     except Exception as exc:  # pragma: no cover - packaging fallback
         return {"error": f"wiki module unavailable: {exc}"}
-    rows, disk = [], []
+    rows = []
+    # Link targets include unindexed folder index.md pages, so the disk
+    # inventory is wider than the page walk (same as CortexStore.lint).
+    disk = [
+        str(f.relative_to(store)) for f in store.rglob("*.md")
+        if not any(part.startswith(".") or part in EXCLUDE_DIRS
+                   for part in f.relative_to(store).parts)
+    ]
     for p in iter_pages(store):
         rel = str(p.relative_to(store))
-        disk.append(rel)
         try:
             fm, body = parse_frontmatter(p.read_text(errors="replace"))
         except OSError:
