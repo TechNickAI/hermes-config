@@ -993,8 +993,10 @@ class CortexStore:
                 old_fm, _ = _parse_frontmatter(path.read_text(encoding="utf-8"))
             except Exception:
                 old_fm = {}
+            # Also provenance from action="file": the write tool cannot pass
+            # extra_frontmatter, so an update would otherwise strip it.
             for k in ("invalid_at", "invalid-at", "superseded_by", "superseded-by",
-                      "superseded_reason"):
+                      "superseded_reason", "sources", "question"):
                 if old_fm.get(k) and k not in (extra_frontmatter or {}):
                     fm[k] = old_fm[k]
         for k, v in (extra_frontmatter or {}).items():

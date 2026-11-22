@@ -504,3 +504,23 @@ def test_hyphenated_validity_survives_rewrite(tmp_path: Path) -> None:
     store = CortexStore(store_path=root)
     store.write_page("topics", "a", "qwibble alpha edited")
     assert "topics/a.md" not in _rels(CortexRetriever(store).search("qwibble", limit=5))
+
+
+def test_write_keeps_filed_answer_provenance(tmp_path: Path) -> None:
+    store = CortexStore(store_path=tmp_path / "cortex")
+    store.write_page("topics", "a", "alpha")
+    rel = store.file_answer("Q", "v1", ["topics/a.md"], question="why?")
+    store.write_page("analyses", Path(rel).stem, "v2")
+    fm = store.get_page(rel)["frontmatter"]
+    assert fm["sources"] == ["topics/a.md"] and fm["question"] == "why?"
+
+
+def test_log_action_can_append_an_ingest_entry(tmp_path: Path) -> None:
+    prov = _provider(tmp_path)
+    call = lambda **a: json.loads(prov.handle_tool_call("cortex", a))  # noqa: E731
+    out = call(action="log", title="Imported meeting notes",
+               body="Updated: people/zed.md\nUpdated: projects/boat.md")
+    assert out["logged"].endswith("ingest | Imported meeting notes")
+    entry = call(action="log", limit=1)["entries"][0]
+    assert entry["lines"] == ["Updated: people/zed.md", "Updated: projects/boat.md"]
+    assert "error" in call(action="log", title="x", op="bogus")

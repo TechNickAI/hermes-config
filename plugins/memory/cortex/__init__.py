@@ -73,7 +73,8 @@ CORTEX_TOOL_SCHEMA = {
         "  • file      — file a synthesized answer as an analyses/ page with the "
         "`sources` it was built from, so good answers compound\n"
         "  • lint      — structural health check; regenerates catalog.md\n"
-        "  • log       — recent operations from log.md\n\n"
+        "  • log       — read recent log.md entries; with `title` (+ optional "
+        "`op`, `body` lines) append one, e.g. to close an ingest\n\n"
         "INGEST: scan the source's people/projects/concepts, update each affected "
         "page in place, supersede what the source makes untrue, then log. "
         "Use this BEFORE asking the user about anything they might have told you "
@@ -105,6 +106,7 @@ CORTEX_TOOL_SCHEMA = {
             "sources": {"type": "array", "items": {"type": "string"}, "description": "rel_paths an answer was built from (for 'file')."},
             "superseded_by": {"type": "string", "description": "rel_path of the page that replaces this one (for 'supersede')."},
             "reason": {"type": "string", "description": "Why the page is no longer current (for 'supersede')."},
+            "op": {"type": "string", "enum": ["ingest", "query", "lint", "curate", "supersede", "note"], "description": "Log entry type (for 'log' with a title; default ingest)."},
             "limit": {"type": "integer", "description": "Result limit (default 5 for search, 20 for list/log, 8 matches per term for scan)."},
         },
         "required": ["action"],
@@ -574,6 +576,12 @@ class CortexMemoryProvider(MemoryProvider):
             elif action == "lint":
                 return dumps_response(self._store.lint())
             elif action == "log":
+                # With a title, append an entry (closes an ingest); without, read.
+                title = args.get("title", "")
+                if title:
+                    lines = [ln for ln in str(args.get("body", "")).splitlines() if ln.strip()]
+                    header = self._store.log(args.get("op") or "ingest", title, lines)
+                    return dumps_response({"logged": header})
                 limit = int(args.get("limit", 20))
                 return dumps_response({"entries": self._store.recent_log(limit)})
             else:
