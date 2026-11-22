@@ -38,6 +38,9 @@ $HERMES_HOME/cortex/
 │   └── archive/         # historical / superseded
 ├── research/            # external research notes
 ├── daily/               # YYYY-MM-DD.md journal entries
+├── analyses/            # answers filed back via action="file"
+├── log.md               # append-only operation log (not indexed)
+├── catalog.md           # generated page catalog, rebuilt by lint (not indexed)
 └── .plugin.db           # FTS5 index (auto-rebuilt on stale mtime)
 ```
 
@@ -99,7 +102,49 @@ cortex(action="list", category="people", limit=20)
 
 cortex(action="daily", body="Notes about today's work")
   → appends timestamped entry to daily/YYYY-MM-DD.md
+
+cortex(action="scan", terms=["Dana", "Globex"])
+  → every live page mentioning each term, with the matching line
+
+cortex(action="supersede", rel_path="people/dana-2025.md",
+       superseded_by="people/dana.md", reason="changed jobs")
+  → frontmatter + visible banner; drops out of search, stays on disk
+
+cortex(action="file", title="Router comparison", body="...",
+       sources=["topics/a.md", "topics/b.md"], query="which router?")
+  → analyses/router-comparison.md, with its sources recorded
+
+cortex(action="lint")
+  → broken links, orphans, missing pages, stale "currently" claims,
+    slug collisions; regenerates catalog.md and logs the pass
+
+cortex(action="log", limit=10)
+  → most recent log.md entries
 ```
+
+## Compiled wiki, not a pile of notes
+
+Cortex follows Karpathy's LLM-Wiki pattern: a source is _compiled into_ the pages it
+affects instead of becoming one more page. Ingest looks like this:
+
+1. **scan** the people, projects and concepts the source names.
+2. For each affected page decide: new fact (add it), update (rewrite the line in place),
+   contradiction (keep both, mark which is current, cite the source), or nothing
+   material.
+3. **supersede** pages the source makes untrue, pointing at the current one. Never
+   delete; history stays readable by path.
+4. Answers that pulled several pages together get **file**d back.
+5. **lint** periodically; every write op lands in `log.md`.
+
+Temporal validity is plain frontmatter, so humans and other tools can set it:
+
+```yaml
+invalid_at: 2026-11-22 # past or today: hidden from default search
+superseded_by: people/dana.md # successor; alone, means "invalid since always"
+```
+
+A future `invalid_at` is a scheduled expiry; it takes effect on that date without a
+reindex because the filter is evaluated at query time.
 
 ## Single-provider constraint
 

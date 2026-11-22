@@ -65,7 +65,10 @@ EXCLUDE_DIRS = {".git", "_legacy-root", "artifacts", "node_modules", "__pycache_
 # Files the curation system itself generates. Excluded so the pass never
 # curates its own output (which otherwise shows up as a perpetually-dirty page
 # and inflates the "never curated" backlog by one every run).
-EXCLUDE_FILES = {"review-queue.md"}
+# Matches store._should_skip_file: index.md is never indexed; log.md and
+# catalog.md are bookkeeping only at the store root (projects/log.md is real).
+EXCLUDE_FILES = {"review-queue.md", "index.md"}
+ROOT_EXCLUDE_FILES = {"log.md", "catalog.md"}
 
 
 def today() -> datetime.date:
@@ -136,6 +139,8 @@ def iter_pages(store: Path):
         if p.name.startswith("."):
             continue
         if p.name in EXCLUDE_FILES:
+            continue
+        if p.parent == store and p.name in ROOT_EXCLUDE_FILES:
             continue
         yield p
 
@@ -303,6 +308,38 @@ def find_contradiction_candidates(pages: dict, recent_rels: list[str], limit: in
 # --------------------------------------------------------------------- brief
 
 
+def _lint_summary(store: Path) -> dict:
+    """Deterministic wiki lint for the brief; never fatal to the curation pass."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        import wiki  # noqa: PLC0415
+    except Exception as exc:  # pragma: no cover - packaging fallback
+        return {"error": f"wiki module unavailable: {exc}"}
+    rows = []
+    # Link targets include unindexed folder index.md pages, so the disk
+    # inventory is wider than the page walk (same as CortexStore.lint).
+    disk = [
+        str(f.relative_to(store)) for f in store.rglob("*.md")
+        if not any(part.startswith(".") or part in EXCLUDE_DIRS
+                   for part in f.relative_to(store).parts)
+    ]
+    for p in iter_pages(store):
+        rel = str(p.relative_to(store))
+        try:
+            fm, body = parse_frontmatter(p.read_text(errors="replace"))
+        except OSError:
+            continue
+        rows.append({
+            "rel_path": rel,
+            "category": rel.split("/")[0] if "/" in rel else "_root",
+            "title": fm.get("title") or p.stem,
+            "body": body,
+            "content_date": wiki._iso(fm.get("updated") or fm.get("date") or fm.get("created")),
+            "frontmatter": fm,
+        })
+    return wiki.lint(rows, disk_paths=disk, examples=5)
+
+
 def build_brief(store: Path, days: int) -> dict:
     pages = load_pages(store)
     cp = Checkpoint(store)
@@ -353,6 +390,7 @@ def build_brief(store: Path, days: int) -> dict:
             "categories": dict(cats.most_common(8)),
         },
         "work_set": work,
+        "lint": _lint_summary(store),
         "recent_dailies": dailies[:14],
         "duplicate_candidates": find_duplicate_candidates(pages),
         "contradiction_candidates": find_contradiction_candidates(pages, recent),

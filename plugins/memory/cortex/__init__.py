@@ -58,23 +58,38 @@ CORTEX_TOOL_SCHEMA = {
     "description": (
         "Hand-curated personal knowledge base — people, ventures, topics, "
         "decisions, synthesis, learning, research. Pages are markdown with "
-        "structured frontmatter. Search returns relevant pages with snippets; "
-        "read returns the full page; write creates or updates a page.\n\n"
+        "structured frontmatter. The KB is a compiled wiki: keep pages current "
+        "rather than piling up dated snapshots.\n\n"
         "ACTIONS:\n"
-        "  • search — full-text search (returns snippets + scores)\n"
-        "  • read   — full body of a page by rel_path (e.g. 'people/nick.md')\n"
-        "  • write  — create or overwrite a page in a category\n"
-        "  • list   — list pages in a category (or all) by recency\n"
-        "  • daily  — append a timestamped entry to today's journal\n\n"
+        "  • search    — hybrid search (superseded pages excluded)\n"
+        "  • read      — full body of a page by rel_path (e.g. 'people/nick.md')\n"
+        "  • write     — create or overwrite a page in a category\n"
+        "  • list      — list pages in a category (or all) by recency\n"
+        "  • daily     — append a timestamped entry to today's journal\n"
+        "  • scan      — pages mentioning each of `terms`; run BEFORE writing a new "
+        "source so every page it affects gets updated, not just one new page\n"
+        "  • supersede — mark `rel_path` no longer current (optional "
+        "`superseded_by`, `reason`); never delete a stale page\n"
+        "  • file      — file a synthesized answer as an analyses/ page with the "
+        "`sources` it was built from, so good answers compound\n"
+        "  • lint      — structural health check; regenerates catalog.md\n"
+        "  • log       — read recent log.md entries; with `title` (+ optional "
+        "`op`, `body` lines) append one, e.g. to close an ingest\n\n"
+        "INGEST: scan the source's people/projects/concepts, update each affected "
+        "page in place, supersede what the source makes untrue, then log. "
         "Use this BEFORE asking the user about anything they might have told you "
-        "before. Use 'write' to capture durable facts a future session should know."
+        "before."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["search", "read", "write", "list", "daily"]},
-            "query": {"type": "string", "description": "Search query (for 'search')."},
-            "rel_path": {"type": "string", "description": "Page path like 'topics/foo.md' (for 'read')."},
+            "action": {
+                "type": "string",
+                "enum": ["search", "read", "write", "list", "daily",
+                         "scan", "supersede", "file", "lint", "log"],
+            },
+            "query": {"type": "string", "description": "Search query (for 'search'); the question answered (for 'file')."},
+            "rel_path": {"type": "string", "description": "Page path like 'topics/foo.md' (for 'read'/'supersede')."},
             "category": {
                 "type": "string",
                 "description": (
@@ -83,11 +98,16 @@ CORTEX_TOOL_SCHEMA = {
                     "projects, topics, synthesis, decisions, learning, research, daily."
                 ),
             },
-            "title": {"type": "string", "description": "Page title (for 'write')."},
+            "title": {"type": "string", "description": "Page title (for 'write'/'file')."},
             "slug": {"type": "string", "description": "Optional filename slug; defaults to title-derived."},
-            "body": {"type": "string", "description": "Page body markdown (for 'write'/'daily')."},
-            "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags (for 'write')."},
-            "limit": {"type": "integer", "description": "Result limit (default 5 for search, 20 for list)."},
+            "body": {"type": "string", "description": "Page body markdown (for 'write'/'daily'/'file')."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags (for 'write'/'file')."},
+            "terms": {"type": "array", "items": {"type": "string"}, "description": "Entity/concept names to scan for (for 'scan', up to 20)."},
+            "sources": {"type": "array", "items": {"type": "string"}, "description": "rel_paths an answer was built from (for 'file')."},
+            "superseded_by": {"type": "string", "description": "rel_path of the page that replaces this one (for 'supersede')."},
+            "reason": {"type": "string", "description": "Why the page is no longer current (for 'supersede')."},
+            "op": {"type": "string", "enum": ["ingest", "query", "lint", "curate", "supersede", "note"], "description": "Log entry type (for 'log' with a title; default ingest)."},
+            "limit": {"type": "integer", "description": "Result limit (default 5 for search, 20 for list/log, 8 matches per term for scan)."},
         },
         "required": ["action"],
     },
@@ -526,6 +546,44 @@ class CortexMemoryProvider(MemoryProvider):
                     return tool_error("daily requires 'body'")
                 rel = self._store.append_daily(body)
                 return dumps_response({"rel_path": rel, "status": "appended"})
+            elif action == "scan":
+                terms = args.get("terms") or []
+                if isinstance(terms, str):
+                    terms = [t.strip() for t in terms.split(",")]
+                if not terms:
+                    return tool_error("scan requires 'terms'")
+                per_term = max(1, min(int(args.get("limit", 8)), 200))
+                return dumps_response(self._store.scan_terms(terms, per_term=per_term))
+            elif action == "supersede":
+                rel = args.get("rel_path", "")
+                if not rel:
+                    return tool_error("supersede requires 'rel_path'")
+                return dumps_response(self._store.supersede(
+                    rel,
+                    superseded_by=args.get("superseded_by") or None,
+                    reason=args.get("reason", ""),
+                ))
+            elif action == "file":
+                title = args.get("title", "")
+                body = args.get("body", "")
+                if not title or not body:
+                    return tool_error("file requires 'title' and 'body'")
+                rel = self._store.file_answer(
+                    title, body, args.get("sources") or [],
+                    tags=args.get("tags") or [], question=args.get("query", ""),
+                )
+                return dumps_response({"rel_path": rel, "status": "filed"})
+            elif action == "lint":
+                return dumps_response(self._store.lint())
+            elif action == "log":
+                # With a title, append an entry (closes an ingest); without, read.
+                title = args.get("title", "")
+                if title:
+                    lines = [ln for ln in str(args.get("body", "")).splitlines() if ln.strip()]
+                    header = self._store.log(args.get("op") or "ingest", title, lines)
+                    return dumps_response({"logged": header})
+                limit = int(args.get("limit", 20))
+                return dumps_response({"entries": self._store.recent_log(limit)})
             else:
                 return tool_error(f"Unknown action: {action}")
         except KeyError as e:
